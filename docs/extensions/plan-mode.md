@@ -29,8 +29,8 @@ Use either of these toggles:
 Entering while the agent is streaming is supported. The restriction is enforced immediately by the
 tool-call guard; the visible tool-set change takes effect on the next turn. The mode indicator shows
 `Plan Mode` in Pi's status line. Entering and leaving are rendered in the transcript as a compact,
-color-coded mode event: a warning-marked enabled state or a success-marked disabled state, with the
-resulting tool availability alongside it.
+single-line, color-coded mode event: `Plan Mode Enabled` or `Plan Mode Disabled`, with the resulting
+tool availability alongside it. Entering does not also display a separate notification.
 
 On every agent run while the mode is active, the system prompt states that the required outcome is
 a written implementation plan. It tells the model not to implement changes, stop at analysis, or

@@ -216,8 +216,9 @@ The brief has to fight the model's default bias toward producing an answer. Cont
 - [ ] `pi.registerCommand("plan", ...)`:
   - bare `/plan` toggles plan mode; arguments are unsupported.
   - Entering while the agent is streaming is legal — commands dispatch immediately. The tool swap
-    lands next turn and the `tool_call` guard covers the current one, so no abort is needed. Notify
-    the user that the restriction is already enforced.
+    lands next turn and the `tool_call` guard covers the current one, so no abort is needed. The
+    single-line transition entry says that read-only tools are active; do not repeat it in a
+    notification.
   - Toggling off via `/plan` writes no file and says so.
 - [ ] `pi.on("tool_call")` guard: if inactive, return. If `toolName === "bash"`, hand to
       `classify()`; `ask` verdicts go to the shared dialog, and a denial returns `{block: true,
@@ -239,8 +240,8 @@ The brief has to fight the model's default bias toward producing an answer. Cont
       terminal control codes. `ctrl+b` remains intentionally unused because it is common tmux
       muscle memory.
 - [ ] `pi.registerEntryRenderer("plan-mode", ...)` so transitions render as a line in the transcript
-      rather than nothing. `DECIDE`: worth it, or is the status indicator enough? Lean: do it, one
-      muted line, so scrollback shows where planning began.
+      rather than nothing. Keep it to one muted line so scrollback shows where planning began
+      without duplicating the state in a separate notification.
 - [ ] The user's own `!command` bash escapes go through `user_bash`, and plan mode must **not** gate
       them. Plan mode restricts the model, not the user. State this in the manual — it will look
       like an inconsistency otherwise.

@@ -69,7 +69,7 @@ function setPlanStatus(ctx: Pick<ExtensionContext, "ui">, active: boolean): void
 }
 
 function transitionContent(active: boolean, theme: Pick<Theme, "fg" | "bold">): string {
-	const title = active ? "PLAN MODE ENABLED" : "PLAN MODE DISABLED";
+	const title = active ? "Plan Mode Enabled" : "Plan Mode Disabled";
 	const detail = active ? "Read-only tools active" : "Editing tools return next turn";
 	const color = active ? "warning" : "success";
 	const icon = active ? "◆" : "✓";
@@ -169,7 +169,6 @@ export default function planMode(pi: ExtensionAPI): void {
 		persist();
 		applyPlanTools();
 		setPlanStatus(ctx, true);
-		ctx.ui.notify("Plan mode enabled. Restrictions are enforced immediately; the tool swap applies next turn.", "info");
 	}
 
 	function leave(ctx: ExtensionContext, message = "Plan mode disabled. No plan file was written; full tool access returns next turn."): void {
