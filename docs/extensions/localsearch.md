@@ -40,7 +40,7 @@ therefore returns a pool already drawn from multiple engines — that's why hitt
 enough, and why its 30-result pool is more diverse than any single engine's first page.
 
 Which engines it queries is `engines:` in
-[`../docker/searxng-settings.yml`](../docker/searxng-settings.yml).
+[`../../docker/searxng-settings.yml`](../../docker/searxng-settings.yml).
 This setup uses Google, Bing and DuckDuckGo. Brave and Startpage are disabled because they answered
 "too many requests" or a CAPTCHA from this host, and SearXNG's own Wikipedia engine is disabled
 because the extension has a dedicated `wikipedia` source and duplicate hits waste pool slots. Enable

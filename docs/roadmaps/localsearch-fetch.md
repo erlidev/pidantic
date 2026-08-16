@@ -77,7 +77,7 @@ New module. Pure, dependency-free, injected deps like everything else in `src/`.
 - [ ] **`vm`, not `worker_threads`** (decided). Simpler, no `postMessage` proxying for `rank()`, and
       the code author here is the model rather than an attacker. Accepted limit: `vm` cannot
       terminate an async runaway such as `while(true){ await null }`, which leaks a promise loop for
-      the life of the process. Document it in the README in the same honest register as the existing
+      the life of the process. Document it in the localsearch manual in the same honest register as the existing
       `isPrivateHost` "not an SSRF boundary" note. Worker threads stay a documented upgrade path if
       it ever bites in practice.
 - [ ] **`await` is allowed in filters** (decided). `rank()` stays inside `filter`, so the param count
@@ -160,7 +160,7 @@ so spending the whole budget on it is close to pure waste.
       ```
 - [ ] **In full when it fits.** Render every heading with its nesting level while the outline stays
       under the budget. Only past that fall back to the flat, capped `headingList()` form — this is
-      the rustdoc case the README already calls out, where link-stuffed headings run to tens of
+      the rustdoc case the localsearch manual already calls out, where link-stuffed headings run to tens of
       thousands of characters on their own.
 - [ ] Over budget *with* `section` or `filter` → truncate the selected content, notice says narrow.
       Sub-headings that were cut are worth listing here; the whole-page outline is not.
@@ -209,7 +209,7 @@ rule and the examples, nothing else.
 
 - [ ] One canonical instruction block, written and counted before any of Phase 5's code lands, so the
       surface is designed against the budget rather than trimmed to fit afterwards.
-- [ ] A review checklist in the README's development section, so future params are held to the same
+- [ ] A review checklist in the localsearch manual's development section, so future params are held to the same
       bar.
 - [ ] A spot-check: run a real session against a large doc page and read what the model actually
       does. If it reaches for `filter` where `section` would do, the ladder wording is wrong — fix
@@ -227,7 +227,7 @@ rule and the examples, nothing else.
       > No heading in hand → `fetch(url)`. Over budget it returns the outline.
       > Heading in hand → `section: "<heading>"`.
       > Term, pattern, question or line range → `filter:`. The page is cached; retrying is free.
-- [ ] `contentTokens` default → 5000 in `config.ts`; update the README config block and the
+- [ ] `contentTokens` default → 5000 in `config.ts`; update the localsearch manual's config block and the
       `/search-status` line that prints the budget.
 - [ ] Reject `filter` with `format: "raw"`? **No** — raw is still text, `sections` degrades to one
       section, `grep`/`lines` work fine. Document the degradation, do not error.
@@ -244,7 +244,7 @@ rule and the examples, nothing else.
     past what the budget just withheld.
   - `cacheSize()` in `statusReport` counts directory entries; sidecars will double the number it
     reports. Count only the JSON entries.
-- [ ] README: a `### Filtering` section under "The tools", the sandbox honesty note, the new budget
+- [ ] Localsearch manual: a `### Filtering` section under "The tools", the sandbox honesty note, the new budget
       rule in "How a fetch runs" step 6, and the worked before/after token comparison.
 
 ## Phase 7 — tests

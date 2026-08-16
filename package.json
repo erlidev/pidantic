@@ -10,6 +10,8 @@
 	"pi": {
 		"extensions": [
 			"./localsearch/index.ts",
+			"./confirm-bash/index.ts",
+			"./stop/index.ts",
 			"./plan-mode/index.ts",
 			"./smart-compaction/index.ts",
 			"./questions/index.ts"
@@ -22,6 +24,7 @@
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
 		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
 		"typebox": "*"
 	},
 	"dependencies": {
