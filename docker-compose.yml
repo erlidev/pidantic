@@ -86,7 +86,7 @@ services:
       - --mamba-cache-mode
       - align
       - --max-model-len
-      - "65536"
+      - "131072"
       - --kv-cache-memory
       - "4294967296"
       - --enable-auto-tool-choice
