@@ -1,4 +1,4 @@
-# Project: Pi Extensions
+# Project: Pidantic
 
 @README.md
 

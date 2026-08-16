@@ -1,6 +1,6 @@
-# pi-extensions
+# Pidantic
 
-Local [Pi](https://github.com/earendil-works) extensions and the services they share.
+A collection of my custom [Pi](https://github.com/earendil-works) extensions to flesh out the default harness.
 
 | Extension | Status | Purpose |
 | --- | --- | --- |
