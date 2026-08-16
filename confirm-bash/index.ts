@@ -38,7 +38,7 @@ const confirmBashSchema = Type.Object({
 	confirm: Type.Optional(
 		Type.Boolean({
 			description:
-				"Set true to hold this command until the user approves it in the terminal. Use your judgement; see the security guidelines for when this is expected.",
+				"Set true to hold this command until the user approves it in the terminal. Use your judgement; follow the guidelines if available.",
 		}),
 	),
 	reason: Type.Optional(
