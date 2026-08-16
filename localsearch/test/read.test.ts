@@ -17,7 +17,7 @@ const PAGE = [
 	"",
 	"## Timeouts",
 	"",
-	`the request timeout is 30s. ${"padding ".repeat(400)}`,
+	`the request timeout is 30s. ${"padding ".repeat(6000)}`,
 	"",
 	"## Task object",
 	"",
@@ -33,7 +33,7 @@ const read = (request: Record<string, unknown>, body = PAGE) =>
 	);
 
 test("a page inside the budget comes back whole, with no housekeeping attached", async () => {
-	const out = await read({ maxTokens: 5000 }, "# Small\n\nall of it\n");
+	const out = await read({}, "# Small\n\nall of it\n");
 
 	assert.equal(out.text, "# Small\n\nall of it\n");
 	assert.equal(out.details.mode, "full");
@@ -41,7 +41,7 @@ test("a page inside the budget comes back whole, with no housekeeping attached",
 });
 
 test("an oversized page returns the outline and where to find the rest", async () => {
-	const out = await read({ maxTokens: 200 });
+	const out = await read({});
 
 	assert.equal(out.details.mode, "outline");
 	assert.match(out.text, /Page outline/);
@@ -50,7 +50,7 @@ test("an oversized page returns the outline and where to find the rest", async (
 });
 
 test("an oversized section is truncated rather than swapped for a map", async () => {
-	const out = await read({ section: "Timeouts", maxTokens: 200 });
+	const out = await read({ section: "Timeouts" });
 
 	assert.equal(out.details.mode, "truncated");
 	assert.match(out.text, /^## Timeouts/);
@@ -70,13 +70,13 @@ test("a filter that fits returns raw output and the coordinate space", async () 
 	const out = await read({ filter: "sections.filter(s => /task/i.test(s.heading))" });
 
 	assert.match(out.text, /^## Task object/);
-	assert.match(out.text, /\[filtered: ~\d+ of ~\d+ tokens · 1 of 3 sections · \d+ lines\]$/);
+	assert.match(out.text, /\[filtered: ~\d+ of ~[\d,]+ tokens · 1 of 3 sections · \d+ lines\]$/);
 	assert.doesNotMatch(out.text, /on disk/);
 	assert.doesNotMatch(out.text, /^# /m, "nothing is prepended to a narrow answer");
 });
 
 test("a filter that returns everything is still cut at the budget", async () => {
-	const out = await read({ filter: "text", maxTokens: 200 });
+	const out = await read({ filter: "text" });
 
 	assert.equal(out.details.budgetTruncated, true);
 	assert.match(out.text, /\[truncated: \d+ of ~\d+ tokens\]/);
@@ -112,7 +112,7 @@ test("text format strips markup from the answer, not from what selects it", asyn
 });
 
 test("text format keeps the outline readable, since a map is not prose", async () => {
-	const out = await read({ format: "text", maxTokens: 200 });
+	const out = await read({ format: "text" });
 
 	assert.equal(out.details.mode, "outline");
 	assert.match(out.text, /^## Timeouts$/m, "nesting is what makes the map usable");

@@ -21,6 +21,7 @@ import {
 	defaultDeps,
 	describeError,
 	describeNetworkError,
+	FETCH_CONTENT_TOKENS,
 	loadConfig,
 } from "./config.ts";
 import { blockedReason, entryFor, loadState, searchWeb } from "./chain.ts";
@@ -45,7 +46,6 @@ export default function localsearch(pi: ExtensionAPI) {
 		name: "search",
 		label: "Search",
 		description: SEARCH.description,
-		promptSnippet: SEARCH.snippet,
 		promptGuidelines: SEARCH.guidelines,
 		parameters: Type.Object({
 			query: Type.String({ description: SEARCH.params.query }),
@@ -102,13 +102,11 @@ export default function localsearch(pi: ExtensionAPI) {
 		name: "fetch",
 		label: "Fetch",
 		description: FETCH.description,
-		promptSnippet: FETCH.snippet,
 		promptGuidelines: FETCH.guidelines,
 		parameters: Type.Object({
 			url: Type.String({ description: FETCH.params.url }),
 			section: Type.Optional(Type.String({ description: FETCH.params.section })),
 			filter: Type.Optional(Type.String({ description: FETCH.params.filter })),
-			max_tokens: Type.Optional(Type.Number({ description: FETCH.params.max_tokens })),
 			format: Type.Optional(
 				StringEnum([...FORMATS] as unknown as readonly string[], {
 					description: FETCH.params.format,
@@ -124,7 +122,6 @@ export default function localsearch(pi: ExtensionAPI) {
 					url: String(params.url ?? "").trim(),
 					section: params.section as string | undefined,
 					filter: params.filter as string | undefined,
-					maxTokens: params.max_tokens as number | undefined,
 					format: (params.format ?? "markdown") as Format,
 				},
 				cfg,
@@ -245,10 +242,10 @@ async function statusReport(cfg: Config, deps: Deps): Promise<string> {
 
 	lines.push(`searxng url: ${cfg.searxngUrl} (${await probe(cfg.searxngUrl, deps)})`);
 	lines.push(`reranker: ${cfg.rerankUrl} (${await probe(`${cfg.rerankUrl}/health`, deps)})`);
-	lines.push(`github: ${deps.env.GITHUB_TOKEN || deps.env.GH_TOKEN ? "token set" : "no token (code search unavailable)"}`);
+	lines.push(`github: ${deps.env.LS_GH_TOKEN ? "token set" : "no token (code search unavailable)"}`);
 	lines.push(
 		`fetch: ${await cacheSize(deps)} cached pages/searches, ` +
-			`${cfg.contentTokens} token budget, ${cfg.fetchCacheTtlHours}h ttl` +
+			`${FETCH_CONTENT_TOKENS} token budget, ${cfg.fetchCacheTtlHours}h ttl` +
 			`${cfg.allowPrivateHosts ? ", private hosts allowed" : ""}`,
 	);
 	return lines.join("\n");

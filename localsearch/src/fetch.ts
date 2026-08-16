@@ -355,6 +355,17 @@ async function fetchGitHub(
 				};
 			}
 
+			case "content": {
+				const res = await text(op.apiPath, "application/vnd.github.raw");
+				return {
+					...page,
+					finalUrl: res.url,
+					markdown: op.lang ? fence(res.text, op.lang) : res.text,
+					bytes: res.bytes,
+					truncated: res.truncated,
+				};
+			}
+
 			case "tree": {
 				const query = op.ref ? `?ref=${encodeURIComponent(op.ref)}` : "";
 				const entries = await json<Entry[] | Entry>(

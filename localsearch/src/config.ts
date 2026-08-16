@@ -56,9 +56,6 @@ export interface Config {
 	/** Pages are slower to serve than search APIs, and jsdom parse time scales with document size. */
 	fetchTimeoutMs: number;
 	fetchMaxBytes: number;
-	/** Default markdown budget handed to the model by `fetch`, in tokens. */
-	contentTokens: number;
-	maxContentTokens: number;
 	fetchCacheTtlHours: number;
 	/** Allow `fetch` to reach loopback, RFC1918 and link-local addresses. */
 	allowPrivateHosts: boolean;
@@ -73,6 +70,9 @@ export interface Config {
 	maxChunks: number;
 }
 
+/** Fixed content ceiling for every fetch result. Narrow further with section or filter. */
+export const FETCH_CONTENT_TOKENS = 10_000;
+
 export const DEFAULTS: Config = {
 	order: ["searxng", "exa", "tavily", "brave", "marginalia"],
 	searxngUrl: "http://localhost:8888",
@@ -86,8 +86,6 @@ export const DEFAULTS: Config = {
 	timeoutMs: 12000,
 	fetchTimeoutMs: 20000,
 	fetchMaxBytes: 2_000_000,
-	contentTokens: 5000,
-	maxContentTokens: 20000,
 	fetchCacheTtlHours: 6,
 	allowPrivateHosts: false,
 	filterTimeoutMs: 15000,
@@ -150,7 +148,7 @@ export function apiKey(provider: string, deps: Deps): string | undefined {
 }
 
 export function githubToken(deps: Deps): string | undefined {
-	return deps.env.GITHUB_TOKEN || deps.env.GH_TOKEN;
+	return deps.env.LS_GH_TOKEN;
 }
 
 /** Raised for a request that failed in a way the caller should attribute to the provider. */

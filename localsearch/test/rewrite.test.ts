@@ -88,6 +88,18 @@ test("a raw host is fetched as-is", () => {
 	});
 });
 
+test("a GitHub Contents API file becomes an authenticated raw-content read", () => {
+	assert.deepEqual(planFetch("https://api.github.com/repos/a/b/contents/src/lib.rs?ref=next"), {
+		kind: "github",
+		op: {
+			op: "content",
+			apiPath: "/repos/a/b/contents/src/lib.rs?ref=next",
+			lang: "rust",
+		},
+		label: "src/lib.rs",
+	});
+});
+
 test("known text extensions skip the HTML pipeline", () => {
 	assert.equal(planFetch("https://example.com/spec.yaml").kind, "text");
 	assert.equal(planFetch("https://example.com/CHANGELOG.md").kind, "text");

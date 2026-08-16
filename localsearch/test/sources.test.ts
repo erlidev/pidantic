@@ -45,8 +45,16 @@ test("wikipedia tolerates an empty result set", async () => {
 
 test("github code search refuses to run without a token", async () => {
 	const deps = makeDeps(() => ({ body: {} }));
-	await assert.rejects(() => searchGitHub("code", "q", 5, cfg, deps), /requires GITHUB_TOKEN/);
+	await assert.rejects(() => searchGitHub("code", "q", 5, cfg, deps), /requires LS_GH_TOKEN/);
 	assert.equal(deps.calls.length, 0, "no pointless 401 request");
+});
+
+test("github code search ignores generic GitHub token names", async () => {
+	const deps = makeDeps(() => ({ body: {} }), {
+		env: { GITHUB_TOKEN: "old", GH_TOKEN: "old" },
+	});
+	await assert.rejects(() => searchGitHub("code", "q", 5, cfg, deps), /requires LS_GH_TOKEN/);
+	assert.equal(deps.calls.length, 0, "legacy token names are not used");
 });
 
 test("github code search uses text-match fragments as the snippet", async () => {
@@ -63,7 +71,7 @@ test("github code search uses text-match fragments as the snippet", async () => 
 				],
 			},
 		}),
-		{ env: { GITHUB_TOKEN: "ghp_x" } },
+		{ env: { LS_GH_TOKEN: "ghp_x" } },
 	);
 	const out = await searchGitHub("code", "spawn", 5, cfg, deps);
 
@@ -109,6 +117,21 @@ test("github repo search works unauthenticated", async () => {
 	await searchGitHub("repos", "tokio", 5, cfg, deps);
 	const init = deps.calls[0].init as RequestInit & { headers: Record<string, string> };
 	assert.equal(init.headers.Authorization, undefined);
+});
+
+test("github repo search rejects qualifiers from other GitHub search endpoints", async () => {
+	const deps = makeDeps(() => ({ body: { items: [] } }));
+	await assert.rejects(
+		() => searchGitHub("repos", "react is:pr owner:facebook path:packages", 5, cfg, deps),
+		/GitHub repository search does not support is:, owner:, path:/,
+	);
+	assert.equal(deps.calls.length, 0, "an invalid query does not spend a GitHub request");
+});
+
+test("github repo search accepts repository qualifiers", async () => {
+	const deps = makeDeps(() => ({ body: { items: [] } }));
+	await searchGitHub("repos", "runtime language:rust org:tokio-rs stars:>100 is:public", 5, cfg, deps);
+	assert.equal(deps.calls.length, 1);
 });
 
 test("github issue search sets advanced_search and names the repo", async () => {

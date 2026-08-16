@@ -5,7 +5,7 @@
  * module here is. `index.ts` is registration and nothing else.
  */
 
-import { type Config, type Deps, describeError } from "./config.ts";
+import { type Config, type Deps, describeError, FETCH_CONTENT_TOKENS } from "./config.ts";
 import {
 	type Format,
 	type Page,
@@ -23,7 +23,6 @@ export interface ReadRequest {
 	url: string;
 	section?: string;
 	filter?: string;
-	maxTokens?: number;
 	format?: Format;
 }
 
@@ -33,8 +32,6 @@ export interface ReadOutcome {
 	details: Record<string, unknown>;
 	isError: boolean;
 }
-
-const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.round(n)));
 
 export async function readPage(
 	request: ReadRequest,
@@ -48,7 +45,6 @@ export async function readPage(
 	const asked = String(request.section ?? "").trim();
 	const expression = String(request.filter ?? "").trim();
 	const { section, required } = sectionRequest(url, asked, format);
-	const tokens = clamp(Number(request.maxTokens ?? cfg.contentTokens), 100, cfg.maxContentTokens);
 	// `text` is a rendering of the answer, applied after selection, filtering and budgeting. Stripping
 	// headings before those run leaves `section:`, the `filter` bindings and the outline with nothing
 	// to match on.
@@ -111,7 +107,7 @@ export async function readPage(
 
 			// Returned raw: the model asked a narrow question, and everything prepended to the answer is
 			// a token it did not ask for.
-			const cut = shape(outcome.text, tokens, true);
+			const cut = shape(outcome.text, FETCH_CONTENT_TOKENS, true);
 			return {
 				text: cut.truncated
 					? withCacheFile(render(cut.text), page)
@@ -125,7 +121,7 @@ export async function readPage(
 			};
 		}
 
-		const shaped = shape(scoped, tokens, Boolean(selected));
+		const shaped = shape(scoped, FETCH_CONTENT_TOKENS, Boolean(selected));
 		// An outline is a map of the Markdown, not content: its `#` nesting is the part that tells two
 		// similarly named headings apart, and `text` would flatten it away.
 		const rendered = shaped.mode === "outline" ? shaped.text : render(shaped.text);

@@ -8,7 +8,7 @@
  *   npm run smoke -- --filter <url> "<expr>"      # one filter against a real page
  */
 
-import { defaultDeps, loadConfig } from "../src/config.ts";
+import { defaultDeps, FETCH_CONTENT_TOKENS, loadConfig } from "../src/config.ts";
 import { searchWeb } from "../src/chain.ts";
 import { fetchPage, shape } from "../src/fetch.ts";
 import { runFilter } from "../src/filter.ts";
@@ -74,7 +74,7 @@ if (argv[0] === "--fetch") {
 	for (const url of urls) {
 		try {
 			const [page, ms] = await time(() => fetchPage(url, "markdown", cfg, deps));
-			const shaped = shape(page.markdown, cfg.contentTokens, false);
+			const shaped = shape(page.markdown, FETCH_CONTENT_TOKENS, false);
 			const via = page.container ?? "direct";
 			console.log(
 				`\n=== ${url}\n    via ${via}, ${page.bytes} bytes, ${ms}ms, ` +

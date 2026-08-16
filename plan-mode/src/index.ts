@@ -197,7 +197,6 @@ export default function planMode(pi: ExtensionAPI): void {
 		label: "Write plan",
 		description:
 			"The sole exit from plan mode: submit a complete, user-approved implementation plan for approval and write it as a markdown file. This is not a general-purpose file writer or note-taking tool.",
-		promptSnippet: "Submit the complete, user-approved plan for final approval and write it to a markdown file",
 		promptGuidelines: [
 			"Call write_plan only after the user has confirmed the complete approach; it is the sole exit from plan mode.",
 			"Include the complete plan in markdown. Do not use write_plan for notes, drafts, partial plans, or investigation results.",

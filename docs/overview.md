@@ -117,6 +117,10 @@ pidantic/
 
 ## Extension directories
 
+Tool registrations omit `promptSnippet`: Pi already includes each literal tool schema in the model
+prompt, so a second one-line summary only duplicates permanent context. Behavioral rules that are
+not expressible in a schema remain in `promptGuidelines`.
+
 - `confirm-bash/` overrides Pi's Bash tool schema with optional confirmation fields.
 - `shared/` contains reusable extension components, including the interactive confirmation dialog.
   `confirm-bash/index.ts` registers the Bash override and gate.

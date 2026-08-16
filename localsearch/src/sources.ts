@@ -19,6 +19,34 @@ import { blockedReason, loadState, recordFailure, recordUse, saveState } from ".
 
 export type GitHubKind = "code" | "repos" | "issues";
 
+/** Qualifiers that belong to GitHub code or issue search, not repository search. */
+const NON_REPOSITORY_QUALIFIERS = new Set([
+	"assignee", "author", "base", "commenter", "committer", "extension", "filename", "hash",
+	"head", "involves", "label", "mentions", "milestone", "owner", "path", "repo",
+	"review-requested", "reviewed-by", "state", "team-review-requested", "type",
+]);
+
+function rejectIrrelevantQualifiers(kind: GitHubKind, query: string): void {
+	if (kind !== "repos") return;
+	const found = new Set<string>();
+	for (const match of query.matchAll(/(?:^|\s)([\w-]+):("[^"]*"|\S+)/g)) {
+		const qualifier = match[1].toLowerCase();
+		const value = match[2].replace(/^"|"$/g, "").toLowerCase();
+		if (
+			NON_REPOSITORY_QUALIFIERS.has(qualifier) ||
+			(qualifier === "is" && ["pr", "issue", "open", "closed", "merged", "unmerged", "draft", "locked"].includes(value))
+		) {
+			found.add(qualifier);
+		}
+	}
+	if (found.size === 0) return;
+	const names = [...found].map((name) => `${name}:`).join(", ");
+	throw new HttpError(
+		0,
+		`GitHub repository search does not support ${names}; remove ${found.size === 1 ? "it" : "them"} or use github_code/github_issues`,
+	);
+}
+
 /**
  * The action API, not REST v1 — v1 ranks by title similarity and returns "Tokio Hotel" for
  * "tokio rust", while the action API's full-text search returns "Tokio (software)".
@@ -82,11 +110,12 @@ export async function searchGitHub(
 	deps: Deps,
 	signal?: AbortSignal,
 ): Promise<Result[]> {
+	rejectIrrelevantQualifiers(kind, query);
 	const token = githubToken(deps);
 	if (kind === "code" && !token) {
 		// Status 0: the 401 the endpoint would answer with is the consequence of the missing token,
 		// and appending it to the message only repeats what the message already says.
-		throw new HttpError(0, "GitHub code search requires GITHUB_TOKEN to be set");
+		throw new HttpError(0, "GitHub code search requires LS_GH_TOKEN to be set");
 	}
 
 	const state = await loadState(deps);

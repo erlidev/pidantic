@@ -106,7 +106,7 @@ answer, so a key is insurance against a broken instance or a CAPTCHA'd engine, n
 export EXA_API_KEY=...       # first hosted failover when configured
 export TAVILY_API_KEY=...    # hosted failover
 export BRAVE_API_KEY=...     # hosted failover
-export GITHUB_TOKEN=...      # required for github_code; raises limits from 60/hr to 5000/hr
+export LS_GH_TOKEN=...       # required for github_code; raises limits from 60/hr to 5000/hr
 ```
 
 Marginalia needs no key and is the last resort — an independent index, good for obscure technical
@@ -139,14 +139,17 @@ search(query, source?, count?)
 - `source` — `web` (default), `wikipedia`, `github_code`, `github_repos`, `github_issues`
 - `count` — 1–25, default 10
 
+Qualifiers are endpoint-specific. `github_repos` rejects code- and issue-only qualifiers such as
+`path:`, `repo:`, and `is:pr` instead of returning an unexplained empty result. Use `user:` or `org:`
+instead of the unsupported `owner:` alias to scope repository ownership.
+
 ```
-fetch(url, section?, filter?, max_tokens?, format?)
+fetch(url, section?, filter?, format?)
 ```
 
 - `url` — absolute `http(s)` URL. A fragment naming a heading selects it, same as `section`
 - `section` — return only this section, with its subsections. Matched on heading text
 - `filter` — a JavaScript expression run over the page before any of it enters context
-- `max_tokens` — content budget, default 5000, max 20000
 - `format` — `markdown` (default), `text` (markup stripped), `raw` (unprocessed body)
 
 `text` is a rendering of the answer, not of the page: the pipeline works in Markdown throughout and
@@ -154,6 +157,9 @@ strips the markup last, so `section`, a URL fragment and the `filter` bindings a
 headings to match on. The outline is exempt — its `#` nesting is what tells two similarly named
 headings apart, and flattening it would leave a map that cannot be read. `markdown` and `text` share
 one cache entry, since they are two renderings of the same fetch.
+
+Direct `api.github.com/repos/OWNER/REPO/contents/PATH` file URLs are read with GitHub's raw media
+type. Their decoded content follows the same Markdown/source-code formatting as ordinary blob URLs.
 
 The three reading modes form a ladder, and the tool description states it as conditions rather than
 advice: no heading in hand → plain `fetch`; a heading in hand → `section`; a term, pattern, question
@@ -174,13 +180,12 @@ is close to pure waste — that is what the outline replaces. The other half of 
 opposite: the model asked a specific question, and a map is not an answer to it, so a narrowed call
 is never swapped for an outline.
 
-The rule is strict — one token over switches to the outline, with no grace band. A page at 1.05× the
-budget therefore costs two calls where one truncated call might have answered. `max_tokens` is the
-escape hatch.
+The fixed budget is 10,000 tokens. The rule is strict — one token over switches to the outline,
+with no grace band. Use `section` or `filter` to retrieve content from larger pages.
 
 What this buys, on the 14k-token `asyncio-task.html` page:
 
-| Getting one fact out of it | Before (8k, truncate) | After (5k, outline + filter) |
+| Getting one fact out of it | Before (8k, truncate) | After (10k, outline + filter) |
 |---|---|---|
 | Model knows what it is looking for | 8k truncated + 1.5k section ≈ **9.5k**, two calls | `grep(/timeout/i, 3)` ≈ **630**, one call |
 | Model has no knowledge of the page | as above | ~300 outline + 1.5k section ≈ **1.8k**, two calls |
@@ -332,7 +337,7 @@ these is answered from raw text or the API instead, so the model gets the source
 | `…/releases/tag/{tag}` | the release notes |
 | `gist.github.com/{user}/{id}` | each file, fenced |
 
-`GITHUB_TOKEN` is used when set — required for private repositories, and it raises the rate limit.
+`LS_GH_TOKEN` is used when set — required for private repositories, and it raises the rate limit.
 These reads share the quota counter with `search`, because they share the upstream limit.
 
 None of these announce a redirect. The README and diff media types answer with a documented hop to a
@@ -434,8 +439,6 @@ SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/mo
 
   "fetchTimeoutMs": 20000,
   "fetchMaxBytes": 2000000,
-  "contentTokens": 5000,
-  "maxContentTokens": 20000,
   "fetchCacheTtlHours": 6,
   "allowPrivateHosts": false,
 
@@ -446,7 +449,7 @@ SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/mo
 }
 ```
 
-`contentTokens` is the budget that decides outline-or-content. `filterTimeoutMs` is the wall clock
+The fetch content ceiling is fixed at 10,000 tokens. `filterTimeoutMs` is the wall clock
 for one filter, ranking included; synchronous runaway is cut off after a fixed 2s regardless.
 `maxChunks` bounds one `rank()` call — at ~45ms a chunk, 120 is a ~5s worst case.
 
@@ -466,8 +469,7 @@ are never written to config:
 | `EXA_API_KEY` | Unset | Enables Exa failover |
 | `TAVILY_API_KEY` | Unset | Enables Tavily failover |
 | `BRAVE_API_KEY` | Unset | Enables Brave failover |
-| `GITHUB_TOKEN` | Unset | Enables GitHub code search and authenticated GitHub reads |
-| `GH_TOKEN` | Unset | Alias used when `GITHUB_TOKEN` is absent |
+| `LS_GH_TOKEN` | Unset | Enables GitHub code search and authenticated GitHub reads |
 
 ## Development
 
@@ -483,8 +485,8 @@ npm run smoke -- --filter <url> "<expr>" # live: one filter, with real rank() la
 ### Adding a model-facing parameter
 
 Instruction text comes in two tiers, and they behave differently. The **permanent** tier — tool
-description, `promptSnippet`, `promptGuidelines`, parameter descriptions, all of `src/prompt.ts` —
-is paid on every request in the session, whether or not the tool is ever called, and is enforced
+description, `promptGuidelines`, parameter descriptions, all of `src/prompt.ts` — is paid on every
+request in the session, whether or not the tool is ever called, and is enforced
 against token ceilings by `test/prompt.test.ts`. The **just-in-time** tier — truncation notices,
 outline headers, filter diagnostics, the success footer — is paid only when hit, which is where
 teaching belongs: it arrives at the moment it is actionable and costs nothing the rest of the time.

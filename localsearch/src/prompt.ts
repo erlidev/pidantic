@@ -12,7 +12,6 @@
 
 export const SEARCH = {
 	description: "Search the web, Wikipedia or GitHub. Returns ranked titles, URLs and snippets.",
-	snippet: "Search the web, Wikipedia or GitHub for current information",
 	guidelines: [
 		"Use search when you need current information, documentation, or prior art you do not already have.",
 	],
@@ -26,7 +25,6 @@ export const SEARCH = {
 
 export const FETCH = {
 	description: "Fetch a web page or file by URL and return its content as Markdown.",
-	snippet: "Fetch a URL and read its content as Markdown",
 	guidelines: [
 		"Use fetch to read a page you already have a URL for. Use search to find URLs.",
 		"GitHub URLs resolve through the API: repository, blob, tree, issue, pull request, release and gist URLs all work directly, and return the underlying Markdown or source rather than the rendered page.",
@@ -44,7 +42,6 @@ export const FETCH = {
 		// load-bearing: `await` binds looser than a method call.
 		filter:
 			'JS expression run over the page before it enters context. Bindings: text, lines, sections ({heading, level, text, from, to}), grep(re, ctx?) → matching lines ±ctx, adjacent runs merged, code(lang?), await rank(items, query, n?) over an array or over text. Return a string, a section, or an array of either. Examples: grep(/timeout/i, 3) · sections.filter(s => /error/i.test(s.heading)) · (await rank(sections, "how retries work")).slice(0, 2) · lines.slice(500, 900)',
-		max_tokens: "Content budget. Defaults to 5000, max 20000.",
 		format: "markdown (default), text (markup stripped), or raw (the unprocessed response body).",
 	},
 };

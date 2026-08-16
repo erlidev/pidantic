@@ -18,7 +18,6 @@ const params = (p: Record<string, string>) => Object.values(p).join(" ");
 test("the fetch instructions stay inside their permanent budget", () => {
 	const budgets: [string, string, number][] = [
 		["description", FETCH.description, 25],
-		["snippet", FETCH.snippet, 20],
 		["ladder", FETCH.guidelines.slice(2, 5).join(" "), 60],
 		["guidelines", FETCH.guidelines.join(" "), 160],
 		["filter param", FETCH.params.filter, 130],

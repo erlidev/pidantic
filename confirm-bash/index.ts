@@ -85,14 +85,13 @@ export default function confirmBash(pi: ExtensionAPI) {
 	}
 
 	const base = createBashToolDefinition(cwd, { shellPath, commandPrefix });
+	// The literal tool schema already names bash in the available-tools prompt.
+	const { promptSnippet: _promptSnippet, ...baseWithoutSnippet } = base;
 
 	pi.registerTool({
-		...base,
+		...baseWithoutSnippet,
 		parameters: confirmBashSchema,
-		// Carried over from `base` by the spread above. Restated so it is obvious these must not be
-		// dropped: an override that omits them deletes bash from the "Available tools" section of
-		// the system prompt (they are not inherited from the built-in registration).
-		promptSnippet: base.promptSnippet,
+		// Guidelines carry behavioural policy that is not represented by the schema.
 		promptGuidelines: base.promptGuidelines,
 
 		execute: (toolCallId, params: ConfirmBashArgs, signal, onUpdate, ctx) =>

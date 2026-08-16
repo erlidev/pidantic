@@ -14,6 +14,7 @@ const RAW_HOST = "raw.githubusercontent.com";
 /** A GitHub read that has to be assembled from one or more API responses. */
 export type GitHubOp =
 	| { op: "readme"; owner: string; repo: string }
+	| { op: "content"; apiPath: string; lang?: string }
 	| { op: "tree"; owner: string; repo: string; ref: string; path: string }
 	| { op: "issue"; owner: string; repo: string; number: number }
 	| { op: "diff"; owner: string; repo: string; number: number }
@@ -95,6 +96,8 @@ export function planFetch(url: string): Plan {
 	}
 
 	const host = u.hostname.toLowerCase().replace(/^www\./, "");
+	const apiContent = host === "api.github.com" ? planGitHubApi(u) : undefined;
+	if (apiContent) return apiContent;
 	const github = host === "github.com" ? planGitHub(u) : undefined;
 	if (github) return github;
 	if (host === "gist.github.com") {
@@ -114,6 +117,20 @@ export function planFetch(url: string): Plan {
 		return { kind: "text", url, lang: EXTENSIONS[ext] ?? undefined };
 	}
 	return { kind: "html", url };
+}
+
+/** Decode direct GitHub Contents API file URLs instead of exposing their base64 JSON envelope. */
+function planGitHubApi(u: URL): Plan | undefined {
+	const parts = u.pathname.split("/").filter(Boolean);
+	if (parts[0] !== "repos" || !parts[1] || !parts[2] || parts[3] !== "contents" || !parts[4]) {
+		return undefined;
+	}
+	const file = parts.slice(4).join("/");
+	return {
+		kind: "github",
+		op: { op: "content", apiPath: `${u.pathname}${u.search}`, lang: fenceLanguage(file) },
+		label: file,
+	};
 }
 
 function planGitHub(u: URL): Plan | undefined {

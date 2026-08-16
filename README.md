@@ -75,7 +75,7 @@ instead.
 | Hosted web-search failover | Exa, Tavily, or Brave | `EXA_API_KEY`, `TAVILY_API_KEY`, or `BRAVE_API_KEY`; providers are skipped when their key is absent |
 | Wikipedia search | Wikipedia API | Internet access; no key or Docker service |
 | GitHub repository and issue search | GitHub API | Internet access; unauthenticated requests work with GitHub's lower rate limit |
-| GitHub code search and private GitHub fetches | GitHub API | `GITHUB_TOKEN` or `GH_TOKEN`; code search requires one |
+| GitHub code search and private GitHub fetches | GitHub API | `LS_GH_TOKEN`; code search requires one |
 | Smart compaction | None currently | No behavior is implemented |
 | Ling 3.0 Tiny | vLLM, bundled as `ling-tiny` | Optional; NVIDIA GPU/container runtime and the model download. No current extension calls it |
 
@@ -136,19 +136,18 @@ requests. Web results are normally drawn from a pool of 30 candidates and rerank
 requested count.
 
 Wikipedia and GitHub sources use their own APIs and do not use the web-provider chain. GitHub
-repository and issue searches can run without a token; code search cannot. `GITHUB_TOKEN` also
+repository and issue searches can run without a token; code search cannot. `LS_GH_TOKEN` also
 raises GitHub API limits and is required for private repository reads through `fetch`.
 
 ### `fetch` parameters
 
-`fetch(url, section?, filter?, max_tokens?, format?)`
+`fetch(url, section?, filter?, format?)`
 
 | Parameter | Required | Values/default | Use |
 | --- | --- | --- | --- |
 | `url` | Yes | Absolute `http://` or `https://` URL | Page, document, source file, JSON response, or supported GitHub URL. |
 | `section` | No | Heading text | Returns that heading and its subsections. Matching is case-insensitive; a URL fragment naming a heading has the same effect. |
 | `filter` | No | JavaScript expression | Selects content before it enters the model context. |
-| `max_tokens` | No | 100–20,000; default 5,000 | Content budget. Values are clamped to the supported range. |
 | `format` | No | `markdown` (default), `text`, `raw` | Markdown extraction, markup-stripped text, or the unprocessed response body. `section` requires `markdown` or `text`. |
 
 Use the narrowest read mode that matches the question:
@@ -178,10 +177,14 @@ array of those. The filter context does not expose `require`, `process`, `fetch`
 convenience sandbox for model-written expressions, not a security boundary.
 
 For an oversized unfiltered page, `fetch` returns an outline so the next call can select a section.
-An explicitly narrowed read is truncated to its budget instead. Fetched pages and search results are
-cached, so retrying a filter or changing a content budget normally does not download the page again.
+An explicitly narrowed read is truncated to the fixed 10,000-token budget instead. Fetched pages and
+search results are cached, so retrying a filter normally does not download the page again.
 GitHub repository, blob, tree, issue, pull request, release, and gist URLs are handled through the
 GitHub API or raw content endpoints rather than returning the rendered GitHub application shell.
+Direct GitHub Contents API file URLs are requested with the raw media type, so `fetch` returns the
+decoded file instead of the API's base64 JSON envelope. Repository searches reject code- and
+issue-only qualifiers with an actionable error before making a request; use `user:` or `org:`
+instead of the unsupported `owner:` alias.
 
 ### `localsearch` environment variables
 
@@ -196,8 +199,7 @@ Environment values are read when a tool runs, so changing a key does not require
 | `EXA_API_KEY` | Unset | Enables Exa failover |
 | `TAVILY_API_KEY` | Unset | Enables Tavily failover |
 | `BRAVE_API_KEY` | Unset | Enables Brave failover |
-| `GITHUB_TOKEN` | Unset | Authenticates GitHub, enables code search, raises API limits |
-| `GH_TOKEN` | Unset | Alias used when `GITHUB_TOKEN` is absent |
+| `LS_GH_TOKEN` | Unset | Authenticates GitHub, enables code search, raises API limits |
 
 API keys are read from the environment only and are never written to the JSON configuration file.
 
@@ -227,8 +229,6 @@ the complete default configuration; only values that need changing must be prese
   },
   "fetchTimeoutMs": 20000,
   "fetchMaxBytes": 2000000,
-  "contentTokens": 5000,
-  "maxContentTokens": 20000,
   "fetchCacheTtlHours": 6,
   "allowPrivateHosts": false,
   "filterTimeoutMs": 15000,
@@ -245,8 +245,8 @@ customizations are:
 - Change `searxngUrl` or `rerankUrl` when using services outside the bundled Compose stack.
 - Raise `poolSize` for broader candidate retrieval, or lower it to reduce provider latency.
 - Add source names to `rerankSources` when Wikipedia or GitHub results should also be reranked.
-- Adjust `contentTokens`, `maxContentTokens`, `fetchTimeoutMs`, and `fetchMaxBytes` for large or slow
-  documentation sites.
+- Adjust `fetchTimeoutMs` and `fetchMaxBytes` for large or slow documentation sites. Fetch results
+  have a fixed 10,000-token ceiling; use `section` or `filter` to narrow larger pages.
 - Set `allowPrivateHosts: true` only when fetching local or private-network URLs is intentional.
   The default rejects loopback, RFC1918, link-local, and local-domain hostnames. This hostname check
   is not a complete SSRF defense.

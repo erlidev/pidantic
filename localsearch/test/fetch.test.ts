@@ -233,7 +233,7 @@ test("a blob URL goes to the raw host and never to api.github.com", async () => 
 
 test("a token is sent to both the API and the raw host", async () => {
 	const deps = makeDeps(() => ({ text: "x", contentType: "text/plain" }), {
-		env: { GITHUB_TOKEN: "tok" },
+		env: { LS_GH_TOKEN: "tok" },
 	});
 	await fetchPage("https://github.com/a/b/blob/main/x.txt", "markdown", config(), deps);
 
@@ -241,6 +241,23 @@ test("a token is sent to both the API and the raw host", async () => {
 		(deps.calls[0].init?.headers as Record<string, string>).Authorization,
 		"Bearer tok",
 	);
+});
+
+test("a direct GitHub Contents API URL returns decoded file content", async () => {
+	const deps = makeDeps(() => ({ text: "export const answer = 42;\n", contentType: "text/plain" }));
+	const out = await fetchPage(
+		"https://api.github.com/repos/a/b/contents/src/answer.ts?ref=main",
+		"markdown",
+		config(),
+		deps,
+	);
+
+	assert.equal(deps.calls[0].url, "https://api.github.com/repos/a/b/contents/src/answer.ts?ref=main");
+	assert.equal(
+		(deps.calls[0].init?.headers as Record<string, string>).Accept,
+		"application/vnd.github.raw",
+	);
+	assert.equal(out.markdown, "```typescript\nexport const answer = 42;\n```");
 });
 
 test("an issue is assembled from the issue and its comments", async () => {
