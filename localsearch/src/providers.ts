@@ -74,7 +74,8 @@ const exa: Provider = {
 					numResults: Math.min(limit, 100),
 					type: "auto",
 					// Highlights only. `contents.text` returns whole pages and would blow the token budget.
-					contents: { highlights: { numSentences: 2, highlightsPerUrl: 1 } },
+					// maxCharacters replaces numSentences/highlightsPerUrl, which Exa has deprecated.
+					contents: { highlights: { maxCharacters: 400 } },
 				}),
 				timeoutMs: cfg.timeoutMs,
 			},
