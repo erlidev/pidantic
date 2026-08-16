@@ -74,6 +74,7 @@ services:
   ling-tiny:
     image: vllm/vllm-openai:nightly
     container_name: ling-tiny
+    restart: unless-stopped
     ipc: host
     ports:
       - "8989:8000"
