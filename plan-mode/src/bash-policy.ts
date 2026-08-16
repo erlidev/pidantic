@@ -71,6 +71,9 @@ export const PLAIN_READ_ONLY_BINARIES = [
 	"date",
 ] as const;
 
+/** Shell builtins that only inspect state or alter the current shell process. */
+export const READ_ONLY_SHELL_BUILTINS = ["cd", "test", "[", "true", "false", ":"] as const;
+
 export const FIND_DENY_FLAGS = ["-delete", "-exec", "-execdir", "-ok", "-fprint", "-fls"] as const;
 
 export const ALWAYS_ASK_BINARIES = [
@@ -111,27 +114,34 @@ const GIT_BRANCH_TAG_DENY = new Set<string>(GIT_BRANCH_TAG_DENY_FLAGS);
 const GH_READ_ONLY = new Set<string>(GH_READ_ONLY_COMMANDS);
 const PACKAGE_MANAGER_READ_ONLY = new Set<string>(PACKAGE_MANAGER_READ_ONLY_SUBCOMMANDS);
 const PLAIN_READ_ONLY = new Set<string>(PLAIN_READ_ONLY_BINARIES);
+const READ_ONLY_BUILTINS = new Set<string>(READ_ONLY_SHELL_BUILTINS);
 const FIND_DENY = new Set<string>(FIND_DENY_FLAGS);
 const ALWAYS_ASK = new Set<string>(ALWAYS_ASK_BINARIES);
 
+type ChainOperator = "start" | ";" | "&&" | "||" | "|" | "newline";
+
+type CommandSegment = {
+	tokens: string[];
+	operator: ChainOperator;
+};
+
 type TokenizeResult = {
-	segments: string[][];
+	segments: CommandSegment[];
 	reason?: string;
 };
 
 function tokenize(command: string): TokenizeResult {
-	const segments: string[][] = [];
+	const segments: CommandSegment[] = [];
 	let tokens: string[] = [];
 	let token = "";
 	let tokenStarted = false;
 	let quote: "'" | '"' | undefined;
 	let invalidReason: string | undefined;
-	let sawSeparator = false;
-	let lastSeparator: "separator" | "newline" | undefined;
+	let nextOperator: ChainOperator = "start";
+	let requiresFollowingCommand = false;
 
 	const flushToken = () => {
 		if (!tokenStarted) return;
-		if (segments.length === 0 && sawSeparator) addIssue("command starts with a separator");
 		tokens.push(token);
 		token = "";
 		tokenStarted = false;
@@ -141,18 +151,31 @@ function tokenize(command: string): TokenizeResult {
 		invalidReason ??= reason;
 	};
 
-	const split = (kind: "separator" | "newline") => {
+	const pushSegment = () => {
+		if (tokens.length === 0) return false;
+		segments.push({
+			tokens,
+			operator: segments.length === 0 ? "start" : nextOperator,
+		});
+		tokens = [];
+		requiresFollowingCommand = false;
+		return true;
+	};
+
+	const split = (operator: Exclude<ChainOperator, "start">) => {
 		flushToken();
-		if (tokens.length > 0) {
-			segments.push(tokens);
-			tokens = [];
-		} else if (segments.length > 0 && kind === "separator") {
-			addIssue("empty or malformed command segment");
-		} else if (sawSeparator && kind === "separator") {
-			addIssue("command starts with a separator");
+		const pushed = pushSegment();
+
+		if (operator === "newline") {
+			if (!requiresFollowingCommand) nextOperator = "newline";
+			return;
 		}
-		sawSeparator = true;
-		lastSeparator = kind;
+
+		if (!pushed) {
+			addIssue(segments.length === 0 ? "command starts with a separator" : "empty or malformed command segment");
+		}
+		nextOperator = operator;
+		requiresFollowingCommand = true;
 	};
 
 	for (let index = 0; index < command.length; index += 1) {
@@ -177,8 +200,10 @@ function tokenize(command: string): TokenizeResult {
 				tokenStarted = true;
 				continue;
 			}
-			if (character === "`" || (character === "$" && (command[index + 1] === "(" || command[index + 1] === "{"))) {
-				addIssue("command or parameter substitution");
+			if (character === "`" || (character === "$" && command[index + 1] === "(")) {
+				addIssue("command substitution");
+			} else if (character === "$" && /[A-Za-z0-9_?*@$!#{-]/.test(command[index + 1] ?? "")) {
+				addIssue("parameter expansion");
 			}
 			token += character;
 			tokenStarted = true;
@@ -192,20 +217,17 @@ function tokenize(command: string): TokenizeResult {
 				token += command[++index];
 				tokenStarted = true;
 			}
-			lastSeparator = undefined;
 			continue;
 		}
 
 		if (character === "'") {
 			quote = "'";
 			tokenStarted = true;
-			lastSeparator = undefined;
 			continue;
 		}
 		if (character === '"') {
 			quote = '"';
 			tokenStarted = true;
-			lastSeparator = undefined;
 			continue;
 		}
 
@@ -224,7 +246,7 @@ function tokenize(command: string): TokenizeResult {
 		}
 
 		if (character === ";") {
-			split("separator");
+			split(";");
 			continue;
 		}
 		if (character === "&" && command[index + 1] === ">") {
@@ -233,7 +255,7 @@ function tokenize(command: string): TokenizeResult {
 			continue;
 		}
 		if (character === "&" && command[index + 1] === "&") {
-			split("separator");
+			split("&&");
 			index += 1;
 			continue;
 		}
@@ -242,12 +264,12 @@ function tokenize(command: string): TokenizeResult {
 			continue;
 		}
 		if (character === "|" && command[index + 1] === "|") {
-			split("separator");
+			split("||");
 			index += 1;
 			continue;
 		}
 		if (character === "|") {
-			split("separator");
+			split("|");
 			continue;
 		}
 		if (character === ">" || character === "<") {
@@ -255,19 +277,20 @@ function tokenize(command: string): TokenizeResult {
 			if (command[index + 1] === character || (character === ">" && command[index + 1] === "|")) index += 1;
 			continue;
 		}
-		if (character === "`" || (character === "$" && (command[index + 1] === "(" || command[index + 1] === "{"))) {
-			addIssue("command or parameter substitution");
+		if (character === "`" || (character === "$" && command[index + 1] === "(")) {
+			addIssue("command substitution");
+		} else if (character === "$" && /[A-Za-z0-9_?*@$!#{-]/.test(command[index + 1] ?? "")) {
+			addIssue("parameter expansion");
 		}
 
 		token += character;
 		tokenStarted = true;
-		lastSeparator = undefined;
 	}
 
 	if (quote !== undefined) addIssue("unclosed quote");
 	flushToken();
-	if (tokens.length > 0) segments.push(tokens);
-	if (lastSeparator === "separator") addIssue("trailing separator");
+	pushSegment();
+	if (requiresFollowingCommand) addIssue("trailing separator");
 
 	return { segments, reason: invalidReason };
 }
@@ -293,6 +316,7 @@ function classifySegment(tokens: string[]): RuleResult {
 	const [binary, ...args] = tokens;
 	if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(binary)) return ask("leading environment assignment");
 	if (ALWAYS_ASK.has(binary)) return ask(`command "${binary}" requires confirmation`);
+	if (READ_ONLY_BUILTINS.has(binary)) return { verdict: "allow" };
 
 	if (binary === "git") {
 		const subcommand = args[0];
@@ -349,9 +373,16 @@ export function classify(command: string): BashPolicyResult {
 	if (tokenized.reason !== undefined) return ask(tokenized.reason);
 	if (tokenized.segments.length === 0) return { verdict: "allow" };
 
-	for (const segment of tokenized.segments) {
-		const result = classifySegment(segment);
-		if (result.verdict === "ask") return result;
+	for (const [index, segment] of tokenized.segments.entries()) {
+		const result = classifySegment(segment.tokens);
+		if (result.verdict === "ask") {
+			if (tokenized.segments.length === 1) return result;
+			const location =
+				segment.operator === "start"
+					? "at the start"
+					: `after ${segment.operator === "newline" ? "a newline" : `"${segment.operator}"`}`;
+			return ask(`chain segment ${index + 1} ${location}: ${result.reason ?? "confirmation required"}`);
+		}
 	}
 	return { verdict: "allow" };
 }

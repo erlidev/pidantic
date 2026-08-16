@@ -29,11 +29,16 @@ test("rejects traversal outside cwd", () => {
 	}
 });
 
-test("rejects absolute and non-markdown paths", () => {
-	const absolute = resolve(cwd, "absolute.md");
-	const absoluteResult = resolvePlanPath(cwd, absolute);
-	assert.ok("error" in absoluteResult);
-	assert.match(absoluteResult.error, /relative/);
+test("accepts absolute paths inside cwd", () => {
+	const absolute = resolve(cwd, "docs", "absolute.md");
+	assert.deepEqual(resolvePlanPath(cwd, absolute), { path: absolute });
+});
+
+test("rejects absolute paths outside cwd and non-markdown paths", () => {
+	const outside = resolve(cwd, "..", "absolute.md");
+	const outsideResult = resolvePlanPath(cwd, outside);
+	assert.ok("error" in outsideResult);
+	assert.match(outsideResult.error, /inside the current working directory/);
 
 	const extensionResult = resolvePlanPath(cwd, "plan.txt");
 	assert.ok("error" in extensionResult);

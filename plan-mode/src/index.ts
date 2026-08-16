@@ -1,10 +1,12 @@
-import { relative } from "node:path";
-import type {
-	CustomEntry,
-	ExtensionAPI,
-	ExtensionContext,
+import { isAbsolute, relative } from "node:path";
+import {
+	getMarkdownTheme,
+	type CustomEntry,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { askConfirmation } from "../../shared/confirm-dialog.ts";
 import { classify } from "./bash-policy.ts";
@@ -24,7 +26,7 @@ import {
 const HEADLESS_ENV = "PI_PLAN_MODE_HEADLESS";
 
 const writePlanParameters = Type.Object({
-	path: Type.String({ description: "Repository-relative .md path for the finished plan" }),
+	path: Type.String({ description: "Relative or absolute .md path inside the current working directory" }),
 	title: Type.String({ description: "Title of the finished plan" }),
 	markdown: Type.String({ description: "Complete markdown plan, with no surrounding commentary" }),
 });
@@ -35,6 +37,14 @@ type WritePlanDetails = {
 	path: string;
 	overwritten: boolean;
 	restoredTools: string[];
+};
+
+type WritePlanRenderState = {
+	callComponent?: WritePlanCallComponent;
+};
+
+type WritePlanCallComponent = Box & {
+	status: "pending" | "written" | "rejected";
 };
 
 type PlanModeEntryData = {
@@ -55,11 +65,87 @@ function headlessConfirmationReason(action: string): string {
 }
 
 function setPlanStatus(ctx: Pick<ExtensionContext, "ui">, active: boolean): void {
-	ctx.ui.setStatus("plan-mode", active ? "PLAN" : undefined);
+	ctx.ui.setStatus("plan-mode", active ? "Plan Mode" : undefined);
 }
 
-function transitionText(active: boolean): string {
-	return active ? "Entered plan mode" : "Exited plan mode";
+function transitionContent(active: boolean, theme: Pick<Theme, "fg" | "bold">): string {
+	const title = active ? "PLAN MODE ENABLED" : "PLAN MODE DISABLED";
+	const detail = active ? "Read-only tools active" : "Editing tools return next turn";
+	const color = active ? "warning" : "success";
+	const icon = active ? "◆" : "✓";
+	return `${theme.fg(color, theme.bold(`${icon} ${title}`))}${theme.fg("muted", `  ${detail}`)}`;
+}
+
+const COLLAPSED_PLAN_LINES = 16;
+
+function planDisplayPath(cwd: string, requested: string | undefined): string {
+	if (!requested) return "waiting for path…";
+	if (!isAbsolute(requested)) return requested;
+	return relative(cwd, requested) || ".";
+}
+
+function createWritePlanCallComponent(): WritePlanCallComponent {
+	return Object.assign(new Box(1, 1), { status: "pending" as const });
+}
+
+function planCallBackground(status: WritePlanCallComponent["status"], theme: Theme): (text: string) => string {
+	if (status === "written") return (text) => theme.bg("toolSuccessBg", text);
+	if (status === "rejected") return (text) => theme.bg("toolErrorBg", text);
+	return (text) => theme.bg("toolPendingBg", text);
+}
+
+function buildWritePlanCall(
+	component: WritePlanCallComponent,
+	args: Partial<WritePlanParams> | undefined,
+	theme: Theme,
+	cwd: string,
+	expanded: boolean,
+): WritePlanCallComponent {
+	component.setBgFn(planCallBackground(component.status, theme));
+	component.clear();
+
+	const icon = component.status === "written" ? "✓" : component.status === "rejected" ? "✕" : "◆";
+	const label =
+		component.status === "written"
+			? "PLAN WRITTEN"
+			: component.status === "rejected"
+				? "PLAN NOT WRITTEN"
+				: "WRITING PLAN";
+	const path = planDisplayPath(cwd, typeof args?.path === "string" ? args.path : undefined);
+	component.addChild(
+		new Text(
+			`${theme.fg("toolTitle", theme.bold(`${icon} ${label}`))}${theme.fg("muted", `  ${path}`)}`,
+			0,
+			0,
+		),
+	);
+
+	if (typeof args?.title === "string" && args.title.trim()) {
+		component.addChild(new Spacer(1));
+		component.addChild(new Text(theme.bold(args.title.trim()), 0, 0));
+	}
+
+	if (typeof args?.markdown !== "string" || !args.markdown) {
+		component.addChild(new Spacer(1));
+		component.addChild(new Text(theme.fg("muted", "Receiving plan content…"), 0, 0));
+		return component;
+	}
+
+	const lines = args.markdown.split("\n");
+	const visibleLines = expanded ? lines : lines.slice(0, COLLAPSED_PLAN_LINES);
+	component.addChild(new Spacer(1));
+	component.addChild(
+		new Markdown(visibleLines.join("\n"), 0, 0, getMarkdownTheme(), {
+			color: (text) => theme.fg("toolOutput", text),
+		}),
+	);
+	if (visibleLines.length < lines.length) {
+		component.addChild(new Spacer(1));
+		component.addChild(
+			new Text(theme.fg("muted", `… ${lines.length - visibleLines.length} more lines (expand to view)`), 0, 0),
+		);
+	}
+	return component;
 }
 
 export default function planMode(pi: ExtensionAPI): void {
@@ -107,7 +193,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		type: "boolean",
 	});
 
-	pi.registerTool({
+	pi.registerTool<typeof writePlanParameters, WritePlanDetails, WritePlanRenderState>({
 		name: WRITE_PLAN_TOOL,
 		label: "Write plan",
 		description:
@@ -119,6 +205,33 @@ export default function planMode(pi: ExtensionAPI): void {
 			"After approval, editing tools return on the next turn. Stop and wait for the user's next prompt.",
 		],
 		parameters: writePlanParameters,
+		renderCall: (args, theme, context) => {
+			const component =
+				context.lastComponent instanceof Box
+					? (context.lastComponent as WritePlanCallComponent)
+					: context.state.callComponent ?? createWritePlanCallComponent();
+			context.state.callComponent = component;
+			return buildWritePlanCall(component, args, theme, context.cwd, context.expanded);
+		},
+		renderResult: (result, _options, theme, context) => {
+			const callComponent = context.state.callComponent;
+			if (callComponent) {
+				callComponent.status = result.details?.path ? "written" : "rejected";
+				buildWritePlanCall(callComponent, context.args, theme, context.cwd, context.expanded);
+			}
+
+			const output = result.content
+				.filter((item) => item.type === "text")
+				.map((item) => item.text)
+				.join("\n");
+			const component = context.lastComponent instanceof Container ? context.lastComponent : new Container();
+			component.clear();
+			if (!result.details?.path && output) {
+				component.addChild(new Spacer(1));
+				component.addChild(new Text(theme.fg("error", output), 1, 0));
+			}
+			return component;
+		},
 		execute: async (_toolCallId, params: WritePlanParams, _signal, _onUpdate, ctx) => {
 			if (!state.active) {
 				return textResult("Plan mode is not active; write_plan is unavailable.");
@@ -208,16 +321,20 @@ export default function planMode(pi: ExtensionAPI): void {
 
 			if (isHeadless(ctx)) {
 				if (process.env[HEADLESS_ENV] === "allow") return undefined;
-				return { block: true, reason: headlessConfirmationReason(`Bash command (${result.reason ?? "not allowlisted"})`) };
+				return {
+					block: true,
+					reason: headlessConfirmationReason(`Bash command (${result.reason ?? "outside the read-only policy"})`),
+				};
 			}
 
 			const decision = await askConfirmation(ctx, {
 				title: "Confirm Bash command",
 				body: bashCommand,
-				reason: result.reason ?? "This command is not on plan mode's read-only allowlist.",
+				reason: `${result.reason ?? "This command does not match plan mode's read-only policy."} Approval applies only to this tool call; the command will be checked again if requested later.`,
 				approveLabel: "Run command",
 				denyLabel: "Deny command…",
 			});
+			// Approval is deliberately one-shot. No command text or classification is persisted.
 			if (decision.approved) return undefined;
 
 			return {
@@ -252,7 +369,10 @@ export default function planMode(pi: ExtensionAPI): void {
 		return { systemPrompt: `${event.systemPrompt}\n${BRIEF}` };
 	});
 
-	pi.registerEntryRenderer<PlanModeEntryData>("plan-mode", (entry: CustomEntry<PlanModeEntryData>, _options, theme) => {
-		return new Text(theme.fg("muted", transitionText(entry.data?.active === true)), 0, 0);
+	pi.registerEntryRenderer<PlanModeEntryData>("plan-mode", (entry: CustomEntry<PlanModeEntryData>, { outputPad }, theme) => {
+		const active = entry.data?.active === true;
+		const box = new Box(outputPad, 0, (text) => theme.bg("customMessageBg", text));
+		box.addChild(new Text(transitionContent(active, theme), 0, 0));
+		return box;
 	});
 }

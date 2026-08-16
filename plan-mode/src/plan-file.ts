@@ -10,12 +10,8 @@ function isMissingPathError(error: unknown): boolean {
 
 /** Validate and resolve a requested plan path without touching the filesystem. */
 export function validatePlanPath(cwd: string, requested: string): PlanPathResult {
-	if (isAbsolute(requested)) {
-		return { error: "Plan path must be relative to the current working directory." };
-	}
-
 	const root = resolve(cwd);
-	const path = resolve(root, requested);
+	const path = isAbsolute(requested) ? resolve(requested) : resolve(root, requested);
 	const outsideRoot = relative(root, path);
 	if (outsideRoot === ".." || outsideRoot.startsWith(".." + sep) || isAbsolute(outsideRoot)) {
 		return { error: "Plan path must stay inside the current working directory." };

@@ -27,11 +27,59 @@ test("classifies every supported unquoted separator", () => {
 	allowed("git log\npwd");
 });
 
+test("allows read-only working-directory and conditional chains", () => {
+	allowed("cd src && rg TODO . | head || echo none");
+	allowed("test -f package.json && cat package.json");
+	allowed("[ -d src ] && true || false");
+	allowed(":; pwd");
+});
+
+test("checks every chain segment regardless of short-circuit behavior", () => {
+	for (const command of [
+		"rm file && pwd",
+		"pwd && rm file",
+		"pwd | tee output.txt",
+		"false && rm file",
+		"true || rm file",
+		"cd src\npython script.py",
+	]) {
+		const result = classify(command);
+		assert.equal(result.verdict, "ask", command);
+		assert.match(result.reason ?? "", /chain segment \d/);
+	}
+});
+
+test("reports the unsafe segment and its preceding operator", () => {
+	assert.deepEqual(classify("pwd && rm file"), {
+		verdict: "ask",
+		reason: 'chain segment 2 after "&&": command "rm" requires confirmation',
+	});
+	assert.deepEqual(classify("git log | tee output.txt"), {
+		verdict: "ask",
+		reason: 'chain segment 2 after "|": command "tee" requires confirmation',
+	});
+	assert.deepEqual(classify("cd src\npython script.py"), {
+		verdict: "ask",
+		reason: 'chain segment 2 after a newline: command "python" requires confirmation',
+	});
+});
+
+test("classification is stateless and never remembers a previously reviewed command", () => {
+	const command = "python script.py";
+	const first = classify(command);
+	const second = classify(command);
+
+	assert.deepEqual(first, { verdict: "ask", reason: 'command "python" requires confirmation' });
+	assert.deepEqual(second, first);
+});
+
 test("asks for malformed separator sequences and unclosed quotes", () => {
 	needsConfirmation("git log;");
 	needsConfirmation("git log ||");
 	needsConfirmation("| pwd");
 	needsConfirmation("git log | | head");
+	needsConfirmation("git log &&\n");
+	needsConfirmation("git log |\n# no next command");
 	needsConfirmation('git log --grep="unclosed');
 });
 
@@ -45,6 +93,8 @@ test("asks for redirection, expansion, assignments, and background execution", (
 		"git log >| output.txt",
 		"git log $(cat bad)",
 		"git log ${HOME}",
+		"git log $HOME",
+		'git log "$HOME"',
 		"git log `cat bad`",
 		"FOO=bar git log",
 		"git log &",

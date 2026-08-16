@@ -28,7 +28,16 @@ Use either of these toggles:
 
 Entering while the agent is streaming is supported. The restriction is enforced immediately by the
 tool-call guard; the visible tool-set change takes effect on the next turn. The mode indicator shows
-`PLAN` in the status line.
+`Plan Mode` in Pi's status line. Entering and leaving are rendered in the transcript as a compact,
+color-coded mode event: a warning-marked enabled state or a success-marked disabled state, with the
+resulting tool availability alongside it.
+
+On every agent run while the mode is active, the system prompt states that the required outcome is
+a written implementation plan. It tells the model not to implement changes, stop at analysis, or
+leave the plan only in chat. Before finalizing, the model must help the user brainstorm practical
+options, compare tradeoffs, invite corrections, and revise the approach from the user's feedback.
+After the user confirms the approach, the model must submit the plan through `write_plan` and remain
+in plan mode until the file is written or the user explicitly exits.
 
 To exit without writing a plan, use `/plan` or `Alt+P` again. This writes no file and restores the
 tool set captured when plan mode was entered. A session can also start in plan mode with the
@@ -64,7 +73,9 @@ model can continue investigating or finish the plan instead of retrying the same
 Bash is an allowlist-plus-confirmation convenience filter. An obviously read-only command runs
 without a prompt. Commands outside the allowlist, commands containing ambiguous shell constructs,
 and commands with potentially mutating flags open a confirmation dialog. The dialog's denial reason
-is returned to the model.
+is returned to the model. Approval applies to one tool call only. Plan mode does not store approved
+command text, modify its static read-only policy, or create a session-level command allowlist. An
+identical later command is classified again and prompts again when it still falls outside the policy.
 
 This is **not a sandbox**. Plan mode does not guarantee that nothing is written. It guarantees only
 that a command either matches the read-only allowlist or is shown to the user for confirmation.
@@ -73,9 +84,12 @@ uses Pi's separate `user_bash` path and is intentionally not gated by plan mode.
 
 ### Allowlisted command families
 
-The tables below are the source of truth in `plan-mode/src/bash-policy.ts`. Every pipeline or
-unquoted `;`, `&&`, `||`, or newline-separated segment must be allowed for the whole command to run
-without confirmation.
+The tables below are the source of truth in `plan-mode/src/bash-policy.ts`. The scanner preserves
+the operator before each pipeline or unquoted `;`, `&&`, `||`, or newline-separated segment and
+classifies every segment independently. Every segment must be allowed for the whole command to run
+without confirmation. This includes branches that appear unreachable, such as `false && rm file`;
+short-circuit behavior is not treated as a safety boundary. A control operator must have a following
+command, including when it is followed by newlines or comments.
 
 | Binary | Allowed commands or behavior |
 | --- | --- |
@@ -83,6 +97,7 @@ without confirmation.
 | `gh` | `pr view`, `pr list`, `pr diff`, `pr checks`, `issue view`, `issue list`, `repo view`, `release view`, `release list` |
 | `npm`, `pnpm`, `yarn` | `ls`, `list`, `view`, `info`, `outdated`, `why` |
 | `find` | General read-only use, excluding the denied flags below |
+| Shell builtins | `cd`, `test`, `[`, `true`, `false`, `:` |
 | Plain read-only binaries | `ls`, `tree`, `cat`, `head`, `tail`, `wc`, `file`, `stat`, `du`, `df`, `pwd`, `echo`, `which`, `rg`, `grep`, `fd`, `jq`, `yq`, `nl`, `sort`, `uniq`, `cut`, `awk`, `sed`, `basename`, `dirname`, `realpath`, `date` |
 
 `sed` is allowed only without `-i` or `--in-place`. `awk` is allowed only without `-i inplace`.
@@ -99,7 +114,7 @@ ambiguous:
 | Category | Examples |
 | --- | --- |
 | Redirection | `>`, `>>`, `<`, `<<`, `&>`, `>|` |
-| Hidden evaluation | Backticks, `$(`, `${` |
+| Hidden evaluation | Backticks, command substitution, and parameter expansion such as `$NAME` or `${NAME}` |
 | Shell state | A leading `FOO=bar` assignment, trailing `&`, unclosed quotes, malformed separators |
 | `git branch` / `git tag` | `-d`, `-D`, `-m`, `-M`, `--delete`, `--move`, `--force`, `-f` |
 | `find` | `-delete`, `-exec`, `-execdir`, `-ok`, `-fprint`, `-fls` |
@@ -129,7 +144,8 @@ approval step and should be used only when that tradeoff is intentional.
 
 ## Plan file structure
 
-`write_plan` accepts a repository-relative path, a title, and the complete markdown body:
+`write_plan` accepts a path inside the current working directory, a title, and the complete markdown
+body. The path may be relative or absolute:
 
 ```text
 write_plan({
@@ -142,7 +158,9 @@ write_plan({
 The path must stay inside the current working directory, use a `.md` extension, and not name a
 directory. Missing parent directories are created. Existing files trigger an explicit overwrite
 warning. The markdown is written as supplied, without automatic heading or trailing-newline
-changes.
+changes. In the TUI, the tool card displays the title, path, and a rendered preview while
+the arguments stream in. The collapsed card shows the first 16 lines; expanding tool output shows
+the complete plan. Its status and color change after the plan is written or rejected.
 
 The plan should contain:
 
