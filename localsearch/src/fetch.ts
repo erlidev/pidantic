@@ -23,9 +23,11 @@ import {
 	recordUse,
 	retryDeadline,
 	saveState,
+	sidecarPath,
 	writeCache,
+	writeSidecar,
 } from "./chain.ts";
-import { CHARS_PER_TOKEN, normalizeUrl, truncate } from "./format.ts";
+import { CHARS_PER_TOKEN, normalizeUrl, plural, truncate } from "./format.ts";
 import { extract } from "./extract.ts";
 import { type GitHubOp, planFetch } from "./rewrite.ts";
 
@@ -46,10 +48,19 @@ export interface Page {
 	/** Which extraction strategy won, for HTML. Absent for raw-text and API paths. */
 	container?: string;
 	cached: boolean;
+	/**
+	 * The extracted Markdown on disk, whole. Handed to the model only when it did not get the content
+	 * it asked for, so its own Grep and Read reach past what the budget withheld.
+	 */
+	cacheFile?: string;
 }
 
-const ACCEPT_HTML =
-	"text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,text/markdown;q=0.8,*/*;q=0.5";
+/**
+ * `text/plain` is deliberately absent. Content-negotiating APIs honour it: asking npm's registry for
+ * plain text gets the same JSON body labelled `text/plain`, which defeats the JSON branch below.
+ * The catch-all at the end still accepts a text response from anything that only has one to give.
+ */
+const ACCEPT_HTML = "text/html,application/xhtml+xml;q=0.9,text/markdown;q=0.8,*/*;q=0.5";
 
 export async function fetchPage(
 	url: string,
@@ -59,14 +70,23 @@ export async function fetchPage(
 	signal?: AbortSignal,
 ): Promise<Page> {
 	const target = validate(url, cfg);
-	const cacheKey = `fetch|${format}|${normalizeUrl(target.href)}`;
+	// `text` is rendered from the same Markdown at the end of the pipeline, so it shares the entry —
+	// only `raw` fetches a materially different body.
+	const cacheKey = `fetch|${format === "raw" ? "raw" : "md"}|${normalizeUrl(target.href)}`;
+
+	// Derived from the key rather than stored, so a cache entry written under a different state
+	// directory never hands the model a path that does not exist.
+	const cacheFile = sidecarPath(deps, cacheKey);
 
 	const cached = await readCache<Page>(cacheKey, cfg.fetchCacheTtlHours, deps);
-	if (cached) return { ...cached.results, cached: true };
+	if (cached) return { ...cached.results, cached: true, cacheFile };
 
 	const page = await run(target.href, format, cfg, deps, signal);
 	await writeCache<Page>(cacheKey, { ts: deps.now(), provider: "fetch", results: page }, deps);
-	return page;
+	// The JSON entry is a blob of escaped newlines that nothing can usefully grep; the sidecar is the
+	// same Markdown as a file, so the model's own tools apply to it.
+	await writeSidecar(cacheKey, page.markdown, deps);
+	return { ...page, cacheFile };
 }
 
 async function run(
@@ -80,7 +100,10 @@ async function run(
 
 	if (plan.kind === "github") {
 		const page = await fetchGitHub(plan.op, plan.label, cfg, deps, signal);
-		return { ...page, url };
+		// An API read went exactly where it was told to. The raw README and diff media types answer
+		// with a documented redirect to a content host; reporting that to the model as "redirected"
+		// would be noise about a hop it neither asked for nor can act on.
+		return { ...page, url, requestedUrl: page.finalUrl };
 	}
 
 	const res = await httpText(
@@ -119,12 +142,9 @@ async function run(
 	// answer with an HTML rendering of that file, and often does.
 	if (type === "text/html" || type === "application/xhtml+xml" || (!type && looksLikeHtml(res.text))) {
 		const out = extract(res.text, res.url);
-		return {
-			...base,
-			title: out.title,
-			markdown: format === "text" ? plainText(out.markdown) : out.markdown,
-			container: out.container,
-		};
+		// `text` is rendered from this Markdown at the end of the pipeline, not here: section
+		// selection, the `filter` bindings and the outline all key off headings.
+		return { ...base, title: out.title, markdown: out.markdown, container: out.container };
 	}
 
 	if (type === "application/json" || type.endsWith("+json")) {
@@ -138,6 +158,10 @@ async function run(
 	if (type && !type.startsWith("text/")) {
 		throw new HttpError(0, `unsupported content type ${type} (${res.bytes} bytes)`);
 	}
+
+	// A JSON body labelled `text/plain`, which content-negotiating APIs and plenty of static hosts
+	// both produce. Sniffed rather than trusted, so it is only taken when it really does parse.
+	if (looksLikeJson(res.text)) return { ...base, markdown: fence(pretty(res.text), "json") };
 
 	// Plain text of some kind. `lang` is set only for source files, which read better fenced.
 	const lang = plan.kind === "text" ? plan.lang : undefined;
@@ -444,8 +468,25 @@ function looksLikeHtml(body: string): boolean {
 	return /^\s*(<!doctype html|<html[\s>])/i.test(body.slice(0, 512));
 }
 
-/** Best-effort Markdown → prose, for callers that asked for `text`. */
-function plainText(markdown: string): string {
+/** An object or array that actually parses. Bare scalars are excluded: `1` is also a text file. */
+function looksLikeJson(body: string): boolean {
+	if (!/^\s*[{[]/.test(body)) return false;
+	try {
+		JSON.parse(body);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Best-effort Markdown → prose, for callers that asked for `text`.
+ *
+ * Applied by `read.ts` to the content it is about to return, never to the page it is about to
+ * select from: this strips the headings that `section:`, the `filter` bindings and the outline all
+ * depend on, so running it any earlier degenerates every one of them.
+ */
+export function plainText(markdown: string): string {
 	return markdown
 		.replace(/^```.*$/gm, "")
 		.replace(/^#{1,6}\s+/gm, "")
@@ -460,6 +501,23 @@ function plainText(markdown: string): string {
 export interface Budgeted {
 	text: string;
 	truncated: boolean;
+	/** `outline` returned a map of the page instead of any of its content. */
+	mode: "full" | "truncated" | "outline";
+}
+
+/**
+ * Apply the token budget.
+ *
+ * The rule turns on whether the caller asked for something specific. A plain fetch of an oversized
+ * page gets the outline: the head of a document is rarely the answer, so spending the whole budget
+ * on it is close to pure waste. A `section` or `filter` call gets its own content, truncated —
+ * the model asked a specific question and a map is not an answer to it.
+ */
+export function shape(markdown: string, tokens: number, narrowed: boolean): Budgeted {
+	if (markdown.length <= tokens * CHARS_PER_TOKEN) {
+		return { text: markdown, truncated: false, mode: "full" };
+	}
+	return narrowed ? budget(markdown, tokens) : { ...outline(markdown, tokens), mode: "outline" };
 }
 
 /**
@@ -470,7 +528,7 @@ export interface Budgeted {
  */
 export function budget(markdown: string, tokens: number): Budgeted {
 	const limit = tokens * CHARS_PER_TOKEN;
-	if (markdown.length <= limit) return { text: markdown, truncated: false };
+	if (markdown.length <= limit) return { text: markdown, truncated: false, mode: "full" };
 
 	const sections = splitSections(markdown);
 	const kept: string[] = [];
@@ -499,10 +557,48 @@ export function budget(markdown: string, tokens: number): Budgeted {
 	if (dropped.length > 0) {
 		notice.push(`Sections not shown: ${headingList(dropped)}`);
 		// Naming sections without saying how to read one is what made this notice a dead end.
-		notice.push('Pass section: "<heading>" to read one in full.');
+		notice.push('Read one with section: "<heading>", or narrow with filter:.');
+	} else {
+		notice.push("Narrow with filter: to get the rest of this content.");
 	}
 
-	return { text: text + notice.join("\n"), truncated: true };
+	return { text: text + notice.join("\n"), truncated: true, mode: "truncated" };
+}
+
+/**
+ * A map of an oversized page: every heading, with its nesting, and how to read one.
+ *
+ * Rendered in full while it fits, because the nesting is what tells the model which of two
+ * similarly named headings it wants. Past the budget it falls back to the flat, capped list — the
+ * rustdoc case, where link-stuffed headings run to tens of thousands of characters on their own.
+ */
+export function outline(markdown: string, tokens: number): Budgeted {
+	const limit = tokens * CHARS_PER_TOKEN;
+	const sections = splitSections(markdown);
+	const headings = sections.filter((s) => s.heading !== "");
+	const lines = markdown.split("\n").length;
+
+	const head =
+		`Page outline — ~${Math.round(markdown.length / CHARS_PER_TOKEN).toLocaleString("en-US")} tokens, ` +
+		`${plural(sections.length, "section")}, ${plural(lines, "line")}. ` +
+		`Over the ${tokens.toLocaleString("en-US")} token budget.`;
+	// Telling a heading-less page's reader to pass a heading is the one instruction it cannot follow.
+	const foot =
+		headings.length > 0
+			? 'Read one with section: "<heading>", or narrow with filter:.'
+			: "Narrow with filter: — lines.slice(0, 200) reads the head of it.";
+
+	const nested = headings
+		.map((s) => `${"#".repeat(s.level)} ${truncate(headingText(s.heading), HEADING_TOKENS)}`)
+		.join("\n");
+	const body =
+		headings.length > 0 && head.length + nested.length + foot.length <= limit
+			? nested
+			: headings.length > 0
+				? `Headings: ${headingList(headings.map((s) => headingText(s.heading)))}`
+				: "This page has no headings.";
+
+	return { text: [head, "", body, "", foot].join("\n"), truncated: true, mode: "outline" };
 }
 
 /** Enough headings to steer a second fetch, and no more. */
@@ -529,17 +625,36 @@ export function headingList(headings: string[]): string {
 	return `${shown.join(" · ")}${rest > 0 ? ` · +${rest} more` : ""}`;
 }
 
-interface Section {
+export interface Section {
+	/** The raw heading line, `#` marks included. Empty for the prose before any heading. */
 	heading: string;
 	body: string;
 	/** Depth of the ATX heading. The leading run of prose before any heading is level 0. */
 	level: number;
+	/** Index of the section's first line in the document, so `filter` can report coordinates. */
+	start: number;
+}
+
+/**
+ * Display form of a heading: no `#` marks, no inline links, no emphasis, case preserved.
+ *
+ * `selectSection` matches case-insensitively and folds slug punctuation, so anything printed
+ * through here can be passed straight back as `section:`.
+ */
+export function headingText(heading: string): string {
+	return heading
+		.replace(/^#{1,6}\s+/, "")
+		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+		.replace(/[`*]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
 }
 
 /** Split on ATX headings, ignoring any that fall inside a fenced code block. */
-function splitSections(markdown: string): Section[] {
-	const sections: Section[] = [{ heading: "", body: "", level: 0 }];
+export function splitSections(markdown: string): Section[] {
+	const sections: Section[] = [{ heading: "", body: "", level: 0, start: 0 }];
 	let fenceMark = "";
+	let lineNumber = 0;
 
 	for (const line of markdown.split("\n")) {
 		const fenceAt = /^\s*(`{3,}|~{3,})/.exec(line);
@@ -549,8 +664,11 @@ function splitSections(markdown: string): Section[] {
 		}
 
 		const heading = fenceMark ? null : /^(#{1,6})\s+\S/.exec(line);
-		if (heading) sections.push({ heading: line.trim(), body: "", level: heading[1].length });
+		if (heading) {
+			sections.push({ heading: line.trim(), body: "", level: heading[1].length, start: lineNumber });
+		}
 		sections[sections.length - 1].body += `${line}\n`;
+		lineNumber++;
 	}
 
 	return sections.filter((s) => s.body.trim().length > 0);

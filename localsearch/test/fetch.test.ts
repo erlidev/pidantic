@@ -3,8 +3,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+
 import { HttpError } from "../src/config.ts";
-import { budget, fetchPage, isPrivateHost, sectionRequest, selectSection } from "../src/fetch.ts";
+import {
+	budget,
+	fetchPage,
+	isPrivateHost,
+	outline,
+	sectionRequest,
+	selectSection,
+	shape,
+} from "../src/fetch.ts";
 import { config, connectionRefused, makeDeps } from "./helpers.ts";
 
 const page = (body: string) => `<!doctype html><html><head><title>T</title></head><body><main>
@@ -59,15 +70,28 @@ test("binary and PDF responses fail with one actionable line", async () => {
 	await assert.rejects(fetchPage("https://example.com/a.zip", "markdown", config(), zip), /unsupported content type/);
 });
 
-test("text format strips the markup the extractor produced", async () => {
-	const html = `<main><h1>Heading</h1><p>${LONG}See <a href="https://x.com/a">the docs</a> and
-		use <code>flag</code>.</p></main>`;
+test("text format still fetches markdown, so section selection has headings to match", async () => {
+	const html = `<main><h1>Heading</h1><p>${LONG}</p><h2>Timeouts</h2><p>${LONG}</p></main>`;
 	const deps = makeDeps(() => ({ text: html, contentType: "text/html" }));
 	const out = await fetchPage("https://example.com/doc", "text", config(), deps);
 
-	assert.match(out.markdown, /^Heading/);
-	assert.match(out.markdown, /See the docs and use flag\./);
-	assert.doesNotMatch(out.markdown, /[#*`]|\]\(/, "no markdown syntax survives");
+	// Stripping is `read.ts`'s last step, not this one's: `selectSection` runs on what is cached here.
+	assert.match(out.markdown, /^# Heading/);
+	assert.equal(selectSection(out.markdown, "Timeouts").found, true);
+});
+
+test("a JSON body labelled text/plain is still pretty-printed and fenced", async () => {
+	const deps = makeDeps(() => ({ text: '{"b":1,"a":[2]}', contentType: "text/plain" }));
+	const out = await fetchPage("https://registry.npmjs.org/x/latest", "markdown", config(), deps);
+
+	assert.equal(out.markdown, '```json\n{\n  "b": 1,\n  "a": [\n    2\n  ]\n}\n```');
+});
+
+test("plain text that is not JSON is left alone", async () => {
+	const deps = makeDeps(() => ({ text: "[draft] release notes\n", contentType: "text/plain" }));
+	const out = await fetchPage("https://example.com/notes.txt", "markdown", config(), deps);
+
+	assert.equal(out.markdown, "[draft] release notes\n");
 });
 
 test("raw format returns the untouched body", async () => {
@@ -451,7 +475,7 @@ test("the truncation notice tells the model how to read what it dropped", () => 
 	const out = budget(long, 60);
 
 	assert.match(out.text, /Sections not shown: ## Alpha · ## Beta/);
-	assert.match(out.text, /Pass section: "<heading>" to read one in full\./);
+	assert.match(out.text, /Read one with section: "<heading>", or narrow with filter:\./);
 });
 
 test("selecting a section escapes the budget that truncated the page", async () => {
@@ -467,6 +491,105 @@ test("selecting a section escapes the budget that truncated the page", async () 
 	const pick = selectSection(whole.markdown, "Task object");
 	assert.equal(budget(pick.text, 60).truncated, false, "the section does");
 	assert.match(pick.text, /the answer/);
+});
+
+// -------------------------------------------------------------------------------------------
+// The budget rule
+// -------------------------------------------------------------------------------------------
+
+const BIG = [
+	"# Coroutines\n\nintro\n",
+	`## Awaitables\n\n${"a".repeat(400)}\n`,
+	`## Creating Tasks\n\n${"c".repeat(400)}\n`,
+	`### Task object\n\n${"t".repeat(400)}\n`,
+	`## Timeouts\n\n${"m".repeat(400)}\n`,
+].join("\n");
+
+test("content that fits is returned whole, whatever was asked for", () => {
+	for (const narrowed of [true, false]) {
+		const out = shape("# A\n\nshort\n", 1000, narrowed);
+		assert.deepEqual(out, { text: "# A\n\nshort\n", truncated: false, mode: "full" });
+	}
+});
+
+test("an oversized page nobody asked a question about returns its outline", () => {
+	const out = shape(BIG, 100, false);
+
+	assert.equal(out.mode, "outline");
+	assert.match(out.text, /^Page outline — ~\d+ tokens, 5 sections, \d+ lines\. Over the 100 token budget\./);
+	assert.match(out.text, /^# Coroutines$/m);
+	assert.match(out.text, /^### Task object$/m, "nesting is what tells two similar headings apart");
+	assert.doesNotMatch(out.text, /aaaa/, "an outline is a map, not content");
+	assert.match(out.text, /Read one with section: "<heading>", or narrow with filter:\.$/);
+});
+
+test("an oversized answer to a specific question is truncated, never outline-swapped", () => {
+	const out = shape(BIG, 100, true);
+
+	assert.equal(out.mode, "truncated");
+	assert.match(out.text, /^# Coroutines\n\nintro/, "the content asked for is what comes back");
+	assert.match(out.text, /\[truncated: \d+ of ~\d+ tokens\]/);
+	assert.match(out.text, /Sections not shown: ## Awaitables/);
+	assert.doesNotMatch(out.text, /Page outline/);
+});
+
+test("a heading taken from either outline form round-trips as a section", () => {
+	const nested = outline(BIG, 100).text;
+	const flat = outline(BIG, 30).text;
+
+	assert.match(flat, /Headings: Coroutines · Awaitables/, "the flat form is the fallback");
+	assert.doesNotMatch(flat, /^## Awaitables$/m);
+
+	for (const heading of ["Creating Tasks", "Task object"]) {
+		assert.ok(nested.includes(heading) && flat.includes(heading), heading);
+		assert.equal(selectSection(BIG, heading).found, true, heading);
+	}
+});
+
+test("the outline stays bounded when every heading is link-stuffed", () => {
+	const sections = Array.from(
+		{ length: 400 },
+		(_, i) => `## impl [Serialize](https://docs.rs/x/trait.Serialize.html "trait x::Serialize") for T${i}\n\nbody\n`,
+	);
+	const out = outline(`# Reference\n\n${"x".repeat(400)}\n\n${sections.join("\n")}`, 100);
+
+	assert.ok(out.text.length < 100 * 4 + 400, `outline is ${out.text.length} chars`);
+	assert.match(out.text, /\+381 more/);
+	assert.doesNotMatch(out.text, /https:\/\//);
+});
+
+test("a page with no headings says so rather than returning an empty map", () => {
+	const out = outline("just prose ".repeat(200), 20).text;
+
+	assert.match(out, /This page has no headings\./);
+	// Telling the model to pass a heading right after saying there are none is the contradiction that
+	// made this notice useless.
+	assert.doesNotMatch(out, /section: "<heading>"/);
+	assert.match(out, /lines\.slice/);
+});
+
+test("counts in notices read as prose", () => {
+	assert.match(outline(`# One\n\n${"x".repeat(400)}`, 20).text, /1 section, \d+ lines\./);
+});
+
+// -------------------------------------------------------------------------------------------
+// The cache sidecar
+// -------------------------------------------------------------------------------------------
+
+test("the extracted markdown is written beside the cache entry as a file", async () => {
+	const deps = makeDeps(() => ({ text: page(LONG), contentType: "text/html" }));
+	const out = await fetchPage("https://example.com/doc", "markdown", config(), deps);
+
+	assert.match(out.cacheFile ?? "", /\.md$/);
+	assert.equal(await readFile(out.cacheFile ?? "", "utf8"), out.markdown, "the whole page, greppable");
+
+	const entries = await readdir(join(deps.stateDir, "cache"));
+	assert.equal(entries.filter((f) => f.endsWith(".json")).length, 1, "one cache entry");
+	assert.equal(entries.filter((f) => f.endsWith(".md")).length, 1, "one sidecar beside it");
+
+	// A cache hit still knows where the file is, since the path comes from the key, not the entry.
+	const again = await fetchPage("https://example.com/doc", "markdown", config(), deps);
+	assert.equal(again.cacheFile, out.cacheFile);
 });
 
 test("a single oversized section still yields content", () => {

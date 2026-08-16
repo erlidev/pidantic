@@ -122,8 +122,29 @@ export function recordFailure(state: State, name: string, now: number, until?: n
 	entry.cooldownUntil = Math.max(until ?? 0, now + backoff);
 }
 
+const cacheName = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 32);
+
 const cachePath = (deps: Deps, key: string) =>
-	join(deps.stateDir, "cache", `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.json`);
+	join(deps.stateDir, "cache", `${cacheName(key)}.json`);
+
+/**
+ * The Markdown twin of a cache entry.
+ *
+ * The entry itself is JSON, so its content is a single line of escaped newlines that no grep can
+ * usefully read. The sidecar is the same text as a file, which is what makes handing its path to
+ * the model worth the tokens. Written beside the entry, expiring with it.
+ */
+export const sidecarPath = (deps: Deps, key: string) =>
+	join(deps.stateDir, "cache", `${cacheName(key)}.md`);
+
+export async function writeSidecar(key: string, text: string, deps: Deps): Promise<void> {
+	try {
+		await mkdir(join(deps.stateDir, "cache"), { recursive: true });
+		await writeFile(sidecarPath(deps, key), text);
+	} catch {
+		// The path is only ever offered as an extra route to content the model already has.
+	}
+}
 
 /** `results` is whatever the caller cached: a search pool, or a fetched page. */
 export interface CacheEntry<T = Result[]> {

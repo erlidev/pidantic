@@ -66,11 +66,12 @@ Two services, both CPU-only and bound to loopback:
 **SearXNG** (required — the default web provider, and the only one if you set no API keys). `json` in
 `search.formats` and `server.limiter: false` are both mandatory — without them the API returns 403 or rate-limits your own agent.
 
-**Reranker** (optional but recommended). `cross-encoder/ms-marco-MiniLM-L-6-v2`: ~90MB, ready in
-~25s, ~110ms to rank a 30-result pool. Without it, searches fall back to the provider's own
-ordering and include a model-facing notice with configuration instructions. Explicit semantic
-ranking in the planned `fetch` filter API will instead return an error because provider or lexical
-order is not equivalent to a requested `rank()` operation.
+**Reranker** (optional but recommended for search, required for `rank()`).
+`cross-encoder/ms-marco-MiniLM-L-6-v2`: ~90MB, ready in ~25s, ~110ms to rank a 30-result pool.
+Without it, searches fall back to the provider's own ordering and include a model-facing notice with
+configuration instructions. An explicit `rank()` inside a `fetch` filter fails the call instead,
+because provider or lexical order is not an equivalent implementation of a requested semantic
+ranking.
 
 The reranker earns its place. For "tokio async runtime rust", the unranked pool put Tokyo (the
 city), TOKIO (the band) and a Tokyo travel guide in the top 10; after reranking all ten results are
@@ -126,32 +127,82 @@ pi -e /home/eric/Code/pidantic/localsearch/index.ts
 search(query, source?, count?)
 ```
 
-- `query` — GitHub sources accept qualifiers (`language:rust`, `repo:owner/name`, `is:open`)
+- `query` — GitHub sources accept qualifiers (`language:rust`, `repo:owner/name`, `is:open`,
+  `is:pr`, `is:issue`)
 - `source` — `web` (default), `wikipedia`, `github_code`, `github_repos`, `github_issues`
 - `count` — 1–25, default 10
 
 ```
-fetch(url, section?, max_tokens?, format?)
+fetch(url, section?, filter?, max_tokens?, format?)
 ```
 
-- `url` — absolute `http(s)` URL. A fragment selects a section, same as `section`
+- `url` — absolute `http(s)` URL. A fragment naming a heading selects it, same as `section`
 - `section` — return only this section, with its subsections. Matched on heading text
-- `max_tokens` — content budget, default 8000, max 20000
+- `filter` — a JavaScript expression run over the page before any of it enters context
+- `max_tokens` — content budget, default 5000, max 20000
 - `format` — `markdown` (default), `text` (markup stripped), `raw` (unprocessed body)
+
+`text` is a rendering of the answer, not of the page: the pipeline works in Markdown throughout and
+strips the markup last, so `section`, a URL fragment and the `filter` bindings all still have
+headings to match on. The outline is exempt — its `#` nesting is what tells two similarly named
+headings apart, and flattening it would leave a map that cannot be read. `markdown` and `text` share
+one cache entry, since they are two renderings of the same fetch.
+
+The three reading modes form a ladder, and the tool description states it as conditions rather than
+advice: no heading in hand → plain `fetch`; a heading in hand → `section`; a term, pattern, question
+or line range → `filter`.
+
+### The budget rule
+
+A page that fits the budget is returned. A page that does not depends on whether the call asked
+something specific:
+
+| Call | Over budget |
+|---|---|
+| `fetch(url)` | the **outline** — every heading, with nesting, and how to read one |
+| `fetch(url, section:)` / `filter:` | that content, truncated, with a notice to narrow |
+
+The head of a document is rarely the answer, so filling the budget from the top of an oversized page
+is close to pure waste — that is what the outline replaces. The other half of the rule is the
+opposite: the model asked a specific question, and a map is not an answer to it, so a narrowed call
+is never swapped for an outline.
+
+The rule is strict — one token over switches to the outline, with no grace band. A page at 1.05× the
+budget therefore costs two calls where one truncated call might have answered. `max_tokens` is the
+escape hatch.
+
+What this buys, on the 14k-token `asyncio-task.html` page:
+
+| Getting one fact out of it | Before (8k, truncate) | After (5k, outline + filter) |
+|---|---|---|
+| Model knows what it is looking for | 8k truncated + 1.5k section ≈ **9.5k**, two calls | `grep(/timeout/i, 3)` ≈ **630**, one call |
+| Model has no knowledge of the page | as above | ~300 outline + 1.5k section ≈ **1.8k**, two calls |
+| One failed filter first | — | ≈ **1.2k**, two calls, no download |
+| Permanent cost | 0 | ~96 tokens of `filter` description, every request |
+
+The outline is rendered in full while it fits, because nesting is what tells two similarly named
+headings apart. Past that it falls back to a flat list capped at 20 headings of 20 tokens each — the
+rustdoc case, where link-stuffed headings run to tens of thousands of characters on their own.
+
+Whenever the model did **not** get what it asked for — an outline, a truncated read, a filter that
+matched nothing — the response ends with the path to the whole extracted page on disk, so the
+model's own Grep and Read reach past what the budget withheld. A complete answer never carries that
+line; there is nothing left to go looking for.
 
 ### Reading one section
 
-A truncated page ends with the headings it dropped, and any of them can be passed straight back as
-`section`. Because the whole extracted page is what gets cached, the follow-up costs no download:
+Any heading printed in an outline or a truncation notice can be passed straight back as `section`.
+Because the whole extracted page is what gets cached, the follow-up costs no download:
 
 ```
-fetch("…/asyncio-task.html")                        → 6623 tokens, truncated, 561ms
+fetch("…/asyncio-task.html")                        → outline, ~300 tokens, 561ms
 fetch("…/asyncio-task.html", section: "Timeouts")   → 1547 tokens, 1ms
 fetch("…/asyncio-task.html#task-object")            → 3460 tokens, 1ms
 ```
 
-A URL fragment selects the same way, so a link copied out of a page can be fetched as-is — which
-matters because extracted pages are dense with them: that one page carries 39.
+A URL fragment naming a heading selects the same way, so a link copied out of a page can be fetched
+as-is — which matters because extracted pages are dense with them: that one page carries 39. A
+fragment naming anything else (a footnote, a table row) returns the whole page.
 
 Matching is case-insensitive, ignores inline links and emphasis in the heading, and treats `-` and
 `_` as spaces, so a slug (`task-object`) finds the prose heading it points at (`## Task object`).
@@ -166,6 +217,70 @@ records which happened in `sectionMatched`, at no token cost.
 Selection works on anything with headings, including raw Markdown from GitHub — asking a README for
 its `Overview` returns that section alone, 152 tokens instead of 2326.
 
+### Filtering
+
+`filter` is a JavaScript expression evaluated against the cached, extracted Markdown *before* any of
+it reaches the context window. The page is already cached for 6h, so a filter that misses can be
+rewritten and re-run for ~1ms and no download. That retry loop is the point: the model gets to be
+wrong cheaply, in one tool call, instead of being right slowly across four.
+
+| Binding | Is |
+|---|---|
+| `text` | the whole document, as one string |
+| `lines` | `string[]`, the document split on newlines |
+| `sections` | `{heading, level, text, index, from, to}[]`, `from`/`to` indexing into `lines` |
+| `grep(re, ctx = 2)` | matching lines with context; adjacent and overlapping hits merge |
+| `code(lang?)` | fenced blocks, rails included, optionally by language tag |
+| `await rank(items, query, n = 10)` | cross-encoder ranking, see below |
+
+```
+grep(/timeout/i, 3)                                  a term
+sections.filter(s => /error/i.test(s.heading))       a pattern over headings
+(await rank(sections, "how retries work")).slice(0, 2)   a question
+lines.slice(500, 900)                                a line range — this is pagination
+code("python")                                       every Python example on the page
+```
+
+`return` is optional: an expression and a statement list that returns both compile. The result is
+duck-typed — a string is used as-is, sections and grep hits render in document order, an array of
+single-line strings joins on newlines and an array of blocks on blank lines, and any other object
+becomes JSON in a fence. A return that cannot be rendered — a number, `undefined`, a pending
+`Promise` — is an error naming the shapes that can, never a silent empty result.
+
+Output is returned **raw**: no title, no header, nothing summarised. It ends with the coordinate
+space, which is what makes `.slice()` usable as pagination:
+
+```
+[filtered: ~620 of ~14,000 tokens · 3 of 42 sections · 1,900 lines]
+```
+
+A filter that matches nothing returns a map of the page instead of nothing, and a filter that throws
+returns the message plus the binding list. Both cost a round trip; both make the next attempt
+obvious.
+
+`rank()` has two shapes. Given an array it scores those items and returns them **best first**, which
+is what `.slice(0, 2)` on the result means. Given `text` it chunks the document on section
+boundaries — never inside a fence, ~250 tokens, heading path prepended before scoring — and returns
+the selected chunks in **document order**, adjacent ones merged. Scoring costs ~45ms a chunk on CPU:
+~1.2s to rank the 55 sections of a 14k-token page, ~2.5s to chunk and rank the same page whole. A
+document that splits past `maxChunks` is an error telling the model to rank `sections` instead, and
+a reranker that is down or slow fails the call with the `RERANK_URL` fix rather than quietly
+substituting lexical order.
+
+`await` binds looser than a method call, so `await rank(x, q).slice(0, 2)` applies `.slice` to the
+Promise. That specific failure is detected and answered with the parenthesised form.
+
+**The sandbox is not a security boundary.** Filters run in a `node:vm` context with frozen bindings
+and no `require`, `process` or `fetch` — those are Node globals, not JS builtins, so a fresh context
+is already clean. Synchronous runaway is cut off after 2s and the awaited tail after
+`filterTimeoutMs`. What `vm` cannot do is *terminate* an async runaway: `while (true) { await null }`
+leaks a promise loop for the life of the process. The code here is written by the model for itself,
+not by an attacker, so that trade is accepted; worker threads remain the upgrade path if it ever
+bites. Read this the way you read the `isPrivateHost` note above.
+
+With `format: "raw"` the filter still runs — `sections` degrades to one section covering the whole
+body, and `text`, `lines`, `grep` and `code` work as usual.
+
 `/search-status` reports provider health, remaining quota, and whether SearXNG and the reranker are up.
 
 ## How a fetch runs
@@ -177,15 +292,23 @@ The most reliable way to read a page is often to not request that page at all.
    checking: a public name that resolves into a private range still gets through. It is a guard
    against an obvious mistake, not an SSRF boundary.
 2. **Cache** — 6h, keyed on the normalized URL. The extracted Markdown is cached, not the HTML, so a
-   re-request at a different budget re-slices without re-fetching or re-parsing.
+   re-request at a different budget re-slices without re-fetching or re-parsing. The entry is JSON,
+   so the same Markdown is written beside it as a `.md` sidecar — a blob of escaped newlines is
+   not something the model's Grep can read, and the sidecar is what its path points at.
 3. **Preflight** — the URL is classified before any request goes out. GitHub URLs are rewritten to
    the API or the raw host; known text extensions skip HTML parsing entirely.
 4. **Fetch** — 20s timeout, 2MB body cap applied while streaming, charset honoured from the header or
-   a `<meta>` tag rather than assumed to be UTF-8.
-5. **Extract** — for HTML only, see below.
-6. **Select or budget** — with `section`, that section and its subsections are returned. Otherwise
-   Markdown over `max_tokens` is cut on a section boundary, with an outline of the headings that
-   were dropped so the model can make a narrower second call.
+   a `<meta>` tag rather than assumed to be UTF-8. The `Accept` header asks for HTML and Markdown but
+   never `text/plain`: content-negotiating APIs honour that ask and return their JSON labelled as
+   plain text, which is exactly the branch that would then fail to pretty-print it.
+5. **Extract** — dispatched on what the server actually sent, not on what the URL implied, since a
+   `.md` path is free to answer with an HTML rendering of that file. HTML goes to the extractor
+   (see below); JSON is pretty-printed and fenced, whether it is labelled as JSON or sniffed out of
+   a `text/plain` body that parses; a known source extension is fenced with its language.
+6. **Select, filter, budget** — `section` narrows to one section and its subsections, `filter`
+   refines within whatever that left, and the budget stage is the last safety net, so a filter that
+   returns the whole document still cannot blow up the context window. Over budget, a plain fetch
+   returns the outline and a narrowed one is truncated — see [the budget rule](#the-budget-rule).
 
 ### GitHub
 
@@ -205,6 +328,14 @@ these is answered from raw text or the API instead, so the model gets the source
 `GITHUB_TOKEN` is used when set — required for private repositories, and it raises the rate limit.
 These reads share the quota counter with `search`, because they share the upstream limit.
 
+None of these announce a redirect. The README and diff media types answer with a documented hop to a
+content host, and the model asked for a GitHub URL and got what it asked for; `_Redirected to …` is
+reserved for a server moving a request the model made directly.
+
+`github_issues` searches the `search/issues` endpoint, which returns pull requests alongside issues
+by design. A pull request is marked `owner/repo#123 (PR)` in the result title; `is:issue` and `is:pr`
+in the query select one kind outright.
+
 ### HTML
 
 Documentation generators all mark their content container, and matching those markers exactly is more
@@ -220,6 +351,10 @@ The chosen subtree is then stripped of scripts, styles, nav, headers, footers, s
 elements; heading permalinks and icon-only links are dropped; Pygments and Rouge line-number gutters
 are unwrapped so line numbers do not interleave into the code; relative `href`s are resolved against
 the post-redirect URL; and `data:` image payloads are replaced by their alt text.
+
+MediaWiki gets one named exception, because Wikipedia is a first-class search source here and no
+generic rule catches its furniture: the `[edit]` link on every heading (~20 tokens a section, on
+pages with dozens), maintenance boxes, the table of contents and navboxes are removed.
 
 Turndown then serializes, with GFM tables and a code-fence rule that finds the language wherever the
 generator put it — on the `<code>`, on the `<pre>`, on a wrapper `div`, or in `data-language`.
@@ -283,12 +418,21 @@ SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/mo
 
   "fetchTimeoutMs": 20000,
   "fetchMaxBytes": 2000000,
-  "contentTokens": 8000,
+  "contentTokens": 5000,
   "maxContentTokens": 20000,
   "fetchCacheTtlHours": 6,
-  "allowPrivateHosts": false
+  "allowPrivateHosts": false,
+
+  "filterTimeoutMs": 15000,
+  "maxRankCalls": 4,
+  "chunkTokens": 250,
+  "maxChunks": 120
 }
 ```
+
+`contentTokens` is the budget that decides outline-or-content. `filterTimeoutMs` is the wall clock
+for one filter, ranking included; synchronous runaway is cut off after a fixed 2s regardless.
+`maxChunks` bounds one `rank()` call — at ~45ms a chunk, 120 is a ~5s worst case.
 
 `order` is a preference list, not a fan-out list — only its first usable entry is queried. Move `exa`
 to the front to buy quality with quota; drop a provider from the array to take it out of rotation.
@@ -299,12 +443,33 @@ are never written to config.
 ## Development
 
 ```bash
-npm install                           # run from the pidantic package root
-npm test                              # 115 unit tests, no network
-npm run smoke -- "your query"         # live: hits SearXNG, Wikipedia, GitHub, Marginalia
-npm run smoke -- --fetch              # live: fetches one page per generator and GitHub URL shape
-npm run smoke -- --fetch <url>…       # live: fetches the given URLs
+npm install                              # run from the pidantic package root
+npm test                                 # unit tests, no network
+npm run smoke -- "your query"            # live: hits SearXNG, Wikipedia, GitHub, Marginalia
+npm run smoke -- --fetch                 # live: fetches one page per generator and GitHub URL shape
+npm run smoke -- --fetch <url>…          # live: fetches the given URLs
+npm run smoke -- --filter <url> "<expr>" # live: one filter, with real rank() latency
 ```
+
+### Adding a model-facing parameter
+
+Instruction text comes in two tiers, and they behave differently. The **permanent** tier — tool
+description, `promptSnippet`, `promptGuidelines`, parameter descriptions, all of `src/prompt.ts` —
+is paid on every request in the session, whether or not the tool is ever called, and is enforced
+against token ceilings by `test/prompt.test.ts`. The **just-in-time** tier — truncation notices,
+outline headers, filter diagnostics, the success footer — is paid only when hit, which is where
+teaching belongs: it arrives at the moment it is actionable and costs nothing the rest of the time.
+
+Hold a new parameter to the same bar:
+
+- [ ] Examples outrank prose. Every binding or mode appears in exactly one example.
+- [ ] The choice is written as a condition, not a suggestion: "no heading in hand → plain fetch".
+- [ ] One concept per sentence, no subordinate clauses, written for a model reading cold.
+- [ ] No hedging — no "may", "can optionally", "if desired", "consider".
+- [ ] Nothing the model cannot act on: no chunking, no cross-encoder, no cache format. The one
+      exception is that the page is cached, because it changes whether a retry is worth making.
+- [ ] Every error names the fix and echoes the detail needed to apply it.
+- [ ] A ceiling for the new string in `test/prompt.test.ts`, counted before the code lands.
 
 `fetch` is the reason this repo has dependencies at all. HTML→Markdown is delegated to `jsdom`,
 `@mozilla/readability`, `turndown` and `turndown-plugin-gfm` rather than hand-rolled, which costs the

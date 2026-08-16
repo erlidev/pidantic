@@ -133,6 +133,27 @@ test("github issue search sets advanced_search and names the repo", async () => 
 	assert.match(deps.calls[0].url, /advanced_search=true/);
 });
 
+test("a pull request returned by issue search is marked as one", async () => {
+	// The endpoint returns both kinds and only `pull_request` distinguishes them; without the marker
+	// the two render as the same line.
+	const deps = makeDeps(() => ({
+		body: {
+			items: [
+				{
+					title: "Fix the leak",
+					html_url: "https://github.com/tokio-rs/tokio/pull/8158",
+					number: 8158,
+					state: "open",
+					repository_url: "https://api.github.com/repos/tokio-rs/tokio",
+					pull_request: { url: "https://api.github.com/repos/tokio-rs/tokio/pulls/8158" },
+				},
+			],
+		},
+	}));
+
+	assert.equal((await searchGitHub("issues", "leak", 5, cfg, deps))[0].title, "tokio-rs/tokio#8158 (PR) Fix the leak");
+});
+
 test("github issues tolerate a null body", async () => {
 	const deps = makeDeps(() => ({
 		body: { items: [{ title: "T", html_url: "https://g/1", number: 1, state: "open", body: null }] },

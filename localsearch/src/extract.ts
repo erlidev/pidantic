@@ -48,6 +48,16 @@ const CHROME =
 
 const HIDDEN = "[aria-hidden=true],[hidden]";
 
+/**
+ * MediaWiki furniture, which no generic rule catches.
+ *
+ * The `[edit]` link on every heading is ~20 tokens a section on a page that may have forty, and the
+ * maintenance boxes ("this article may compromise neutrality") are editorial notices about the
+ * article rather than content of it. Wikipedia is a first-class search source here, so it is worth
+ * naming explicitly.
+ */
+const MEDIAWIKI = ".mw-editsection,.ambox,.mw-message-box,.metadata.plainlinks,#toc,.navbox";
+
 /** Sphinx's ¶ and Docusaurus's # would trail every single heading. */
 const PERMALINK = "a.headerlink,a.anchor,a.hash-link,a.header-anchor,a.anchorjs-link,.headerlink";
 
@@ -117,7 +127,7 @@ function render(el: Element, dom: JSDOM): string {
 }
 
 function sanitize(el: Element, dom: JSDOM): void {
-	for (const selector of [DROP, CHROME, HIDDEN, PERMALINK]) {
+	for (const selector of [DROP, CHROME, HIDDEN, PERMALINK, MEDIAWIKI]) {
 		for (const node of el.querySelectorAll(selector)) node.remove();
 	}
 

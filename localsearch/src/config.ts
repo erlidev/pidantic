@@ -62,6 +62,15 @@ export interface Config {
 	fetchCacheTtlHours: number;
 	/** Allow `fetch` to reach loopback, RFC1918 and link-local addresses. */
 	allowPrivateHosts: boolean;
+
+	/** Wall-clock ceiling for one `filter` expression, sandbox and ranking included. */
+	filterTimeoutMs: number;
+	/** `rank()` calls allowed per filter. Each one is a round trip to the cross-encoder. */
+	maxRankCalls: number;
+	/** Target size of a chunk handed to the cross-encoder, in tokens. */
+	chunkTokens: number;
+	/** Ceiling on items or chunks scored in one `rank()` call, which bounds its latency. */
+	maxChunks: number;
 }
 
 export const DEFAULTS: Config = {
@@ -77,10 +86,15 @@ export const DEFAULTS: Config = {
 	timeoutMs: 12000,
 	fetchTimeoutMs: 20000,
 	fetchMaxBytes: 2_000_000,
-	contentTokens: 8000,
+	contentTokens: 5000,
 	maxContentTokens: 20000,
 	fetchCacheTtlHours: 6,
 	allowPrivateHosts: false,
+	filterTimeoutMs: 15000,
+	maxRankCalls: 4,
+	chunkTokens: 250,
+	// ~45ms a chunk on CPU, measured against a 14k-token page, so this is a ~5s worst case.
+	maxChunks: 120,
 	limits: {
 		searxng: {},
 		tavily: { month: 1000 },
@@ -282,6 +296,14 @@ function decodeBody(bytes: Uint8Array, contentType: string): string {
 		}
 	}
 	return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+}
+
+/** One line a model can act on, for any error a tool is willing to report rather than throw. */
+export function describeError(err: unknown): string {
+	if (!(err instanceof HttpError)) return describeNetworkError(err);
+	// The message is usually already `HTTP 404`; appending the status would only repeat it.
+	const status = String(err.status);
+	return err.status > 0 && !err.message.includes(status) ? `${err.message} — ${status}` : err.message;
 }
 
 /** Turn opaque undici errors into something a model can act on. */

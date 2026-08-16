@@ -4,7 +4,7 @@ A collection of my custom [Pi](https://github.com/earendil-works) extensions to 
 
 | Extension | Status | Purpose |
 | --- | --- | --- |
-| [localsearch](docs/extensions/localsearch.md) | Implemented | Search, page fetching, extraction, and optional semantic reranking. |
+| [localsearch](docs/extensions/localsearch.md) | Implemented | Search, page fetching, extraction, sandboxed page filtering, and semantic reranking. |
 | [confirm-bash](docs/extensions/confirm-bash.md) | Implemented | Model-requested approval gates for Bash commands. |
 | [stop](docs/extensions/stop.md) | Implemented | `/stop` interruption with a durable explanation in conversation history. |
 | [plan-mode](docs/extensions/plan-mode.md) | Implemented | Read-only planning workflow. |

@@ -18,24 +18,18 @@ import { Type } from "typebox";
 import {
 	type Config,
 	type Deps,
-	HttpError,
 	defaultDeps,
+	describeError,
 	describeNetworkError,
 	loadConfig,
 } from "./config.ts";
 import { blockedReason, entryFor, loadState, searchWeb } from "./chain.ts";
-import {
-	type Format,
-	type Page,
-	budget,
-	fetchPage,
-	headingList,
-	sectionRequest,
-	selectSection,
-} from "./fetch.ts";
-import { formatResults, normalizeUrl } from "./format.ts";
+import type { Format } from "./fetch.ts";
+import { formatResults } from "./format.ts";
 import { noProviderMessage, searchNotices, withNotices } from "./notices.ts";
+import { FETCH, SEARCH } from "./prompt.ts";
 import { PROVIDERS } from "./providers.ts";
+import { readPage } from "./read.ts";
 import { type RerankOutcome, rerank } from "./rerank.ts";
 import { type GitHubKind, searchGitHub, searchWikipedia } from "./sources.ts";
 
@@ -50,22 +44,17 @@ export default function localsearch(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "search",
 		label: "Search",
-		description: "Search the web, Wikipedia or GitHub. Returns ranked titles, URLs and snippets.",
-		promptSnippet: "Search the web, Wikipedia or GitHub for current information",
-		promptGuidelines: [
-			"Use search when you need current information, documentation, or prior art you do not already have.",
-		],
+		description: SEARCH.description,
+		promptSnippet: SEARCH.snippet,
+		promptGuidelines: SEARCH.guidelines,
 		parameters: Type.Object({
-			query: Type.String({
-				description:
-					"Search query. GitHub sources accept qualifiers such as language:rust, repo:owner/name, is:open.",
-			}),
+			query: Type.String({ description: SEARCH.params.query }),
 			source: Type.Optional(
 				StringEnum([...SOURCES] as unknown as readonly string[], {
-					description: "Where to search. Defaults to web.",
+					description: SEARCH.params.source,
 				}),
 			),
-			count: Type.Optional(Type.Number({ description: "Results to return, 1-25. Defaults to 10." })),
+			count: Type.Optional(Type.Number({ description: SEARCH.params.count })),
 		}),
 
 		async execute(_toolCallId, params, signal) {
@@ -78,7 +67,7 @@ export default function localsearch(pi: ExtensionAPI) {
 
 			if (!query) {
 				return {
-					content: [{ type: "text" as const, text: "search failed: query is empty." }],
+					content: [{ type: "text" as const, text: `${source} search failed: query is empty.` }],
 					details: { source },
 					isError: true,
 				};
@@ -112,103 +101,42 @@ export default function localsearch(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "fetch",
 		label: "Fetch",
-		description: "Fetch a web page or file by URL and return its content as Markdown.",
-		promptSnippet: "Fetch a URL and read its content as Markdown",
-		promptGuidelines: [
-			"Use fetch to read a page you already have a URL for. Use search to find URLs.",
-			"GitHub URLs resolve through the API: repository, blob, tree, issue, pull request, release and gist URLs all work directly, and return the underlying Markdown or source rather than the rendered page.",
-			"If the result is truncated it lists the headings it omitted; call again with section set to one of them rather than raising max_tokens. The page is cached, so a section read costs no second download.",
-			"A URL with a fragment returns just that section, so a link taken from a page can be fetched as-is.",
-		],
+		description: FETCH.description,
+		promptSnippet: FETCH.snippet,
+		promptGuidelines: FETCH.guidelines,
 		parameters: Type.Object({
-			url: Type.String({ description: "Absolute http(s) URL." }),
-			section: Type.Optional(
-				Type.String({
-					description:
-						"Return only this section of the page, with its subsections. Match is on heading text, case-insensitive, so a heading named in a previous truncation notice can be passed as-is. A URL fragment does the same thing, so a link copied out of a page selects the section it points at.",
-				}),
-			),
-			max_tokens: Type.Optional(
-				Type.Number({ description: "Content budget. Defaults to 8000, max 20000." }),
-			),
+			url: Type.String({ description: FETCH.params.url }),
+			section: Type.Optional(Type.String({ description: FETCH.params.section })),
+			filter: Type.Optional(Type.String({ description: FETCH.params.filter })),
+			max_tokens: Type.Optional(Type.Number({ description: FETCH.params.max_tokens })),
 			format: Type.Optional(
 				StringEnum([...FORMATS] as unknown as readonly string[], {
-					description:
-						"markdown (default), text (markup stripped), or raw (the unprocessed response body).",
+					description: FETCH.params.format,
 				}),
 			),
 		}),
 
 		async execute(_toolCallId, params, signal) {
-			const started = Date.now();
 			const deps = defaultDeps();
 			const cfg = await loadConfig(deps);
-			const url = String(params.url ?? "").trim();
-			const format = (params.format ?? "markdown") as Format;
-			const asked = String(params.section ?? "").trim();
-			const { section, required } = sectionRequest(url, asked, format);
-			const tokens = clamp(Number(params.max_tokens ?? cfg.contentTokens), 100, cfg.maxContentTokens);
+			const outcome = await readPage(
+				{
+					url: String(params.url ?? "").trim(),
+					section: params.section as string | undefined,
+					filter: params.filter as string | undefined,
+					maxTokens: params.max_tokens as number | undefined,
+					format: (params.format ?? "markdown") as Format,
+				},
+				cfg,
+				deps,
+				signal,
+			);
 
-			if (!url) {
-				return {
-					content: [{ type: "text" as const, text: "fetch failed: url is empty." }],
-					details: {},
-					isError: true,
-				};
-			}
-			if (asked && format === "raw") {
-				return {
-					content: [
-						{ type: "text" as const, text: "fetch failed: section needs markdown or text format, not raw." },
-					],
-					details: { url },
-					isError: true,
-				};
-			}
-
-			try {
-				const page = await fetchPage(url, format, cfg, deps, signal);
-
-				const picked = section ? selectSection(page.markdown, section) : undefined;
-				if (picked && !picked.found && required) {
-					return {
-						content: [{ type: "text" as const, text: noSectionMessage(section, picked.available) }],
-						details: { url, section, headings: picked.available.length },
-						isError: true,
-					};
-				}
-
-				const selected = picked?.found ? picked.text : undefined;
-				const shaped = budget(selected ?? page.markdown, tokens);
-
-				return {
-					content: [{ type: "text" as const, text: header(page) + shaped.text }],
-					// Not sent to the model. `container` is what you check when a site extracts badly.
-					details: {
-						url,
-						section: section || undefined,
-						// Distinguishes "read one section" from "the fragment named nothing, so this is
-						// the whole page" without spending a token on saying so.
-						sectionMatched: section ? Boolean(picked?.found) : undefined,
-						finalUrl: page.finalUrl,
-						container: page.container,
-						contentType: page.contentType,
-						bytes: page.bytes,
-						bodyTruncated: page.truncated,
-						budgetTruncated: shaped.truncated,
-						cached: page.cached,
-						ms: Date.now() - started,
-					},
-					isError: false,
-				};
-			} catch (err) {
-				if (signal?.aborted) throw err;
-				return {
-					content: [{ type: "text" as const, text: `fetch failed: ${describeError(err)}` }],
-					details: { url },
-					isError: true,
-				};
-			}
+			return {
+				content: [{ type: "text" as const, text: outcome.text }],
+				details: outcome.details,
+				isError: outcome.isError,
+			};
 		},
 	});
 
@@ -221,6 +149,7 @@ export default function localsearch(pi: ExtensionAPI) {
 		},
 	});
 }
+
 
 interface Outcome {
 	text: string;
@@ -289,34 +218,6 @@ async function runSource(
 	};
 }
 
-/**
- * A title only when the content does not already open with one, and the destination only when the
- * server sent us somewhere other than where we asked. Both are otherwise wasted tokens.
- */
-function header(page: Page): string {
-	const lines: string[] = [];
-	if (page.title && !/^#\s/.test(page.markdown)) lines.push(`# ${page.title}`);
-	// Compared against what was requested, not what the caller asked for: a GitHub URL rewritten to
-	// the raw host went exactly where it was told to, and reporting that as a redirect is a lie.
-	if (page.finalUrl && normalizeUrl(page.finalUrl) !== normalizeUrl(page.requestedUrl)) {
-		lines.push(`_Redirected to ${page.finalUrl}_`);
-	}
-	return lines.length > 0 ? `${lines.join("\n")}\n\n` : "";
-}
-
-
-function noSectionMessage(wanted: string, available: string[]): string {
-	if (available.length === 0) return `fetch: this page has no headings, so "${wanted}" cannot be selected.`;
-	return `fetch: no section matching "${wanted}". Available: ${headingList(available)}`;
-}
-
-function describeError(err: unknown): string {
-	if (!(err instanceof HttpError)) return describeNetworkError(err);
-	// The message is usually already `HTTP 404`; appending the status would only repeat it.
-	const status = String(err.status);
-	return err.status > 0 && !err.message.includes(status) ? `${err.message} — ${status}` : err.message;
-}
-
 async function statusReport(cfg: Config, deps: Deps): Promise<string> {
 	const state = await loadState(deps);
 	const now = deps.now();
@@ -355,7 +256,8 @@ async function statusReport(cfg: Config, deps: Deps): Promise<string> {
 
 async function cacheSize(deps: Deps): Promise<number> {
 	try {
-		return (await readdir(join(deps.stateDir, "cache"))).length;
+		// Only the JSON entries are cached items; each one may have a `.md` sidecar beside it.
+		return (await readdir(join(deps.stateDir, "cache"))).filter((f) => f.endsWith(".json")).length;
 	} catch {
 		// No cache directory yet is a count of zero, not a status failure.
 		return 0;

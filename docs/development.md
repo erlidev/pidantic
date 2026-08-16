@@ -41,10 +41,13 @@ in the volumes declared by `docker-compose.yml` rather than in the repository.
 npm install
 npm test
 npm run smoke -- "your query"
+npm run smoke -- --fetch                          # live page fetches
+npm run smoke -- --filter <url> "grep(/x/i, 3)"   # live filter, with real rank() latency
 ```
 
-`npm test` runs the network-independent localsearch test suite. The smoke command performs a live
-query and therefore requires the relevant local service or external provider configuration.
+`npm test` runs the network-independent test suites of every extension. The smoke commands perform
+live queries and fetches, and therefore require the relevant local service or external provider
+configuration — `--filter` with a `rank()` expression needs the reranker running.
 
 The Ling service requires Docker with the NVIDIA container runtime and a GPU with enough memory
 for the configured 65,536-token context window (a little over 16GB VRAM). The first launch

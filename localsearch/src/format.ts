@@ -83,6 +83,10 @@ export function truncate(text: string, tokens: number): string {
 	return `${(cut > limit * 0.6 ? slice.slice(0, cut) : slice).trimEnd()}…`;
 }
 
+/** Counts in model-facing notices are prose, and "1 sections" reads as a bug in the tool. */
+export const plural = (n: number, word: string) =>
+	`${n.toLocaleString("en-US")} ${word}${n === 1 ? "" : "s"}`;
+
 /** The exact text handed to the model. */
 export function formatResults(results: Result[], descriptionTokens: number): string {
 	if (results.length === 0) return "No results.";

@@ -32,7 +32,6 @@ pidantic/
 │   │   ├── smart-compaction.md
 │   │   └── stop.md
 │   └── roadmaps/
-│       ├── localsearch-fetch.md
 │       └── plan-mode.md
 ├── shared/
 │   └── confirm-dialog.ts
@@ -65,9 +64,12 @@ pidantic/
     │   ├── config.ts
     │   ├── extract.ts
     │   ├── fetch.ts
+    │   ├── filter.ts
     │   ├── format.ts
     │   ├── notices.ts
+    │   ├── prompt.ts
     │   ├── providers.ts
+    │   ├── read.ts
     │   ├── rerank.ts
     │   ├── rewrite.ts
     │   └── sources.ts
@@ -76,9 +78,12 @@ pidantic/
         ├── chain.test.ts
         ├── extract.test.ts
         ├── fetch.test.ts
+        ├── filter.test.ts
         ├── format.test.ts
         ├── notices.test.ts
+        ├── prompt.test.ts
         ├── providers.test.ts
+        ├── read.test.ts
         ├── rerank.test.ts
         ├── rewrite.test.ts
         ├── sources.test.ts
@@ -123,6 +128,10 @@ pidantic/
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
   performs registration, and the remaining source modules separate configuration, provider
   failover, fetching, extraction, formatting, notices, URL rewriting, source adapters, and reranking.
+  `prompt.ts` holds every model-facing instruction string so the permanent token cost can be
+  budgeted and tested in one place; `read.ts` holds the `fetch` pipeline, and `filter.ts` the
+  sandboxed expression evaluator it runs. Both are kept out of `index.ts`, which imports Pi's
+  peer dependencies and therefore cannot be loaded by the tests.
 
 ## Localsearch tests
 

@@ -66,6 +66,8 @@ interface IssueItem {
 	state?: string;
 	body?: string | null;
 	repository_url?: string;
+	/** Present only on pull requests. The issues endpoint returns both, with no other marker. */
+	pull_request?: unknown;
 }
 
 /**
@@ -82,7 +84,9 @@ export async function searchGitHub(
 ): Promise<Result[]> {
 	const token = githubToken(deps);
 	if (kind === "code" && !token) {
-		throw new HttpError(401, "GitHub code search requires GITHUB_TOKEN to be set");
+		// Status 0: the 401 the endpoint would answer with is the consequence of the missing token,
+		// and appending it to the message only repeats what the message already says.
+		throw new HttpError(0, "GitHub code search requires GITHUB_TOKEN to be set");
 	}
 
 	const state = await loadState(deps);
@@ -152,7 +156,9 @@ function parseGitHub(kind: GitHubKind, items: unknown[]): Result[] {
 	return (items as IssueItem[]).map((i) => {
 		const repo = i.repository_url?.replace("https://api.github.com/repos/", "") ?? "";
 		return {
-			title: `${repo}#${i.number} ${i.title}`.trim(),
+			// `search/issues` returns pull requests too, and the URL is the only other thing that says
+			// so — a PR and an issue otherwise render as the same line.
+			title: `${repo}#${i.number}${i.pull_request ? " (PR)" : ""} ${i.title}`.trim(),
 			url: i.html_url,
 			description: clean([i.state ?? "", i.body ?? ""].filter(Boolean).join(" · ")),
 		};

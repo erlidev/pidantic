@@ -5,11 +5,13 @@
  *   npm run smoke -- "rust async runtime"         # search, given query
  *   npm run smoke -- --fetch <url> [url…]         # fetch, given URLs
  *   npm run smoke -- --fetch                      # fetch, a representative set of sites
+ *   npm run smoke -- --filter <url> "<expr>"      # one filter against a real page
  */
 
 import { defaultDeps, loadConfig } from "../src/config.ts";
 import { searchWeb } from "../src/chain.ts";
-import { budget, fetchPage } from "../src/fetch.ts";
+import { fetchPage, shape } from "../src/fetch.ts";
+import { runFilter } from "../src/filter.ts";
 import { formatResults } from "../src/format.ts";
 import { rerank } from "../src/rerank.ts";
 import { searchGitHub, searchWikipedia } from "../src/sources.ts";
@@ -41,16 +43,42 @@ const SAMPLE_URLS = [
 	"https://docs.rs/serde/latest/serde/trait.Serialize.html",
 ];
 
+/** Filters worth timing: the cheap lexical path, and the one that pays for a cross-encoder. */
+const SAMPLE_FILTERS = [
+	"grep(/timeout/i, 3)",
+	'(await rank(sections, "how cancellation works")).slice(0, 2)',
+	'await rank(text, "how cancellation works")',
+];
+
+if (argv[0] === "--filter") {
+	const url = argv[1] ?? "https://docs.python.org/3/library/asyncio-task.html";
+	const sources = argv.length > 2 ? [argv.slice(2).join(" ")] : SAMPLE_FILTERS;
+	const [page] = await time(() => fetchPage(url, "markdown", cfg, deps));
+	console.log(`\n=== ${url} — ~${Math.ceil(page.markdown.length / 4)} tokens extracted`);
+
+	for (const source of sources) {
+		try {
+			const [outcome, ms] = await time(() => runFilter(page.markdown, source, cfg, deps));
+			const body = outcome.kind === "ok" ? outcome.text + outcome.footer : outcome.message;
+			// `rank()` latency on CPU is the number this smoke test exists to report.
+			show(`${source} — ${outcome.stats.rankCalls} rank call(s), ${outcome.stats.rankMs}ms in TEI`, body.slice(0, 900), ms);
+		} catch (err) {
+			console.log(`\n=== ${source} — failed ===\n${(err as Error).message}`);
+		}
+	}
+	process.exit(0);
+}
+
 if (argv[0] === "--fetch") {
 	const urls = argv.length > 1 ? argv.slice(1) : SAMPLE_URLS;
 	for (const url of urls) {
 		try {
 			const [page, ms] = await time(() => fetchPage(url, "markdown", cfg, deps));
-			const shaped = budget(page.markdown, cfg.contentTokens);
+			const shaped = shape(page.markdown, cfg.contentTokens, false);
 			const via = page.container ?? "direct";
 			console.log(
 				`\n=== ${url}\n    via ${via}, ${page.bytes} bytes, ${ms}ms, ` +
-					`~${Math.ceil(shaped.text.length / 4)} tokens${shaped.truncated ? " (truncated)" : ""} ===`,
+					`~${Math.ceil(shaped.text.length / 4)} tokens (${shaped.mode}) ===`,
 			);
 			console.log(shaped.text.slice(0, 700) + (shaped.text.length > 700 ? "\n… [cut for display]" : ""));
 		} catch (err) {
