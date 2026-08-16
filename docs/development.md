@@ -21,13 +21,15 @@ extensions belong there unless an extension requires deliberate dependency isola
 
 ## Shared services
 
-The root Compose stack supplies services shared by extensions. It currently provides SearXNG on
-`127.0.0.1:8888` and a Text Embeddings Inference reranker on `127.0.0.1:8787`.
+The root Compose stack supplies all local Docker services. It provides SearXNG on
+`127.0.0.1:8888`, a Text Embeddings Inference reranker on `127.0.0.1:8787`, and the Ling 3.0 Tiny
+vLLM server on `http://localhost:8989`.
 
 ```bash
 docker compose up -d
 curl 'http://localhost:8888/search?q=test&format=json'
 curl http://localhost:8787/health
+curl http://localhost:8989/v1/models
 ```
 
 SearXNG configuration is in `docker/searxng-settings.yml`. Container-managed model data is stored
@@ -43,6 +45,14 @@ npm run smoke -- "your query"
 
 `npm test` runs the network-independent localsearch test suite. The smoke command performs a live
 query and therefore requires the relevant local service or external provider configuration.
+
+The Ling service requires Docker with the NVIDIA container runtime and a GPU with enough memory
+for the configured 65,536-token context window (a little over 16GB VRAM). The first launch
+downloads the model into the host Hugging Face cache. Stop the complete stack with:
+
+```bash
+docker compose down
+```
 
 ## Adding an extension
 

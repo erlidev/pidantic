@@ -87,7 +87,7 @@ pidantic/
 - `package.json` is both the npm manifest and Pi package manifest. Its `pi.extensions` list is the
   authoritative registry of extension entry points.
 - `package-lock.json` pins the shared Node dependency graph.
-- `docker-compose.yml` defines the SearXNG and reranker services used by localsearch.
+- `docker-compose.yml` defines the SearXNG, reranker, and Ling 3.0 Tiny services.
 
 ## Documentation
 

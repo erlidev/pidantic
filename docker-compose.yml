@@ -1,11 +1,13 @@
-# Shared local services for extensions in this package.
+# Shared local services for this package.
 #
 #   docker compose up -d
 #   curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
 #   curl http://localhost:8787/health                        # reranker
+#   curl http://localhost:8989/v1/models                    # Ling 3.0 Tiny
 #
-# Both bind to loopback only: the SearXNG limiter is off and neither service has auth, so they
-# must not be reachable off-host.
+# SearXNG and the reranker bind to loopback only: the SearXNG limiter is off and neither service
+# has auth, so they must not be reachable off-host. Ling is exposed on all host interfaces to
+# preserve the original Docker port mapping.
 
 # Preserve the existing project identity after moving this file from the localsearch directory.
 # The services are package-wide despite the legacy Docker names.
@@ -68,3 +70,29 @@ services:
       timeout: 5s
       retries: 3
       start_period: 60s
+
+  ling-tiny:
+    image: vllm/vllm-openai:nightly
+    container_name: ling-tiny
+    ipc: host
+    ports:
+      - "8989:8000"
+    gpus: all
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    command:
+      - inclusionAI/Ling-3.0-tiny-fp8
+      - --trust-remote-code
+      - --mamba-cache-mode
+      - align
+      - --max-model-len
+      - "65536"
+      - --kv-cache-memory
+      - "4294967296"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - ling3
+      - --reasoning-parser
+      - ling3
+      - --hf-overrides
+      - '{"quantization_config":{"activation_scheme":"dynamic","fmt":"e4m3","quant_method":"fp8","scale_fmt":"ue8m0","weight_block_size":[128,128],"modules_to_not_convert":["fused_qkv_a_proj","q_a_proj","q_b_proj","fused_qkv_a_proj_with_mqa","kv_a_proj_with_mqa","kv_b_proj","lm_head","word_embeddings","b_proj","mlp.gate","3.attention.g_proj","7.attention.g_proj","11.attention.g_proj","15.attention.g_proj","19.attention.g_proj","23.attention.g_proj"]}}'
