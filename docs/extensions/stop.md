@@ -24,7 +24,7 @@ nothing marking it as interrupted — models routinely read that as their own fi
 
 This extension is registered by the repository's root package manifest. Install the package as
 described in the [development guide](../development.md), then restart Pi or run `/reload`. No build
-step is required; Pi loads TypeScript through jiti.
+step is required; Pi loads the TypeScript entry points directly.
 
 ## How it works
 

@@ -17,7 +17,7 @@ write_plan(...)      → approval dialog → write the plan → restore tools ne
 
 This extension is already registered in the repository's root package manifest. Install the package
 as described in the [development guide](../development.md), then restart Pi or run `/reload`. No
-build step is required; Pi loads TypeScript through jiti.
+build step is required; Pi loads the TypeScript entry points directly.
 
 ## Entering and exiting
 
@@ -154,6 +154,14 @@ write_plan({
   markdown: "...complete plan..."
 })
 ```
+
+The tool parameters are:
+
+| Parameter | Required | Value |
+| --- | --- | --- |
+| `path` | Yes | Relative or absolute `.md` path inside the current working directory |
+| `title` | Yes | Plan title shown during approval |
+| `markdown` | Yes | Complete Markdown plan, without surrounding commentary |
 
 The path must stay inside the current working directory, use a `.md` extension, and not name a
 directory. Missing parent directories are created. Existing files trigger an explicit overwrite

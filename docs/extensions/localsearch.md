@@ -56,15 +56,17 @@ refusing: `curl 'http://localhost:8888/search?q=test&format=json' | jq '.unrespo
 ### 1. Services
 
 ```bash
-docker compose up -d
+docker compose up -d searxng reranker
 curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
 curl http://localhost:8787/health                        # reranker
 ```
 
-Two services, both CPU-only and bound to loopback:
+These are the two services used by the implemented localsearch features. Both are CPU-only and
+bound to loopback:
 
-**SearXNG** (required — the default web provider, and the only one if you set no API keys). `json` in
-`search.formats` and `server.limiter: false` are both mandatory — without them the API returns 403 or rate-limits your own agent.
+**SearXNG** (required for the default web provider; replaceable with a compatible JSON API through
+`SEARXNG_URL`). `json` in `search.formats` and `server.limiter: false` are both mandatory —
+without them the API returns 403 or rate-limits your own agent.
 
 **Reranker** (optional but recommended for search, required for `rank()`).
 `cross-encoder/ms-marco-MiniLM-L-6-v2`: ~90MB, ready in ~25s, ~110ms to rank a 30-result pool.
@@ -90,15 +92,20 @@ architectures), set `--model-id BAAI/bge-reranker-v2-m3`, drop `--max-batch-toke
 > missing `nvidia-uvm` device — both were ruled out. It looks like a host driver/CUDA-runtime issue
 > rather than anything container-side. The CPU default avoids it entirely.
 
+The Compose file also defines `ling-tiny`, a GPU-backed vLLM service. No current extension uses it.
+Start only `searxng` and `reranker` on machines without NVIDIA Container Toolkit. `SEARXNG_SECRET`
+is consumed by Compose/SearXNG, not by this extension; set a real value in `.env` before exposing
+the service beyond loopback.
+
 ### 2. API keys (optional failover)
 
 All optional. Providers with no key are skipped silently. They are only reached when SearXNG cannot
 answer, so a key is insurance against a broken instance or a CAPTCHA'd engine, not a running cost.
 
 ```bash
-export EXA_API_KEY=...       # $10/month free credits, no card — best results, first failover
-export TAVILY_API_KEY=...    # 1,000 credits/month free, no card
-export BRAVE_API_KEY=...     # only if you already have a key
+export EXA_API_KEY=...       # first hosted failover when configured
+export TAVILY_API_KEY=...    # hosted failover
+export BRAVE_API_KEY=...     # hosted failover
 export GITHUB_TOKEN=...      # required for github_code; raises limits from 60/hr to 5000/hr
 ```
 
@@ -111,14 +118,14 @@ Add the package root to `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "packages": ["/home/eric/Code/pidantic"]
+  "packages": ["/absolute/path/to/pi-extensions"]
 }
 ```
 
 Then `/reload` in a running session, or restart pi. Test without installing:
 
 ```bash
-pi -e /home/eric/Code/pidantic/localsearch/index.ts
+pi -e /absolute/path/to/pi-extensions
 ```
 
 ## The tools
@@ -411,10 +418,19 @@ SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/mo
   "searxngUrl": "http://localhost:8888",
   "rerankUrl": "http://localhost:8787",
   "count": 10,
+  "maxCount": 25,
   "descriptionTokens": 100,
   "poolSize": 30,
   "cacheTtlHours": 24,
   "rerankSources": ["web"],
+  "timeoutMs": 12000,
+  "limits": {
+    "searxng": {},
+    "tavily": {"month": 1000},
+    "exa": {"month": 900},
+    "brave": {"month": 2000},
+    "marginalia": {"day": 100}
+  },
 
   "fetchTimeoutMs": 20000,
   "fetchMaxBytes": 2000000,
@@ -437,8 +453,21 @@ for one filter, ranking included; synchronous runaway is cut off after a fixed 2
 `order` is a preference list, not a fan-out list — only its first usable entry is queried. Move `exa`
 to the front to buy quality with quota; drop a provider from the array to take it out of rotation.
 
-`SEARXNG_URL` and `RERANK_URL` override the URLs. API keys are read from the environment only and
-are never written to config.
+The configuration file is optional. Missing, invalid, or unreadable JSON falls back to defaults.
+`limits` is merged per provider. Environment variables override the two service URLs and credentials
+are never written to config:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `LOCALSEARCH_CONFIG` | `~/.pi/agent/localsearch.json` | Alternate configuration file |
+| `LOCALSEARCH_DIR` | `~/.pi/agent/localsearch` | Cache, quota state, and extracted-page sidecars |
+| `SEARXNG_URL` | `http://localhost:8888` | SearXNG base URL |
+| `RERANK_URL` | `http://localhost:8787` | Reranker base URL; `/rerank` is appended |
+| `EXA_API_KEY` | Unset | Enables Exa failover |
+| `TAVILY_API_KEY` | Unset | Enables Tavily failover |
+| `BRAVE_API_KEY` | Unset | Enables Brave failover |
+| `GITHUB_TOKEN` | Unset | Enables GitHub code search and authenticated GitHub reads |
+| `GH_TOKEN` | Unset | Alias used when `GITHUB_TOKEN` is absent |
 
 ## Development
 

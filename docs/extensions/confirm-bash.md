@@ -32,7 +32,7 @@ This extension is registered by the repository's root package manifest. Install 
 described in the [development guide](../development.md), then restart Pi or run `/reload`.
 
 Requires Pi **≥ 0.84** because it uses the exported `createBashToolDefinition`. No build step is
-required; Pi loads TypeScript through jiti.
+required; Pi loads the TypeScript entry points directly.
 
 Add the steering bullet to `~/.pi/agent/AGENTS.md` (or your project's) so the model knows when it is
 expected:
@@ -43,6 +43,20 @@ expected:
   effects. The command is held until the user approves it in the terminal. Use it sparingly —
   routine reads, builds, and tests should never be gated.
 ```
+
+## Tool parameters
+
+The override preserves Pi's built-in `bash` parameters and adds:
+
+| Parameter | Required | Effect |
+| --- | --- | --- |
+| `command` | Yes | Bash command to execute |
+| `timeout` | No | Built-in Bash timeout in seconds |
+| `confirm` | No | When `true`, hold the command for interactive approval |
+| `reason` | No | One-line explanation shown in the approval dialog |
+
+Only `confirm: true` opens the dialog. A denial can include a free-text reason, which is returned to
+the model. Calls without `confirm: true` retain normal Pi behavior.
 
 ## Configuration
 

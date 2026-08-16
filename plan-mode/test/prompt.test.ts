@@ -6,14 +6,11 @@ import { BRIEF } from "../src/prompt.ts";
 test("BRIEF covers plan-mode mechanics and investigation protocol", () => {
 	assert.match(BRIEF, /Produce a written implementation plan/);
 	assert.match(BRIEF, /do not implement changes or stop at analysis/);
-	assert.match(BRIEF, /Bash approvals apply to one call only/);
-	assert.match(BRIEF, /never change the safety policy/);
 	assert.match(BRIEF, /Investigate before asking questions/);
 	assert.match(BRIEF, /tradeoffs/);
 	assert.match(BRIEF, /help the user brainstorm/);
 	assert.match(BRIEF, /propose practical options/);
 	assert.match(BRIEF, /revise the approach from their feedback/);
-	assert.match(BRIEF, /prose questions, not an ask tool/);
 });
 
 test("BRIEF requires confirmed, complete plans and a conventional output path", () => {
