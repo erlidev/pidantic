@@ -1,0 +1,46 @@
+# SearXNG settings for local API use.
+#
+# The two settings that matter: `json` must be in search.formats or the API returns 403, and
+# server.limiter must be false or repeated agent queries get rate-limited by SearXNG itself.
+
+use_default_settings: true
+
+general:
+  instance_name: "localsearch"
+  # No usage statistics for a single-user instance.
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+server:
+  # Overridden by SEARXNG_SECRET in docker-compose.yml. Only matters for signed URLs on a
+  # multi-user instance; this one is bound to loopback.
+  secret_key: "localsearch"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+ui:
+  infinite_scroll: false
+
+engines:
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  # Both consistently answered "too many requests" / "CAPTCHA" from this host during testing;
+  # leaving them enabled only adds latency to every query.
+  - name: brave
+    disabled: true
+  - name: startpage
+    disabled: true
+  - name: wikipedia
+    # Covered by the extension's own wikipedia source; duplicate hits waste pool slots.
+    disabled: true

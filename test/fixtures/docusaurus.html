@@ -1,0 +1,24 @@
+<!doctype html><html><head><title>Routing | Example Docs</title></head>
+<body>
+<nav class="navbar"><a href="/">Home</a><a href="/docs">Docs</a></nav>
+<div class="main-wrapper">
+<aside class="theme-doc-sidebar-container"><ul><li><a href="/docs/intro">Introduction</a></li><li><a href="/docs/routing">Routing</a></li></ul></aside>
+<main>
+<article>
+<div class="theme-doc-markdown markdown">
+<h1>Routing<a class="hash-link" href="#routing" title="Direct link">​</a></h1>
+<p>Routes are declared in <code>routes.ts</code>. See the <a href="../api/router">router API</a> for the full surface.</p>
+<p>Every route needs a path and a handler. Paths are matched in declaration order, so put specific routes before catch-alls or the catch-all will swallow them.</p>
+<h2>Defining a route<a class="hash-link" href="#defining-a-route">​</a></h2>
+<div class="language-typescript codeBlockContainer"><div class="codeBlockContent"><pre class="prism-code language-typescript"><code><span class="token-line">router.get("/users/:id", getUser);</span></code></pre></div></div>
+<h2>Options<a class="hash-link" href="#options">​</a></h2>
+<table><thead><tr><th>Option</th><th>Type</th><th>Default</th></tr></thead>
+<tbody><tr><td><code>caseSensitive</code></td><td>boolean</td><td><code>false</code></td></tr>
+<tr><td><code>strict</code></td><td>boolean</td><td><code>false</code></td></tr></tbody></table>
+</div>
+</article>
+</main>
+</div>
+<footer class="footer"><p>Copyright © 2026 Example.</p></footer>
+<script>window.__DOCUSAURUS = {"version":"3.0"};</script>
+</body></html>

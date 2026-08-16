@@ -1,0 +1,31 @@
+{
+	"name": "pi-localsearch",
+	"version": "0.1.0",
+	"type": "module",
+	"private": true,
+	"description": "Web, Wikipedia and GitHub search for the pi coding agent, with provider failover and local reranking.",
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"test": "node --test test/*.test.ts",
+		"smoke": "node test/smoke.ts"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"dependencies": {
+		"@mozilla/readability": "^0.6.0",
+		"jsdom": "^30.0.1",
+		"turndown": "^7.2.4",
+		"turndown-plugin-gfm": "^1.0.2"
+	},
+	"devDependencies": {
+		"@types/jsdom": "^30.0.0",
+		"@types/turndown": "^5.0.6"
+	}
+}

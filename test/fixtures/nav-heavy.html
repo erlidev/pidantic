@@ -1,0 +1,12 @@
+<!doctype html><html><head><title>A Blog Post</title></head>
+<body>
+<div id="wrapper">
+<div class="sidebar"><ul><li><a href="/1">Link one</a></li><li><a href="/2">Link two</a></li><li><a href="/3">Link three</a></li></ul></div>
+<div class="post-body">
+<h1>Why caching is hard</h1>
+<p>Cache invalidation is famously one of the two hard problems in computer science, alongside naming things and off-by-one errors. The joke survives because it keeps being true in practice.</p>
+<p>The difficulty is not the mechanism. Storing a value under a key and reading it back is trivial. The difficulty is knowing when the stored value stopped being the truth, which is a question about the rest of the system rather than about the cache.</p>
+<p>Every caching strategy is therefore a bet about how the underlying data changes. Time-to-live bets that staleness is bounded by a clock. Write-through bets that every writer knows about the cache.</p>
+</div>
+</div>
+</body></html>
