@@ -29,7 +29,6 @@ pidantic/
 │   │   ├── confirm-bash.md
 │   │   ├── localsearch.md
 │   │   ├── plan-mode.md
-│   │   ├── questions.md
 │   │   ├── smart-compaction.md
 │   │   └── stop.md
 │   └── roadmaps/
@@ -40,8 +39,6 @@ pidantic/
 ├── stop/
 │   └── index.ts
 ├── plan-mode/
-│   └── index.ts
-├── questions/
 │   └── index.ts
 ├── smart-compaction/
 │   └── index.ts
@@ -103,7 +100,7 @@ pidantic/
 - `confirm-bash/` overrides Pi's Bash tool schema with optional confirmation fields.
   `index.ts` registers the override and gate; `confirm-dialog.ts` implements the interactive TUI.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
-- `plan-mode/`, `questions/`, and `smart-compaction/` currently expose valid no-op entry points.
+- `plan-mode/` and `smart-compaction/` currently expose valid no-op entry points.
   They remain loadable while their implementations are developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
   performs registration, and the remaining source modules separate configuration, provider

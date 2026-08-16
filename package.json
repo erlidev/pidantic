@@ -13,8 +13,7 @@
 			"./confirm-bash/index.ts",
 			"./stop/index.ts",
 			"./plan-mode/index.ts",
-			"./smart-compaction/index.ts",
-			"./questions/index.ts"
+			"./smart-compaction/index.ts"
 		]
 	},
 	"scripts": {
