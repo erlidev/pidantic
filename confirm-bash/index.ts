@@ -21,9 +21,9 @@ import {
 	SettingsManager,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { askConfirmation } from "./confirm-dialog.ts";
+import { askConfirmation } from "../shared/confirm-dialog.ts";
 
 /** Escape hatch for non-interactive runs (`pi -p`, `--mode json`), where there is nobody to ask. */
 const HEADLESS_ENV = "PI_CONFIRM_BASH_HEADLESS";
@@ -59,7 +59,7 @@ type ConfirmBashArgs = {
 type BashRenderContext = {
 	state: { startedAt: number | undefined; endedAt: number | undefined };
 	executionStarted: boolean;
-	lastComponent: Text | undefined;
+	lastComponent: Component | undefined;
 };
 
 export default function confirmBash(pi: ExtensionAPI) {
@@ -118,7 +118,7 @@ export default function confirmBash(pi: ExtensionAPI) {
 				text += `\n${theme.fg("muted", `  ⚠ ${args.reason ?? "confirmation requested"}`)}`;
 			}
 
-			const component = context.lastComponent ?? new Text("", 0, 0);
+			const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 			component.setText(text);
 			return component;
 		},
@@ -140,7 +140,11 @@ export default function confirmBash(pi: ExtensionAPI) {
 			};
 		}
 
-		const decision = await askConfirmation(ctx, input.command, input.reason);
+		const decision = await askConfirmation(ctx, {
+			title: "Confirm command",
+			body: input.command,
+			reason: input.reason,
+		});
 		if (decision.approved) return undefined;
 
 		return {

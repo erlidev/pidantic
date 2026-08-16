@@ -1,8 +1,8 @@
 /**
- * The confirmation dialog shown when the model sets `confirm: true` on a bash call.
+ * A confirmation dialog with an optional free-text denial reason.
  *
- * Structured like examples/extensions/question.ts: a plain component object driven by
- * ctx.ui.custom(). Everything is re-rendered from the `theme` handed to the factory on each
+ * A plain component object driven by ctx.ui.custom(). Everything is re-rendered from the `theme`
+ * handed to the factory on each
  * invalidate(), so a live /theme switch is picked up (pi's own ExtensionSelectorComponent bakes
  * colors into Text children in its constructor and does not).
  */
@@ -23,18 +23,25 @@ export interface ConfirmDecision {
 	reason?: string;
 }
 
+export interface ConfirmationOptions {
+	title: string;
+	body: string;
+	reason?: string;
+	approveLabel?: string;
+	denyLabel?: string;
+}
+
 const APPROVE = 0;
 const DENY = 1;
 
 /**
- * Block until the user approves or denies `command`.
+ * Block until the user approves or denies the requested action.
  *
  * Resolves to a denial if the turn is aborted while the dialog is open.
  */
 export async function askConfirmation(
 	ctx: ExtensionContext,
-	command: string,
-	reason: string | undefined,
+	{ title, body, reason, approveLabel = "Approve", denyLabel = "Deny…" }: ConfirmationOptions,
 ): Promise<ConfirmDecision> {
 	if (ctx.signal?.aborted) return { approved: false };
 
@@ -143,11 +150,11 @@ export async function askConfirmation(
 
 			lines.push(rule);
 			lines.push("");
-			addWrapped(" ", theme.fg("accent", theme.bold("Confirm command")));
+			addWrapped(" ", theme.fg("accent", theme.bold(title)));
 			lines.push("");
 
-			for (const commandLine of command.split("\n")) {
-				addWrapped("   ", theme.fg("text", commandLine));
+			for (const bodyLine of body.split("\n")) {
+				addWrapped("   ", theme.fg("text", bodyLine));
 			}
 
 			if (reason) {
@@ -156,7 +163,7 @@ export async function askConfirmation(
 			}
 
 			lines.push("");
-			const labels = ["Approve", `Deny…${denyMode ? " ✎" : ""}`];
+			const labels = [approveLabel, `${denyLabel}${denyMode ? " ✎" : ""}`];
 			for (let i = 0; i < labels.length; i++) {
 				const selected = i === optionIndex;
 				const prefix = selected ? theme.fg("accent", "→ ") : "  ";

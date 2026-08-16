@@ -32,14 +32,29 @@ pidantic/
 │   │   ├── smart-compaction.md
 │   │   └── stop.md
 │   └── roadmaps/
-│       └── localsearch-fetch.md
-├── confirm-bash/
-│   ├── index.ts
+│       ├── localsearch-fetch.md
+│       └── plan-mode.md
+├── shared/
 │   └── confirm-dialog.ts
+├── confirm-bash/
+│   └── index.ts
 ├── stop/
 │   └── index.ts
 ├── plan-mode/
-│   └── index.ts
+│   ├── index.ts
+│   ├── src/
+│   │   ├── bash-policy.ts
+│   │   ├── index.ts
+│   │   ├── plan-file.ts
+│   │   ├── policy.ts
+│   │   ├── prompt.ts
+│   │   └── state.ts
+│   └── test/
+│       ├── bash-policy.test.ts
+│       ├── plan-file.test.ts
+│       ├── policy.test.ts
+│       ├── prompt.test.ts
+│       └── state.test.ts
 ├── smart-compaction/
 │   └── index.ts
 └── localsearch/
@@ -98,10 +113,13 @@ pidantic/
 ## Extension directories
 
 - `confirm-bash/` overrides Pi's Bash tool schema with optional confirmation fields.
-  `index.ts` registers the override and gate; `confirm-dialog.ts` implements the interactive TUI.
+- `shared/` contains reusable extension components, including the interactive confirmation dialog.
+  `confirm-bash/index.ts` registers the Bash override and gate.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
-- `plan-mode/` and `smart-compaction/` currently expose valid no-op entry points.
-  They remain loadable while their implementations are developed.
+- `plan-mode/` provides a read-only investigation mode with policy-guarded Bash and an approval
+  workflow that writes the finished plan and restores the prior tool set.
+- `smart-compaction/` currently exposes a valid no-op entry point while its implementation is
+  developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
   performs registration, and the remaining source modules separate configuration, provider
   failover, fetching, extraction, formatting, notices, URL rewriting, source adapters, and reranking.

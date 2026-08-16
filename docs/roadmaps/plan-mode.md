@@ -1,6 +1,6 @@
 # plan-mode — read-only planning that ends in a written plan
 
-Status: **design final, unimplemented**. Four decisions are resolved (bash policy, exit path,
+Status: **implemented**. Four decisions are resolved (bash policy, exit path,
 question mechanism, output path); the remaining `DECIDE` markers are noted inline where they only
 affect polish.
 
@@ -94,6 +94,10 @@ Pure functions over a tool registry. No pi imports beyond types, so it is trivia
 
 ## Phase 2 — `plan-mode/src/bash-policy.ts`, the command classifier
 
+Implementation note: the allowlist is intentionally maintained as plain data in
+`plan-mode/src/bash-policy.ts`. Additions should be made only after confirming that a command is
+read-only; omissions degrade to a confirmation prompt rather than widening access silently.
+
 The risky module, so it is isolated, pure, and the only one with heavy test coverage.
 
 - [ ] `classify(command: string): {verdict: "allow" | "ask", reason?: string}`. Only two verdicts —
@@ -177,8 +181,8 @@ The brief has to fight the model's default bias toward producing an answer. Cont
 - [ ] **Say where the plan goes**: the model chooses the path, and it should look for an existing
       convention in the repo (`docs/plans/`, `docs/roadmaps/`, `.agent/`, a root `TODO.md`) before
       inventing one. This was the explicit decision — different projects, different layouts.
-- [ ] Clarifying questions are **prose only**. No `ask` tool: that is the `questions/` extension's
-      job and duplicating it here would create two competing surfaces.
+- [ ] Clarifying questions are **prose only**. No `ask` tool is available in plan mode; the model
+      asks in its own response.
 - [ ] Keep the brief under ~400 tokens. It is on every request of every planning run.
 
 ## Phase 5 — `plan-mode/src/plan-file.ts`, path validation and the write
@@ -264,11 +268,3 @@ The brief has to fight the model's default bias toward producing an answer. Cont
       the mode survives.
 
 ---
-
-## Unrelated discrepancy found while planning
-
-`docs/overview.md` documents a `questions/` directory and `docs/extensions/questions.md`, and
-`README.md` lists a `questions` extension. Neither the directory nor the doc exists on disk, and
-`questions/index.ts` is absent from `pi.extensions` in `package.json`. Out of scope here — flagging
-it rather than fixing it, since the fix is either creating the scaffold or deleting three doc
-references, and that is a separate call.
