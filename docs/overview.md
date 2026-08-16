@@ -11,7 +11,7 @@ under `node_modules/`, downloaded model data under `docker/reranker-data/`, and 
 `.git/` are intentionally excluded.
 
 ```text
-pi-extensions/
+pidantic/
 ├── .gitignore
 ├── .npmrc
 ├── AGENTS.md

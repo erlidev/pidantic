@@ -6,14 +6,14 @@ The repository is one Pi package. Add its root to `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "packages": ["/home/eric/Code/pi-extensions"]
+  "packages": ["/home/eric/Code/pidantic"]
 }
 ```
 
 Run `/reload` in Pi or restart it. Load the package for one run without changing settings with:
 
 ```bash
-pi -e /home/eric/Code/pi-extensions
+pi -e /home/eric/Code/pidantic
 ```
 
 The root `package.json` is the only package manifest. Runtime and peer dependencies shared by the

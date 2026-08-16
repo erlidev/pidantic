@@ -110,14 +110,14 @@ Add the package root to `~/.pi/agent/settings.json`:
 
 ```json
 {
-  "packages": ["/home/eric/Code/pi-extensions"]
+  "packages": ["/home/eric/Code/pidantic"]
 }
 ```
 
 Then `/reload` in a running session, or restart pi. Test without installing:
 
 ```bash
-pi -e /home/eric/Code/pi-extensions/localsearch/index.ts
+pi -e /home/eric/Code/pidantic/localsearch/index.ts
 ```
 
 ## The tools
@@ -299,7 +299,7 @@ are never written to config.
 ## Development
 
 ```bash
-npm install                           # run from the pi-extensions package root
+npm install                           # run from the pidantic package root
 npm test                              # 115 unit tests, no network
 npm run smoke -- "your query"         # live: hits SearXNG, Wikipedia, GitHub, Marginalia
 npm run smoke -- --fetch              # live: fetches one page per generator and GitHub URL shape

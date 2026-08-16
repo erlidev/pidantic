@@ -1,9 +1,9 @@
 {
-	"name": "pi-extensions",
+	"name": "pidantic",
 	"version": "0.1.0",
 	"type": "module",
 	"private": true,
-	"description": "A local collection of extensions for the pi coding agent.",
+	"description": "A local collection of extensions for the Pi coding agent.",
 	"keywords": [
 		"pi-package"
 	],
