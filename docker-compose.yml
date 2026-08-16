@@ -1,4 +1,4 @@
-# Services backing the localsearch extension.
+# Shared local services for extensions in this package.
 #
 #   docker compose up -d
 #   curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
@@ -6,6 +6,10 @@
 #
 # Both bind to loopback only: the SearXNG limiter is off and neither service has auth, so they
 # must not be reachable off-host.
+
+# Preserve the existing project identity after moving this file from the localsearch directory.
+# The services are package-wide despite the legacy Docker names.
+name: localsearch
 
 services:
   # Primary web search provider. Aggregates Google, Bing and DuckDuckGo, and handles their

@@ -1,17 +1,23 @@
 {
-	"name": "pi-localsearch",
+	"name": "pi-extensions",
 	"version": "0.1.0",
 	"type": "module",
 	"private": true,
-	"description": "Web, Wikipedia and GitHub search for the pi coding agent, with provider failover and local reranking.",
+	"description": "A local collection of extensions for the pi coding agent.",
+	"keywords": [
+		"pi-package"
+	],
 	"pi": {
 		"extensions": [
-			"./index.ts"
+			"./localsearch/index.ts",
+			"./plan-mode/index.ts",
+			"./smart-compaction/index.ts",
+			"./questions/index.ts"
 		]
 	},
 	"scripts": {
-		"test": "node --test test/*.test.ts",
-		"smoke": "node test/smoke.ts"
+		"test": "node --test localsearch/test/*.test.ts",
+		"smoke": "node localsearch/test/smoke.ts"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
