@@ -14,7 +14,7 @@
 
 ## Engineering Approach
 - Before implementing, think through the pragmatic approach — not the cleverest one, not the most generic one. Solve the actual problem.
-- When there are multiple reasonable approaches, present the options with their tradeoffs (performance, security, complexity, maintainability) and the user choose. Don't silently pick one and move on.
+- When there are multiple reasonable approaches, present the options with their tradeoffs (performance, security, complexity, maintainability) and let the user choose. Don't silently pick one and move on.
 - Keep new features modular: clear boundaries, minimal coupling, no reaching into internals of other modules.
 - Call out edge cases, missing error handling, and untested assumptions explicitly rather than leaving them implicit in the code.
 - Write complete code: Each new feature and refactor should integrate fully into the existing codebase.
