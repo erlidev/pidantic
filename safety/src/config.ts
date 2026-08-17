@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { SafetyMode } from "../../shared/mode-registry.ts";
 
 export interface ClassifierConfig {
@@ -8,6 +8,8 @@ export interface ClassifierConfig {
 	url: string;
 	model: string;
 	timeoutMs: number;
+	/** Budget for a background explanation, which nothing waits on and so may be far more patient. */
+	explainTimeoutMs: number;
 	/** Total completion budget, including any reasoning tokens the server emits. */
 	maxTokens: number;
 	/** null defers to the server's own chat-template default; a boolean forces it. */
@@ -18,6 +20,8 @@ export interface ClassifierConfig {
 	sampler: Record<string, unknown>;
 	classifyBash: boolean;
 	classifyUnknownTools: boolean;
+	/** Describe Bash commands the deterministic policy resolved on its own. Requires `enabled`. */
+	explainBash: boolean;
 }
 
 export interface SafetyConfig {
@@ -25,6 +29,7 @@ export interface SafetyConfig {
 	classifier: ClassifierConfig;
 	allowBinaries: string[];
 	denyBinaries: string[];
+	allowReadPaths: string[];
 	allowTools: string[];
 	denyTools: string[];
 	checkpointRetain: number;
@@ -37,15 +42,18 @@ export const DEFAULTS: SafetyConfig = {
 		url: "http://localhost:8989/v1",
 		model: "inclusionAI/Ling-3.0-tiny-int4",
 		timeoutMs: 2000,
+		explainTimeoutMs: 15000,
 		maxTokens: 1024,
 		thinking: null,
 		temperature: null,
 		sampler: {},
 		classifyBash: true,
 		classifyUnknownTools: true,
+		explainBash: true,
 	},
 	allowBinaries: [],
 	denyBinaries: [],
+	allowReadPaths: [],
 	allowTools: [],
 	denyTools: [],
 	checkpointRetain: 20,
@@ -53,6 +61,11 @@ export const DEFAULTS: SafetyConfig = {
 
 function strings(value: unknown): string[] | undefined {
 	return Array.isArray(value) && value.every((item) => typeof item === "string") ? [...new Set(value)] : undefined;
+}
+
+function absolutePaths(value: unknown): string[] | undefined {
+	const values = strings(value);
+	return values?.every((path) => isAbsolute(path)) ? values : undefined;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -80,6 +93,9 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	const timeoutMs = typeof classifier.timeoutMs === "number" && Number.isFinite(classifier.timeoutMs) && classifier.timeoutMs > 0
 		? Math.floor(classifier.timeoutMs)
 		: DEFAULTS.classifier.timeoutMs;
+	const explainTimeoutMs = typeof classifier.explainTimeoutMs === "number" && Number.isFinite(classifier.explainTimeoutMs) && classifier.explainTimeoutMs > 0
+		? Math.floor(classifier.explainTimeoutMs)
+		: DEFAULTS.classifier.explainTimeoutMs;
 	const maxTokens = typeof classifier.maxTokens === "number" && Number.isFinite(classifier.maxTokens) && classifier.maxTokens > 0
 		? Math.floor(classifier.maxTokens)
 		: DEFAULTS.classifier.maxTokens;
@@ -97,15 +113,18 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 			url: typeof classifier.url === "string" && classifier.url.trim() ? classifier.url.replace(/\/+$/, "") : DEFAULTS.classifier.url,
 			model: typeof classifier.model === "string" && classifier.model.trim() ? classifier.model : DEFAULTS.classifier.model,
 			timeoutMs,
+			explainTimeoutMs,
 			maxTokens,
 			thinking: typeof classifier.thinking === "boolean" ? classifier.thinking : DEFAULTS.classifier.thinking,
 			temperature,
 			sampler: sampler(classifier.sampler),
 			classifyBash: typeof classifier.classifyBash === "boolean" ? classifier.classifyBash : DEFAULTS.classifier.classifyBash,
 			classifyUnknownTools: typeof classifier.classifyUnknownTools === "boolean" ? classifier.classifyUnknownTools : DEFAULTS.classifier.classifyUnknownTools,
+			explainBash: typeof classifier.explainBash === "boolean" ? classifier.explainBash : DEFAULTS.classifier.explainBash,
 		},
 		allowBinaries: strings(raw.allowBinaries) ?? DEFAULTS.allowBinaries,
 		denyBinaries: strings(raw.denyBinaries) ?? DEFAULTS.denyBinaries,
+		allowReadPaths: absolutePaths(raw.allowReadPaths) ?? DEFAULTS.allowReadPaths,
 		allowTools: strings(raw.allowTools) ?? DEFAULTS.allowTools,
 		denyTools: strings(raw.denyTools) ?? DEFAULTS.denyTools,
 		checkpointRetain,

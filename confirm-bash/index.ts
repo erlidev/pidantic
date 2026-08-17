@@ -25,6 +25,7 @@ import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { askConfirmation } from "../shared/confirm-dialog.ts";
 import { getSafetyMode, wasSafetyResolved } from "../shared/mode-registry.ts";
+import { markToolNoteRenderer, toolNote, watchToolNote } from "../shared/tool-notes.ts";
 
 /** Escape hatch for non-interactive runs (`pi -p`, `--mode json`), where there is nobody to ask. */
 const HEADLESS_ENV = "PI_CONFIRM_BASH_HEADLESS";
@@ -61,7 +62,24 @@ type BashRenderContext = {
 	state: { startedAt: number | undefined; endedAt: number | undefined };
 	executionStarted: boolean;
 	lastComponent: Component | undefined;
+	toolCallId: string;
+	/** Repaints this tool row. Present in pi's ToolRenderContext; guarded at the call site anyway. */
+	invalidate?: () => void;
 };
+
+const NOTE_MAX = 200;
+
+/**
+ * Built-in bash result components accept children; the guard keeps a future pi build from throwing.
+ * The note is printed verbatim — safety composes the whole line, which is a command explanation on
+ * its own or prefixed with the decision that produced it.
+ */
+function appendNote(component: Component, note: string, theme: Theme): void {
+	const parent = component as Component & { addChild?: (child: Component) => void };
+	if (typeof parent.addChild !== "function") return;
+	const text = note.replace(/\s+/g, " ").trim().slice(0, NOTE_MAX);
+	parent.addChild(new Text(`\n${theme.fg("success", "◆")} ${theme.fg("muted", text)}`, 0, 0));
+}
 
 export default function confirmBash(pi: ExtensionAPI) {
 	if (typeof createBashToolDefinition !== "function") {
@@ -123,8 +141,27 @@ export default function confirmBash(pi: ExtensionAPI) {
 			return component;
 		},
 
-		// renderResult deliberately omitted — the built-in renderer is inherited per slot.
+		// Delegates to the built-in result renderer and only appends an extension note under it, so
+		// output preview, truncation warnings, and the "Took 1.2s" line stay pi's. The built-in
+		// rebuilds the same component object on every render, clearing its children first, so the note
+		// has to be re-added after each delegation rather than once.
+		renderResult: base.renderResult
+			? (result, options, theme: Theme, context: BashRenderContext) => {
+				// The override's details type is widened to unknown by the schema swap; the runtime
+				// value is still the built-in bash result the base renderer produced.
+				const component = base.renderResult!(result as Parameters<NonNullable<typeof base.renderResult>>[0], options, theme, context as never);
+				// Safety's background command explanation lands after the call has finished rendering,
+				// so the row registers its own repaint here rather than waiting to be redrawn by chance.
+				if (typeof context.invalidate === "function") watchToolNote(context.toolCallId, context.invalidate);
+				const note = toolNote(context.toolCallId);
+				if (note) appendNote(component, note, theme);
+				return component;
+			}
+			: undefined,
 	});
+
+	// Declares to safety that a Bash note can be shown under the call instead of as a notice.
+	if (base.renderResult) markToolNoteRenderer("bash");
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;

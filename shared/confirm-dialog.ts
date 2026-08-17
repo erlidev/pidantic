@@ -23,12 +23,25 @@ export interface ConfirmDecision {
 	reason?: string;
 }
 
+/**
+ * A body that styles itself from the live theme. Returned text is used verbatim, so a renderer is
+ * responsible for colouring every part of it.
+ */
+export type BodyRenderer = (theme: { fg(color: string, text: string): string; bold(text: string): string }) => string;
+
 export interface ConfirmationOptions {
 	title: string;
-	body: string;
+	body: string | BodyRenderer;
 	reason?: string;
 	approveLabel?: string;
 	denyLabel?: string;
+	/**
+	 * Hands the caller a callback that redraws the open dialog. Use it when the body renderer closes
+	 * over state that can still change while the user is deciding — safety's command explanation
+	 * arrives from the classifier after the dialog is already up. Calling it once the dialog has
+	 * closed is harmless.
+	 */
+	onRefresh?: (refresh: () => void) => void;
 }
 
 const APPROVE = 0;
@@ -41,7 +54,7 @@ const DENY = 1;
  */
 export async function askConfirmation(
 	ctx: ExtensionContext,
-	{ title, body, reason, approveLabel = "Approve", denyLabel = "Deny…" }: ConfirmationOptions,
+	{ title, body, reason, approveLabel = "Approve", denyLabel = "Deny…", onRefresh }: ConfirmationOptions,
 ): Promise<ConfirmDecision> {
 	if (ctx.signal?.aborted) return { approved: false };
 
@@ -88,6 +101,7 @@ export async function askConfirmation(
 			cachedLines = undefined;
 			tui.requestRender();
 		}
+		onRefresh?.(refresh);
 
 		function handleInput(data: string) {
 			if (denyMode) {
@@ -153,8 +167,10 @@ export async function askConfirmation(
 			addWrapped(" ", theme.fg("accent", theme.bold(title)));
 			lines.push("");
 
-			for (const bodyLine of body.split("\n")) {
-				addWrapped("   ", theme.fg("text", bodyLine));
+			// A renderer already styles every part of its text; a plain string is coloured here.
+			const rendered = typeof body === "function" ? body(theme) : undefined;
+			for (const bodyLine of (rendered ?? (body as string)).split("\n")) {
+				addWrapped("   ", rendered === undefined ? theme.fg("text", bodyLine) : bodyLine);
 			}
 
 			if (reason) {

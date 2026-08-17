@@ -72,8 +72,10 @@ model can continue investigating or finish the plan instead of retrying the same
 
 Bash is an allowlist-plus-confirmation convenience filter. An obviously read-only command runs
 without a prompt. Commands outside the allowlist, commands containing ambiguous shell constructs,
-and commands with potentially mutating flags open a confirmation dialog. The dialog's denial reason
-is returned to the model. Approval applies to one tool call only. Plan mode does not store approved
+and commands with potentially mutating flags open a confirmation dialog. The dialog highlights every
+segment that falls outside the policy directly in the command text and lists each one with its rule
+when there is more than one; see the [safety manual](safety.md) for the shared presentation. The
+dialog's denial reason is returned to the model. Approval applies to one tool call only. Plan mode does not store approved
 command text, modify its static read-only policy, or create a session-level command allowlist. An
 identical later command is classified again and prompts again when it still falls outside the policy.
 

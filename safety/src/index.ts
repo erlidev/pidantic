@@ -8,13 +8,15 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { askConfirmation } from "../../shared/confirm-dialog.ts";
+import { type CommandFinding, type FindingTheme, renderCommandFindings, summarizeFindings } from "../../shared/command-findings.ts";
+import { askConfirmation, type BodyRenderer } from "../../shared/confirm-dialog.ts";
 import {
 	isPlanModeActive,
 	markSafetyResolved,
 	setSafetyMode,
 	type SafetyMode,
 } from "../../shared/mode-registry.ts";
+import { clearToolNotes, recordToolNote, rendersToolNotes } from "../../shared/tool-notes.ts";
 import { SafetyAudit } from "./audit.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { probeClassifier, ResidualClassifier } from "./classifier.ts";
@@ -79,6 +81,33 @@ function writeExcerpt(input: unknown): string {
 	return value.length > WRITE_EXCERPT ? `${value.slice(0, WRITE_EXCERPT)}\n… excerpt truncated` : value;
 }
 
+/**
+ * Show a classifier auto-approval where the user is already looking: as a note under the finished
+ * tool call when that tool's renderer draws notes, otherwise as a notification. The classifier's
+ * explanation of the call is the note's body. Either way the decision is also in `/safety log`.
+ */
+function reportAutoApproval(
+	ctx: Pick<ExtensionContext, "ui">,
+	toolCallId: string | undefined,
+	toolName: string,
+	identity: string,
+	explanation: string,
+): void {
+	if (toolCallId && rendersToolNotes(toolName)) {
+		recordToolNote(toolCallId, `auto-approved · ${explanation}`);
+		return;
+	}
+	ctx.ui.notify(`Safety classifier allowed ${identity} (${explanation})`, "info");
+}
+
+/** Body for a Bash confirmation: the highlighted command, then the explanation once it has arrived. */
+function bashConfirmationBody(command: string, findings: CommandFinding[], explanation: () => string | undefined): BodyRenderer {
+	return (theme: FindingTheme) => {
+		const line = explanation();
+		return line ? `${renderCommandFindings(command, findings, theme)}\n\n${theme.fg("muted", line)}` : renderCommandFindings(command, findings, theme);
+	};
+}
+
 function toolDescription(tool: unknown): string {
 	if (typeof tool !== "object" || tool === null) return "";
 	const description = (tool as Record<string, unknown>).description;
@@ -132,10 +161,37 @@ export default function safety(pi: ExtensionAPI): void {
 		return true;
 	}
 
-	async function confirm(ctx: ExtensionContext, title: string, body: string, reason: string): Promise<string | undefined> {
+	async function confirm(
+		ctx: ExtensionContext,
+		title: string,
+		body: string | BodyRenderer,
+		reason: string,
+		onRefresh?: (refresh: () => void) => void,
+	): Promise<string | undefined> {
 		if (isHeadless(ctx)) return process.env[HEADLESS_ENV] === "allow" ? undefined : headlessReason(title);
-		const decision = await askConfirmation(ctx, { title, body, reason, approveLabel: "Approve", denyLabel: "Deny…" });
+		const decision = await askConfirmation(ctx, { title, body, reason, approveLabel: "Approve", denyLabel: "Deny…", onRefresh });
 		return decision.approved ? undefined : decision.reason ? `User denied: ${decision.reason}` : "User denied this action.";
+	}
+
+	/** Explanations are cosmetic: they are only worth requesting when a UI will actually draw them. */
+	function explanationsWanted(ctx: ExtensionContext): boolean {
+		return !isHeadless(ctx) && config.classifier.enabled && config.classifier.explainBash && !classifier.explanationsDisabled;
+	}
+
+	/**
+	 * Describe a command the deterministic policy allowed on its own, without delaying it. The call
+	 * runs after the gate has already returned, and the note repaints the finished row when it lands.
+	 */
+	function explainInBackground(ctx: ExtensionContext, toolCallId: string | undefined, command: string): void {
+		if (!toolCallId || !rendersToolNotes("bash") || !explanationsWanted(ctx)) return;
+		void classifier.explainBash(command).then((explained) => {
+			if (explained) noteExplanation(toolCallId, explained.explanation);
+		});
+	}
+
+	/** Keeps a confirmed command's explanation in the transcript too, not only in the dialog. */
+	function noteExplanation(toolCallId: string | undefined, explanation: string): void {
+		if (toolCallId && rendersToolNotes("bash")) recordToolNote(toolCallId, explanation);
 	}
 
 	pi.registerFlag("safety", { description: "Start in yolo, auto, or safe safety mode", type: "string" });
@@ -200,22 +256,53 @@ export default function safety(pi: ExtensionAPI): void {
 				cwd: ctx.cwd,
 				allowBinaries: config.allowBinaries,
 				denyBinaries: config.denyBinaries,
+				allowReadPaths: config.allowReadPaths,
 			});
-			if (result.verdict === "allow") return undefined;
-			if (result.verdict === "residual" && state.mode === "auto" && config.classifier.classifyBash) {
-				const preGate = classifierPreGate(command, ctx.cwd);
+			if (result.verdict === "allow") {
+				explainInBackground(ctx, event.toolCallId, command);
+				return undefined;
+			}
+			// Reused by the dialog below when the classifier already described this command.
+			let explanation: string | undefined;
+			// A read-only command whose only finding is an external path is a question about the path,
+			// not about the command, so `auto` asks the classifier that question instead of the user.
+			const externalRead = result.verdict === "ask" && result.findings.length > 0 && result.findings.every((finding) => finding.severity === "advisory");
+			if ((result.verdict === "residual" || externalRead) && state.mode === "auto" && config.classifier.classifyBash) {
+				const preGate = classifierPreGate(command, ctx.cwd, { allowExternalPaths: externalRead });
 				if (preGate.eligible) {
 					const rawIdentity = preGate.tokens?.[0] ?? result.binary ?? command;
 					const identity = rawIdentity.includes("/") ? await canonicalPath(ctx.cwd, rawIdentity) : rawIdentity;
-					const verdict = await classifier.classifyBash(command, identity);
-					audit.record({ kind: "bash", identity, verdict: verdict.verdict, reason: verdict.reason });
+					const verdict = await classifier.classifyBash(command, identity, externalRead);
+					audit.record({ kind: "bash", identity, verdict: verdict.verdict, explanation: verdict.explanation });
 					if (verdict.verdict === "allow") {
-						ctx.ui.notify(`Safety classifier allowed Bash: ${identity} (${verdict.reason})`, "info");
+						reportAutoApproval(ctx, event.toolCallId, "bash", `Bash: ${identity}`, verdict.explanation);
 						return undefined;
 					}
+					// The verdict call already described the command; asking again would duplicate it.
+					// A fail-closed verdict describes the failure instead, so it is not reused here.
+					if (!verdict.failed) explanation = verdict.explanation;
 				}
 			}
-			const reason = await confirm(ctx, "Confirm Bash command", command, result.reason ?? "Command requires confirmation.");
+			// Nothing has described this command yet, so the dialog asks in the background and redraws
+			// itself when the sentence lands. The user is never made to wait on the classifier.
+			let refreshDialog: (() => void) | undefined;
+			if (explanation) {
+				noteExplanation(event.toolCallId, explanation);
+			} else if (explanationsWanted(ctx)) {
+				void classifier.explainBash(command).then((explained) => {
+					if (!explained) return;
+					explanation = explained.explanation;
+					refreshDialog?.();
+					noteExplanation(event.toolCallId, explained.explanation);
+				});
+			}
+			const reason = await confirm(
+				ctx,
+				"Confirm Bash command",
+				bashConfirmationBody(command, result.findings, () => explanation),
+				summarizeFindings(result.findings, result.reason ?? "Command requires confirmation."),
+				(refresh) => { refreshDialog = refresh; },
+			);
 			return reason ? denied(reason) : undefined;
 		}
 
@@ -240,14 +327,19 @@ export default function safety(pi: ExtensionAPI): void {
 			const tool = findTool(event.toolName, pi.getAllTools());
 			const description = toolDescription(tool);
 			const verdict = await classifier.classifyTool(event.toolName, description, event.input);
-			audit.record({ kind: "tool", identity: event.toolName, verdict: verdict.verdict, reason: verdict.reason });
+			audit.record({ kind: "tool", identity: event.toolName, verdict: verdict.verdict, explanation: verdict.explanation });
 			if (verdict.verdict === "allow") {
-				ctx.ui.notify(`Safety classifier allowed tool: ${event.toolName} (${verdict.reason})`, "info");
+				reportAutoApproval(ctx, event.toolCallId, event.toolName, `tool: ${event.toolName}`, verdict.explanation);
 				return undefined;
 			}
 		}
 		const reason = await confirm(ctx, "Confirm tool call", event.toolName, `Unknown tool "${event.toolName}" may change external state.`);
 		return reason ? denied(reason) : undefined;
+	});
+
+	pi.on("session_shutdown", async () => {
+		// Quit, reload, or session replacement all end this run's checkpoints; /safety undo does not span runs.
+		await checkpoints?.dispose().catch(() => undefined);
 	});
 
 	pi.on("before_agent_start", async () => {
@@ -259,8 +351,13 @@ export default function safety(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		config = await loadConfig();
 		classifier = new ResidualClassifier(config.classifier);
+		// Checkpoints never outlive the run that took them: drop this runtime's previous store and
+		// clear refs abandoned by runs that exited without shutting down.
+		await checkpoints?.dispose().catch(() => undefined);
 		checkpoints = new CheckpointStore({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), retain: config.checkpointRetain });
+		void checkpoints.sweepStale().catch(() => undefined);
 		audit.clear();
+		clearToolNotes();
 		checkpointTakenThisTurn = false;
 		checkpointProtectedThisTurn = false;
 		checkpointWarningShown = false;

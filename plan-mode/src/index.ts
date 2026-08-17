@@ -10,6 +10,7 @@ import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { askConfirmation } from "../../shared/confirm-dialog.ts";
 import { classify } from "../../shared/bash-policy.ts";
+import { renderCommandFindings, summarizeFindings } from "../../shared/command-findings.ts";
 import { setPlanModeActive } from "../../shared/mode-registry.ts";
 import { planFileExists, resolvePlanPath, writePlanFile } from "./plan-file.ts";
 import { denyReason, planToolSet } from "./policy.ts";
@@ -329,10 +330,11 @@ export default function planMode(pi: ExtensionAPI): void {
 				};
 			}
 
+			const summary = summarizeFindings(result.findings, result.reason ?? "This command does not match plan mode's read-only policy.");
 			const decision = await askConfirmation(ctx, {
 				title: "Confirm Bash command",
-				body: bashCommand,
-				reason: `${result.reason ?? "This command does not match plan mode's read-only policy."} Approval applies only to this tool call; the command will be checked again if requested later.`,
+				body: (theme) => renderCommandFindings(bashCommand, result.findings, theme),
+				reason: `${summary} Approval applies only to this tool call; the command will be checked again if requested later.`,
 				approveLabel: "Run command",
 				denyLabel: "Deny command…",
 			});

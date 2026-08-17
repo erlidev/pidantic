@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { classify } from "../bash-policy.ts";
+import { classify, tokenizeCommand } from "../bash-policy.ts";
 
-const allowed = (command: string) => assert.deepEqual(classify(command), { verdict: "allow" });
+const allowed = (command: string) => assert.deepEqual(classify(command), { verdict: "allow", findings: [] });
 const needsConfirmation = (command: string) => assert.equal(classify(command).verdict, "ask");
 
 test("allows empty and comment-only commands", () => {
@@ -50,18 +50,38 @@ test("checks every chain segment regardless of short-circuit behavior", () => {
 });
 
 test("reports the unsafe segment and its preceding operator", () => {
-	assert.deepEqual(classify("pwd && rm file"), {
-		verdict: "ask",
-		reason: 'chain segment 2 after "&&": command "rm" requires confirmation',
-	});
-	assert.deepEqual(classify("git log | tee output.txt"), {
-		verdict: "ask",
-		reason: 'chain segment 2 after "|": command "tee" requires confirmation',
-	});
-	assert.deepEqual(classify("cd src\npython script.py"), {
-		verdict: "ask",
-		reason: 'chain segment 2 after a newline: command "python" requires confirmation',
-	});
+	assert.equal(classify("pwd && rm file").reason, 'chain segment 2 after "&&": command "rm" requires confirmation');
+	assert.equal(classify("git log | tee output.txt").reason, 'chain segment 2 after "|": command "tee" requires confirmation');
+	assert.equal(classify("cd src\npython script.py").reason, 'chain segment 2 after a newline: command "python" requires confirmation');
+});
+
+test("reports every violating segment with its span in the command", () => {
+	const command = "pwd && rm file && git log && python script.py";
+	const result = classify(command);
+	assert.deepEqual(
+		result.findings.map((finding) => [finding.segment, command.slice(finding.start, finding.end), finding.reason]),
+		[
+			[2, "rm file", 'command "rm" requires confirmation'],
+			[4, "python script.py", 'command "python" requires confirmation'],
+		],
+	);
+});
+
+test("spans cover quoted, escaped, and multi-line segments exactly", () => {
+	for (const [command, expected] of [
+		["cd src\npython 'my script.py'", "python 'my script.py'"],
+		["pwd; rm my\\ file.txt", "rm my\\ file.txt"],
+		['pwd | tee "out dir/log.txt"', 'tee "out dir/log.txt"'],
+	] as const) {
+		const finding = classify(command).findings[0];
+		assert.equal(command.slice(finding?.start, finding?.end), expected, command);
+	}
+});
+
+test("a command-level failure reports one finding without a span", () => {
+	const result = classify("git log $(cat bad)");
+	assert.equal(result.verdict, "ask");
+	assert.deepEqual(result.findings, [{ reason: "command substitution" }]);
 });
 
 test("classification is stateless and never remembers a previously reviewed command", () => {
@@ -69,7 +89,11 @@ test("classification is stateless and never remembers a previously reviewed comm
 	const first = classify(command);
 	const second = classify(command);
 
-	assert.deepEqual(first, { verdict: "ask", reason: 'command "python" requires confirmation' });
+	assert.deepEqual(first, {
+		verdict: "ask",
+		reason: 'command "python" requires confirmation',
+		findings: [{ reason: 'command "python" requires confirmation', segment: 1, start: 0, end: command.length }],
+	});
 	assert.deepEqual(second, first);
 });
 
@@ -99,6 +123,51 @@ test("asks for redirection, expansion, assignments, and background execution", (
 		"FOO=bar git log",
 		"git log &",
 	]) needsConfirmation(command);
+});
+
+test("parses redirections out of the segment, with their operator, target, and span", () => {
+	const cases: Array<[string, Array<[string, string, string]>]> = [
+		["git log > out.txt", [[">", "out.txt", "> out.txt"]]],
+		["git log >> out.txt", [[">>", "out.txt", ">> out.txt"]]],
+		["git log >| out.txt", [[">|", "out.txt", ">| out.txt"]]],
+		["git log 2> err.log", [["2>", "err.log", "2> err.log"]]],
+		["git log 2>&1", [["2>", "&1", "2>&1"]]],
+		["git log &> out.txt", [["&>", "out.txt", "&> out.txt"]]],
+		["cat < in.txt", [["<", "in.txt", "< in.txt"]]],
+		['cat > "out dir/log.txt"', [[">", "out dir/log.txt", '> "out dir/log.txt"']]],
+		["git log > a.txt 2> b.txt", [[">", "a.txt", "> a.txt"], ["2>", "b.txt", "2> b.txt"]]],
+	];
+	for (const [command, expected] of cases) {
+		const [segment, ...rest] = tokenizeCommand(command).segments;
+		assert.deepEqual(rest, [], command);
+		assert.deepEqual(
+			segment?.redirections.map((redirection) => [redirection.operator, redirection.target, command.slice(redirection.start, redirection.end)]),
+			expected,
+			command,
+		);
+		// The segment span covers the command only, so a redirection is highlighted on its own.
+		assert.equal(command.slice(segment?.start, segment?.end), command.startsWith("cat <") ? "cat" : command.slice(0, command.indexOf(expected[0]![0])).trimEnd(), command);
+	}
+});
+
+test("a redirection inside quotes is an argument, not a redirection", () => {
+	for (const command of ['grep -rn "x>y" src', "grep -rn 'a<b' src", 'echo "2>&1"']) {
+		const [segment, ...rest] = tokenizeCommand(command).segments;
+		assert.deepEqual(rest, [], command);
+		assert.deepEqual(segment?.redirections, [], command);
+	}
+	assert.deepEqual(tokenizeCommand('grep -rn "x>y" src').issues, []);
+});
+
+test("separates issues that break the parse from issues that only hide a value", () => {
+	for (const command of ['git log "unclosed', "git log \\", "git log;", "| pwd", "cat <<EOF", "git log >"]) {
+		assert.equal(tokenizeCommand(command).fatal, true, command);
+	}
+	for (const command of ["git log $HOME", "git log ${HOME}", "git log $(cat bad)", "git log `cat bad`", "git log &", "diff <(sort a) b", "cat > $HOME/out"]) {
+		const parsed = tokenizeCommand(command);
+		assert.equal(parsed.fatal, false, command);
+		assert.equal(parsed.issues.length > 0, true, command);
+	}
 });
 
 test("allows and rejects git subcommands", () => {

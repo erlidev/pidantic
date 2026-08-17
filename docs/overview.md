@@ -37,11 +37,15 @@ pidantic/
 │   └── turndown-plugin-gfm.d.ts
 ├── shared/
 │   ├── bash-policy.ts
+│   ├── command-findings.ts
 │   ├── confirm-dialog.ts
 │   ├── mode-registry.ts
 │   ├── read-only-tools.ts
+│   ├── tool-notes.ts
 │   └── test/
-│       └── bash-policy.test.ts
+│       ├── bash-policy.test.ts
+│       ├── command-findings.test.ts
+│       └── tool-notes.test.ts
 ├── confirm-bash/
 │   └── index.ts
 ├── stop/
@@ -73,9 +77,11 @@ pidantic/
 │   │   ├── state.ts
 │   │   └── tiers.ts
 │   └── test/
+│       ├── harness.ts
 │       ├── checkpoint.test.ts
 │       ├── classifier.test.ts
 │       ├── config.test.ts
+│       ├── gate.test.ts
 │       ├── pre-gate.test.ts
 │       ├── risk-policy.test.ts
 │       ├── state.test.ts
@@ -155,7 +161,25 @@ not expressible in a schema remain in `promptGuidelines`.
 - `confirm-bash/` overrides Pi's Bash tool schema with optional confirmation fields.
 - `shared/` contains reusable extension components: Bash tokenization/read-only policy, read-only
   tool names, cross-extension mode arbitration, and the interactive confirmation dialog.
-  `confirm-bash/index.ts` registers the Bash override and gate.
+  `bash-policy.ts` tokenizes a command once and hands callers the result: segments with their spans,
+  each segment's parsed redirections, and issues split into fatal (the parse cannot be trusted) and
+  non-fatal (the text is parsed, its expansion is not). Callers that hold tokens classify them with
+  `classifyTokens` rather than re-joining them into a string, which would re-read a quoted `|` or `;`
+  as shell structure.
+  `command-findings.ts` holds the finding shape both Bash policies emit — one entry per violating
+  segment, carrying its character span in the original command and its severity — and renders the
+  dialog body that highlights those spans in place, calmly for an advisory and emphatically for a
+  violation. Like `localsearch/src/render.ts`, it imports nothing and takes the
+  theme as a structural argument, so it stays testable. `confirm-dialog.ts` accepts either a plain
+  body string or such a renderer, which receives the live theme on every re-render, and takes an
+  optional `onRefresh` callback so a caller can redraw an open dialog when the state its renderer
+  closes over changes — safety's command explanation arrives while the dialog is already up.
+  `tool-notes.ts` carries one-line annotations from the extension that decides something about a tool
+  call to the extension that renders it, keyed by `toolCallId`; safety's classifier auto-approvals and
+  its background command explanations reach confirm-bash's Bash result renderer this way. Because an
+  explanation can land after the row has been drawn, a renderer also registers that row's repaint
+  callback there, and recording a note fires it. `confirm-bash/index.ts` registers the Bash override
+  and gate.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
 - `plan-mode/` provides a read-only investigation mode with policy-guarded Bash and an approval
   workflow that writes the finished plan and restores the prior tool set.
@@ -173,7 +197,9 @@ not expressible in a schema remain in `promptGuidelines`.
   budgeted and tested in one place; `read.ts` holds the `fetch` pipeline, and `filter.ts` the
   sandboxed expression evaluator it runs. `render.ts` builds the compact transcript line for each
   tool call and takes the theme as a structural argument rather than importing it. All are kept out
-  of `index.ts`, which imports Pi's peer dependencies and therefore cannot be loaded by the tests.
+  of `index.ts` so registration stays separable from logic. Pi's packages are also devDependencies,
+  so an `index.ts` can be imported by a test and driven through a fake `ExtensionAPI` when the
+  registration wiring itself is worth covering; `safety/test/harness.ts` does this.
 
 ## Localsearch tests
 
@@ -187,5 +213,26 @@ it is not part of the default isolated test glob.
 The `safety/test/` suites cover deterministic risk rules, conservative tool tiers, configuration
 validation, session-state restoration, classifier structural pre-gating, prompt construction,
 response validation, timeouts and runtime caches. Checkpoint tests create isolated temporary Git repositories and verify
-untracked-file capture, index preservation, restoration, ref pruning, and non-repository fallback.
-The shared plan-mode Bash policy keeps its unchanged regression suite in `shared/test/`.
+untracked-file capture, index preservation, restoration, ref pruning, non-repository fallback, and
+the run-scoped ref lifecycle: disposal on shutdown, isolation from an earlier run of the same session
+id, recovery from an externally deleted ref, and the aged-only stale sweep.
+Classifier tests also cover explanation-only requests: their separate prompt, schema, and timeout,
+per-session caching, single-flight sharing of concurrent requests for one command, and the give-up
+threshold that stops asking a failing endpoint.
+The shared Bash policy, the finding renderer, and the tool-note channel keep their suites in
+`shared/test/`; the policy suite also pins segment spans against quoted, escaped, and multi-line
+commands, and the tool-note suite pins the repaint callback a late note fires.
+
+`harness.ts` and `gate.test.ts` cover the registration wiring the unit suites cannot reach. The
+harness loads the real extension against a fake `ExtensionAPI`, captures the registered hooks, and
+drives `tool_call` end to end: mode arbitration, deny/allow lists, tool tiers, checkpointed writes,
+`/safety undo` against a real repository, checkpoint teardown on `session_shutdown`, and which calls
+reach the classifier. Two details make that possible without changing the source.
+Confirmation is observed through the headless path, so each case runs twice — once with
+`PI_SAFETY_HEADLESS` unset and once set to `allow` — and the pair of results separates a silently
+allowed call from a gated one from a hard denial. The classifier is observed by replacing
+`globalThis.fetch`, which counts verdict and explanation requests separately by response schema, so
+tests can assert both that deterministic policy resolves a command without paying an LLM round-trip
+and that the command is still explained afterwards. Explanations need a UI to draw them, so those
+cases opt into an interactive context and let the fire-and-forget request settle before asserting. The harness resets the process-global
+mode registry around every case, since that state is shared with plan mode.

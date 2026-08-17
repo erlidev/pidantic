@@ -58,6 +58,11 @@ the compiler can validate extension API usage. Keeping the same compatible range
 lets a clean checkout type-check while preserving the host contract when the package is distributed.
 The runtime HTML extraction packages remain regular dependencies.
 
+Because those packages are installed, a test can import an extension's `index.ts` and drive its
+registered hooks through a fake `ExtensionAPI`. Prefer testing a sibling module directly; reach for
+this when the registration wiring — which hook runs, in what order, and what it does with the
+result — is the behavior under test. `safety/test/harness.ts` is the worked example.
+
 The Ling service requires Docker with the NVIDIA container runtime and a GPU with enough memory
 for the configured 65,536-token context window (a little over 16GB VRAM). The first launch
 downloads the model into the host Hugging Face cache. Stop the complete stack with:

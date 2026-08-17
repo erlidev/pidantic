@@ -3,7 +3,8 @@ export interface AuditEntry {
 	kind: "bash" | "tool";
 	identity: string;
 	verdict: "allow" | "ask";
-	reason: string;
+	/** The classifier's own description of the call, in its own words. */
+	explanation: string;
 }
 
 export class SafetyAudit {
@@ -20,7 +21,7 @@ export class SafetyAudit {
 	format(): string {
 		if (this.entries.length === 0) return "No classifier decisions have been recorded in this session.";
 		return this.entries.map((entry) =>
-			`${new Date(entry.time).toISOString()}  ${entry.verdict.toUpperCase()}  ${entry.kind} ${entry.identity} — ${entry.reason}`,
+			`${new Date(entry.time).toISOString()}  ${entry.verdict.toUpperCase()}  ${entry.kind} ${entry.identity} — ${entry.explanation}`,
 		).join("\n");
 	}
 }

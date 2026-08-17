@@ -1,10 +1,16 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+export const CHECKPOINT_NAMESPACE = "refs/pidantic/safety";
+
+/** Leftover refs from other runs are removed only once they are older than this, so a concurrently running session keeps its own checkpoints. */
+export const STALE_CHECKPOINT_MS = 24 * 60 * 60 * 1000;
 
 export interface Checkpoint {
 	ref: string;
@@ -15,25 +21,46 @@ export interface CheckpointStoreOptions {
 	cwd: string;
 	sessionId: string;
 	retain: number;
+	/** Distinguishes this process's refs from those of an earlier run of the same session id. */
+	runId?: string;
 }
 
-function safeSessionId(value: string): string {
+function safeSegment(value: string): string {
 	return value.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 80) || "session";
 }
 
+function refTimestamp(ref: string): number | undefined {
+	const match = /\/(\d+)-\d+$/.exec(ref);
+	const value = match ? Number(match[1]) : Number.NaN;
+	return Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Checkpoints live only as long as the Pi run that created them. Refs are tracked in memory and
+ * deleted on shutdown, so a resumed session never restores a snapshot from a previous run.
+ */
 export class CheckpointStore {
 	private sequence = 0;
+	private checkpoints: Checkpoint[] = [];
 	readonly refPrefix: string;
 	private readonly options: CheckpointStoreOptions;
 
 	constructor(options: CheckpointStoreOptions) {
 		this.options = options;
-		this.refPrefix = `refs/pidantic/safety/${safeSessionId(options.sessionId)}`;
+		this.refPrefix = `${CHECKPOINT_NAMESPACE}/${safeSegment(options.sessionId)}/${safeSegment(options.runId ?? randomUUID())}`;
 	}
 
 	private async git(args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
 		const result = await execFileAsync("git", args, { cwd: this.options.cwd, env: { ...process.env, ...env }, maxBuffer: 10_000_000 });
 		return result.stdout.trim();
+	}
+
+	private async deleteRef(ref: string): Promise<void> {
+		try { await this.git(["update-ref", "-d", ref]); } catch { /* already gone */ }
+	}
+
+	private async exists(ref: string): Promise<boolean> {
+		try { return Boolean(await this.git(["rev-parse", "--verify", "--quiet", ref])); } catch { return false; }
 	}
 
 	async available(): Promise<boolean> {
@@ -67,47 +94,82 @@ export class CheckpointStore {
 			const commit = await this.git(["commit-tree", tree, "-m", "Pidantic safety checkpoint"], identityEnv);
 			const ref = `${this.refPrefix}/${Date.now()}-${String(this.sequence++).padStart(4, "0")}`;
 			await this.git(["update-ref", ref, commit]);
+			const checkpoint = { ref, commit };
+			this.checkpoints.push(checkpoint);
 			await this.prune();
-			return { ref, commit };
+			return checkpoint;
 		} finally {
 			await rm(directory, { recursive: true, force: true });
 		}
 	}
 
-	async list(): Promise<Checkpoint[]> {
-		try {
-			const output = await this.git(["for-each-ref", "--sort=-refname", "--format=%(refname) %(objectname)", this.refPrefix]);
-			return output ? output.split("\n").map((line) => {
-				const [ref, commit] = line.split(" ");
-				return { ref: ref!, commit: commit! };
-			}) : [];
-		} catch {
-			return [];
-		}
+	/** Checkpoints taken by this run, newest first. */
+	list(): Checkpoint[] {
+		return [...this.checkpoints].reverse();
 	}
 
 	private async prune(): Promise<void> {
-		const checkpoints = await this.list();
-		for (const checkpoint of checkpoints.slice(this.options.retain)) await this.git(["update-ref", "-d", checkpoint.ref]);
+		while (this.checkpoints.length > this.options.retain) {
+			const oldest = this.checkpoints.shift();
+			if (oldest) await this.deleteRef(oldest.ref);
+		}
 	}
 
 	async restoreLatest(): Promise<Checkpoint | undefined> {
-		const checkpoint = (await this.list())[0];
-		if (!checkpoint) return undefined;
-		const root = await this.git(["rev-parse", "--show-toplevel"]);
-		const checkpointPaths = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", checkpoint.commit])).split("\0").filter(Boolean));
-		await this.git(["restore", "--source", checkpoint.commit, "--worktree", "--", ":/"]);
-		const untracked = await this.git(["ls-files", "--others", "--exclude-standard", "--full-name", "-z"]);
-		for (const relativePath of untracked.split("\0").filter(Boolean)) {
-			if (checkpointPaths.has(relativePath)) continue;
-			try {
-				await unlink(join(root, relativePath));
-			} catch {
-				// Directories are removed only when empty; ignored contents remain protected.
-				try { await rm(join(root, relativePath), { recursive: false }); } catch { /* keep it */ }
+		while (this.checkpoints.length > 0) {
+			const checkpoint = this.checkpoints[this.checkpoints.length - 1]!;
+			// A ref removed behind our back (manual deletion, another tool) is dropped rather than restored.
+			if (!await this.exists(checkpoint.ref)) {
+				this.checkpoints.pop();
+				continue;
 			}
+			const root = await this.git(["rev-parse", "--show-toplevel"]);
+			const checkpointPaths = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", checkpoint.commit])).split("\0").filter(Boolean));
+			await this.git(["restore", "--source", checkpoint.commit, "--worktree", "--", ":/"]);
+			const untracked = await this.git(["ls-files", "--others", "--exclude-standard", "--full-name", "-z"]);
+			for (const relativePath of untracked.split("\0").filter(Boolean)) {
+				if (checkpointPaths.has(relativePath)) continue;
+				try {
+					await unlink(join(root, relativePath));
+				} catch {
+					// Directories are removed only when empty; ignored contents remain protected.
+					try { await rm(join(root, relativePath), { recursive: false }); } catch { /* keep it */ }
+				}
+			}
+			this.checkpoints.pop();
+			await this.deleteRef(checkpoint.ref);
+			return checkpoint;
 		}
-		await this.git(["update-ref", "-d", checkpoint.ref]);
-		return checkpoint;
+		return undefined;
+	}
+
+	/** Removes every ref this run created. Called when the extension runtime is torn down. */
+	async dispose(): Promise<void> {
+		const refs = this.checkpoints.map((checkpoint) => checkpoint.ref);
+		this.checkpoints = [];
+		for (const ref of refs) await this.deleteRef(ref);
+	}
+
+	/**
+	 * Removes checkpoint refs left behind by runs that exited without disposing. Refs belonging to
+	 * this run, and refs newer than `maxAgeMs`, are kept so a concurrent session is unaffected.
+	 */
+	async sweepStale(maxAgeMs = STALE_CHECKPOINT_MS, now = Date.now()): Promise<number> {
+		if (!await this.available()) return 0;
+		let output: string;
+		try {
+			output = await this.git(["for-each-ref", "--format=%(refname)", CHECKPOINT_NAMESPACE]);
+		} catch {
+			return 0;
+		}
+		let removed = 0;
+		for (const ref of output.split("\n").filter(Boolean)) {
+			if (ref.startsWith(`${this.refPrefix}/`)) continue;
+			const created = refTimestamp(ref);
+			if (created === undefined || now - created < maxAgeMs) continue;
+			await this.deleteRef(ref);
+			removed += 1;
+		}
+		return removed;
 	}
 }

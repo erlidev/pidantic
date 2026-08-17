@@ -281,15 +281,35 @@ pi --safety safe        # select the starting mode
 `safe` confirms irreversible or outward-facing Bash commands, every `write` and `edit` call, and
 every unknown tool call. `auto` applies the same deterministic rules but may silently
 allow a structurally restricted unknown binary or an unknown tool call classified safe, judging the
-call's own arguments rather than the tool in the abstract. It also allows
+call's own arguments rather than the tool in the abstract. It also sends a read-only command whose
+only problem is a path outside the workspace, or a command whose only problem is an unexpanded
+variable such as `ls $PWD`, to the classifier instead of confirming it. It also allows
 checkpointed in-workspace writes without a dialog, relying on `/safety undo` for recovery; writes
 outside the workspace or without a usable checkpoint still confirm. `auto` is selectable only while
 the configured OpenAI-compatible endpoint is available. `yolo` is the default and has no safety hook
 effects or status indicator.
 
+A Bash confirmation highlights every offending segment inside the command itself and, when more than
+one rule matched, lists each segment with the rule it broke. A read-only segment that would otherwise
+have been approved and only reaches outside the workspace is highlighted in a calmer colour than a
+destructive or outward-facing one. Redirections are parsed rather than pattern-matched, so a `>` or
+`<` inside a quoted argument is an argument, and a redirection is judged by where it points: an
+in-workspace target, `/dev/null`, and `2>&1` need no dialog. Plan mode's Bash confirmation uses the
+same presentation.
+
+When the classifier is enabled, every Bash command it gates or allows is also described in one or
+two plain sentences, so a long one-liner does not have to be reverse-engineered before it is
+approved. A command the classifier judged carries its explanation from that same request; a command
+deterministic policy resolved on its own gets a separate, background explanation request that never
+holds the command up — the transcript line and the open dialog both fill in when it arrives.
+Explanations are advisory text from a small local model, not a decision and not a security boundary;
+read the highlighted command itself before approving it.
+
 Gated in-workspace `write` and `edit` calls create one temporary-index Git checkpoint per agent turn.
 The snapshot includes non-ignored untracked files without changing the user's index or `HEAD`.
-Outside a Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
+Checkpoints are scoped to the current Pi run: their refs are deleted when the session shuts down,
+and a resumed session starts with none, so `/safety undo` never reverts to a snapshot from an earlier
+run. Outside a Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
 safety, and a Bash call resolved by safety does not produce a second `confirm-bash` dialog.
 
 Configuration is loaded from `~/.pi/agent/safety.json`, overridable with `SAFETY_CONFIG`. Missing or
@@ -303,12 +323,14 @@ invalid configuration uses these defaults:
     "url": "http://localhost:8989/v1",
     "model": "inclusionAI/Ling-3.0-tiny-int4",
     "timeoutMs": 2000,
+    "explainTimeoutMs": 15000,
     "maxTokens": 1024,
     "thinking": null,
     "temperature": null,
     "sampler": {},
     "classifyBash": true,
-    "classifyUnknownTools": true
+    "classifyUnknownTools": true,
+    "explainBash": true
   },
   "allowBinaries": [],
   "denyBinaries": [],
@@ -326,8 +348,11 @@ invalid configuration uses these defaults:
 The optional `ling-tiny` Compose service is now consumed by `auto` mode when enabled. It still
 requires an NVIDIA GPU and is not needed for `safe` or `yolo`. The classifier is a fatigue-reduction
 mechanism, not a security boundary; it is disabled by default and every error path fails into a
-normal confirmation dialog. See the [safety manual](docs/extensions/safety.md) for policy details,
-checkpoint semantics, and classifier constraints.
+normal confirmation dialog. When the classifier auto-approves a Bash call, its explanation is shown
+under that call in the transcript, after Pi's `Took 1.2s` line; `/safety log` keeps the full list.
+Set `classifier.explainBash` to `false` to keep verdicts without the extra explanation requests. See
+the [safety manual](docs/extensions/safety.md) for policy details, checkpoint semantics, explanation
+behavior, and classifier constraints.
 
 ## `confirm-bash`
 

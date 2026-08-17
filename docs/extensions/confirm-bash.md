@@ -70,8 +70,15 @@ Two pieces, both in `index.ts`:
 
 - **The tool override** registers a tool named `bash`, built on pi's real
   `createBashToolDefinition()`. Only the parameter schema grows; execution, streaming, truncation,
-  `PI_*` env injection, process-tree kill, and the result renderer are inherited. `shellPath` and
-  `shellCommandPrefix` are read back from global settings so behaviour matches the built-in.
+  `PI_*` env injection, and process-tree kill are inherited. The result renderer delegates to the
+  built-in one and only appends an extension note under it when one was recorded for that
+  `toolCallId` in `shared/tool-notes.ts` — a safety classifier auto-approval or its explanation of
+  what the command does, drawn after pi's `Took 1.2s` line. Output preview, truncation warnings, and
+  timing stay pi's. The built-in rebuilds the same component object on each render and clears its
+  children first, so the note is re-appended after every delegation. The renderer also registers the
+  row's `invalidate` callback with `tool-notes.ts`, so a note recorded after the call finished —
+  every background explanation — repaints that row instead of waiting for an unrelated redraw. `shellPath` and `shellCommandPrefix` are read back from global
+  settings so behaviour matches the built-in.
 - **The gate** is a `tool_call` handler, not code inside `execute`. Sibling tool calls are
   preflighted sequentially and only then executed concurrently, so gating in preflight serializes the
   dialogs for free while leaving bash's parallel execution intact. Denial returns

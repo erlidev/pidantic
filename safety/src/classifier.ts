@@ -1,17 +1,35 @@
 import { createHash } from "node:crypto";
 import type { ClassifierConfig } from "./config.ts";
-import { BASH_SYSTEM_PROMPT, TOOL_SYSTEM_PROMPT, bashUserPrompt, toolUserPrompt } from "./prompt.ts";
+import {
+	BASH_SYSTEM_PROMPT,
+	EXPLAIN_BASH_SYSTEM_PROMPT,
+	TOOL_SYSTEM_PROMPT,
+	bashUserPrompt,
+	explainUserPrompt,
+	toolUserPrompt,
+} from "./prompt.ts";
 
 export interface ClassifierVerdict {
 	verdict: "allow" | "ask";
-	reason: string;
+	/** One or two sentences describing what the call does. Shown to the user, never parsed. */
+	explanation: string;
+	/**
+	 * True when the verdict is a fail-closed default rather than the model's answer. The explanation
+	 * is then a diagnostic ("classifier request failed or timed out"), not a description of the call.
+	 */
+	failed: boolean;
+	cached: boolean;
+}
+
+export interface ClassifierExplanation {
+	explanation: string;
 	cached: boolean;
 }
 
 type FetchLike = typeof globalThis.fetch;
 
-function closed(reason: string): ClassifierVerdict {
-	return { verdict: "ask", reason, cached: false };
+function closed(explanation: string): ClassifierVerdict {
+	return { verdict: "ask", explanation, failed: true, cached: false };
 }
 
 async function request(url: string, init: RequestInit, timeoutMs: number, fetchFn: FetchLike): Promise<Response> {
@@ -30,15 +48,23 @@ export async function probeClassifier(config: ClassifierConfig, fetchFn: FetchLi
 }
 
 /** Mirrors the schema's maxLength; the field is printed into the transcript, so it is clamped locally too. */
-const REASON_LIMIT = 100;
+const EXPLANATION_LIMIT = 240;
+
+/**
+ * Model text goes straight into the TUI and into a dialog that splits on newlines, so control
+ * characters (escape sequences included) are dropped and the whitespace is collapsed to one line.
+ */
+function sanitize(value: unknown): string {
+	if (typeof value !== "string") return "";
+	return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim().slice(0, EXPLANATION_LIMIT);
+}
 
 function parseVerdict(value: unknown): ClassifierVerdict {
 	if (typeof value !== "object" || value === null) return closed("classifier returned malformed output");
 	const record = value as Record<string, unknown>;
 	if (record.verdict !== "safe" && record.verdict !== "unsafe") return closed("classifier returned an invalid verdict");
-	const supplied = typeof record.short_reason === "string" ? record.short_reason.trim() : "";
-	const reason = supplied ? supplied.slice(0, REASON_LIMIT) : "no reason supplied";
-	return { verdict: record.verdict === "safe" ? "allow" : "ask", reason, cached: false };
+	const explanation = sanitize(record.explanation) || "no explanation supplied";
+	return { verdict: record.verdict === "safe" ? "allow" : "ask", explanation, failed: false, cached: false };
 }
 
 function responseContent(value: unknown): unknown {
@@ -75,9 +101,43 @@ function containsInjectionClaim(value: string): boolean {
 	return /ignore\s+(?:the\s+)?(?:previous|policy|instructions?)|(?:say|return|answer|respond|classify)\b.{0,40}\b(?:safe|allow|read[_ -]?only)/i.test(value);
 }
 
+/** Response schema for a decision, and for an explanation of a call no longer being decided. */
+const VERDICT_SCHEMA = {
+	name: "safety_verdict",
+	strict: true,
+	schema: {
+		type: "object",
+		properties: {
+			// verdict is first so the decision is the first token emitted after any thinking block.
+			verdict: { type: "string", enum: ["safe", "unsafe"] },
+			explanation: { type: "string", maxLength: EXPLANATION_LIMIT },
+		},
+		required: ["verdict", "explanation"],
+		additionalProperties: false,
+	},
+};
+
+const EXPLANATION_SCHEMA = {
+	name: "command_explanation",
+	strict: true,
+	schema: {
+		type: "object",
+		properties: { explanation: { type: "string", maxLength: EXPLANATION_LIMIT } },
+		required: ["explanation"],
+		additionalProperties: false,
+	},
+};
+
+/** Consecutive background failures after which explanations stop being requested for the session. */
+const EXPLANATION_FAILURE_LIMIT = 3;
+
 export class ResidualClassifier {
 	private readonly bashCache = new Map<string, ClassifierVerdict>();
 	private readonly toolCache = new Map<string, ClassifierVerdict>();
+	private readonly explanationCache = new Map<string, string>();
+	/** One request per distinct command, even when sibling tool calls ask at the same time. */
+	private readonly explanationsInFlight = new Map<string, Promise<ClassifierExplanation | undefined>>();
+	private explanationFailures = 0;
 	private readonly config: ClassifierConfig;
 	private readonly fetchFn: FetchLike;
 
@@ -89,9 +149,13 @@ export class ResidualClassifier {
 	clear(): void {
 		this.bashCache.clear();
 		this.toolCache.clear();
+		this.explanationCache.clear();
+		this.explanationsInFlight.clear();
+		this.explanationFailures = 0;
 	}
 
-	private async classify(system: string, user: string): Promise<ClassifierVerdict> {
+	/** Returns the parsed JSON object the model produced, or an error string; never throws. */
+	private async post(system: string, user: string, jsonSchema: unknown, timeoutMs: number): Promise<{ content?: unknown; error?: string }> {
 		try {
 			const response = await request(`${this.config.url}/chat/completions`, {
 				method: "POST",
@@ -105,41 +169,80 @@ export class ResidualClassifier {
 					// Omitted entirely when null so the server's own chat-template default applies.
 					...(this.config.thinking === null ? {} : { chat_template_kwargs: { enable_thinking: this.config.thinking } }),
 					messages: [{ role: "system", content: system }, { role: "user", content: user }],
-					response_format: {
-						type: "json_schema",
-						json_schema: {
-							name: "safety_verdict",
-							strict: true,
-							schema: {
-								type: "object",
-								properties: {
-									// verdict is first so the decision is the first token emitted after any thinking block.
-									verdict: { type: "string", enum: ["safe", "unsafe"] },
-									short_reason: { type: "string", maxLength: REASON_LIMIT },
-								},
-								required: ["verdict", "short_reason"],
-								additionalProperties: false,
-							},
-						},
-					},
+					response_format: { type: "json_schema", json_schema: jsonSchema },
 				}),
-			}, this.config.timeoutMs, this.fetchFn);
-			if (!response.ok) return closed(`classifier endpoint returned HTTP ${response.status}`);
-			return parseVerdict(responseContent(await response.json()));
+			}, timeoutMs, this.fetchFn);
+			if (!response.ok) return { error: `classifier endpoint returned HTTP ${response.status}` };
+			return { content: responseContent(await response.json()) };
 		} catch {
-			return closed("classifier request failed or timed out");
+			return { error: "classifier request failed or timed out" };
 		}
 	}
 
-	async classifyBash(command: string, resolvedBinary?: string): Promise<ClassifierVerdict> {
+	private async classify(system: string, user: string): Promise<ClassifierVerdict> {
+		const { content, error } = await this.post(system, user, VERDICT_SCHEMA, this.config.timeoutMs);
+		return error ? closed(error) : parseVerdict(content);
+	}
+
+	/** `externalRead` changes the prompt, so it is part of the cache identity too. */
+	async classifyBash(command: string, resolvedBinary?: string, externalRead = false): Promise<ClassifierVerdict> {
 		const normalized = command.trim().replace(/\s+/g, " ");
 		if (containsInjectionClaim(normalized)) return closed("untrusted command contains a policy-influencing claim");
-		const key = `${resolvedBinary ?? ""}\0${normalized}`;
+		const key = `${resolvedBinary ?? ""}\0${externalRead ? "external" : "workspace"}\0${normalized}`;
 		const cached = this.bashCache.get(key);
 		if (cached) return { ...cached, cached: true };
-		const verdict = await this.classify(BASH_SYSTEM_PROMPT, bashUserPrompt(normalized));
+		const verdict = await this.classify(BASH_SYSTEM_PROMPT, bashUserPrompt(normalized, externalRead));
 		this.bashCache.set(key, verdict);
 		return verdict;
+	}
+
+	/**
+	 * Describe a command whose verdict is already settled, so the user can read what ran without
+	 * reverse-engineering it. Never a decision: every failure resolves to `undefined` and the caller
+	 * simply shows nothing. Runs off the critical path, so it gets its own, longer timeout, and after
+	 * `EXPLANATION_FAILURE_LIMIT` consecutive failures it stops asking for the rest of the session
+	 * rather than paying a doomed request per command against an endpoint that is not answering.
+	 */
+	async explainBash(command: string): Promise<ClassifierExplanation | undefined> {
+		if (!this.config.enabled || !this.config.explainBash) return undefined;
+		if (this.explanationFailures >= EXPLANATION_FAILURE_LIMIT) return undefined;
+		const normalized = command.trim().replace(/\s+/g, " ");
+		if (!normalized) return undefined;
+		// A command that argues about how it should be described is left undescribed: a wrong
+		// explanation under an allowed call is worse than no explanation at all.
+		if (containsInjectionClaim(normalized)) return undefined;
+
+		const cached = this.explanationCache.get(normalized);
+		if (cached) return { explanation: cached, cached: true };
+		const inFlight = this.explanationsInFlight.get(normalized);
+		if (inFlight) return inFlight;
+
+		const pending = (async (): Promise<ClassifierExplanation | undefined> => {
+			const { content, error } = await this.post(
+				EXPLAIN_BASH_SYSTEM_PROMPT,
+				explainUserPrompt(normalized),
+				EXPLANATION_SCHEMA,
+				this.config.explainTimeoutMs,
+			);
+			const explanation = error || typeof content !== "object" || content === null
+				? ""
+				: sanitize((content as Record<string, unknown>).explanation);
+			if (!explanation) {
+				this.explanationFailures += 1;
+				return undefined;
+			}
+			this.explanationFailures = 0;
+			this.explanationCache.set(normalized, explanation);
+			return { explanation, cached: false };
+		})().finally(() => this.explanationsInFlight.delete(normalized));
+
+		this.explanationsInFlight.set(normalized, pending);
+		return pending;
+	}
+
+	/** True once background explanations have been given up on for this session. */
+	get explanationsDisabled(): boolean {
+		return this.explanationFailures >= EXPLANATION_FAILURE_LIMIT;
 	}
 
 	/** The whole call is classified, so the arguments are part of both the prompt and the cache identity. */
