@@ -84,7 +84,7 @@ uses Pi's separate `user_bash` path and is intentionally not gated by plan mode.
 
 ### Allowlisted command families
 
-The tables below are the source of truth in `plan-mode/src/bash-policy.ts`. The scanner preserves
+The tables below are the source of truth in `shared/bash-policy.ts`. The scanner preserves
 the operator before each pipeline or unquoted `;`, `&&`, `||`, or newline-separated segment and
 classifies every segment independently. Every segment must be allowed for the whole command to run
 without confirmation. This includes branches that appear unreachable, such as `false && rm file`;
@@ -124,7 +124,7 @@ commands also ask; omissions degrade to a prompt rather than silently widening a
 
 ### Extending the allowlist
 
-Edit the plain data tables in `plan-mode/src/bash-policy.ts` only after confirming that the command
+Edit the plain data tables in `shared/bash-policy.ts` only after confirming that the command
 is read-only in the shell forms the model will use. Add a subcommand to the relevant table or add a
 plain binary to `PLAIN_READ_ONLY_BINARIES`, and add deny flags when a binary has mutating variants.
 Add tests for both the safe form and the unsafe form. A stale or conservative table is expected to

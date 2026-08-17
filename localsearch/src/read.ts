@@ -93,7 +93,7 @@ export async function readPage(
 		const done = (extra: Record<string, unknown>) => ({ ...details, ...extra, ms: Date.now() - started });
 
 		if (expression) {
-			const outcome = await runFilter(scoped, expression, cfg, deps, signal);
+			const outcome = runFilter(scoped, expression, cfg);
 
 			if (outcome.kind !== "ok") {
 				return {

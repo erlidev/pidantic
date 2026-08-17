@@ -24,6 +24,7 @@ import {
 import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { askConfirmation } from "../shared/confirm-dialog.ts";
+import { getSafetyMode, wasSafetyResolved } from "../shared/mode-registry.ts";
 
 /** Escape hatch for non-interactive runs (`pi -p`, `--mode json`), where there is nobody to ask. */
 const HEADLESS_ENV = "PI_CONFIRM_BASH_HEADLESS";
@@ -130,6 +131,7 @@ export default function confirmBash(pi: ExtensionAPI) {
 
 		const input = event.input as ConfirmBashArgs;
 		if (input.confirm !== true) return undefined;
+		if (getSafetyMode() !== "yolo" && wasSafetyResolved(event.input)) return undefined;
 
 		if (!ctx.hasUI) {
 			if (process.env[HEADLESS_ENV] === "allow") return undefined;

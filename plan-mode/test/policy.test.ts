@@ -2,12 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import type { ToolInfo } from "@earendil-works/pi-coding-agent";
-import {
-	denyReason,
-	KNOWN_READ_ONLY_EXTENSION_TOOLS,
-	planToolSet,
-	READ_ONLY_BUILTINS,
-} from "../src/policy.ts";
+import { KNOWN_READ_ONLY_EXTENSION_TOOLS, READ_ONLY_BUILTINS } from "../../shared/read-only-tools.ts";
+import { denyReason, planToolSet } from "../src/policy.ts";
 
 const tool = (name: string) => ({ name }) as ToolInfo;
 

@@ -1,6 +1,6 @@
 # Pidantic
 
-Pidantic is a Pi package containing five extensions for web research, command approval, planning,
+Pidantic is a Pi package containing six extensions for web research, command approval, safety, planning,
 interruption handling, and (currently) a smart-compaction placeholder. Pi loads the package's
 TypeScript entry points directly; there is no build step.
 
@@ -11,7 +11,8 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 
 | Extension | What it adds | Current status |
 | --- | --- | --- |
-| [`localsearch`](docs/extensions/localsearch.md) | `search`, `fetch`, and `/search-status` for web, Wikipedia, GitHub, page extraction, filtering, and reranking | Implemented |
+| [`localsearch`](docs/extensions/localsearch.md) | `search`, `fetch`, and `/search-status` for web, Wikipedia, GitHub, page extraction, and filtering | Implemented |
+| [`safety`](docs/extensions/safety.md) | Session safety modes, confirmation gates, Git checkpoints, and optional residual classification | Implemented |
 | [`confirm-bash`](docs/extensions/confirm-bash.md) | Optional model-requested approval before a Bash command runs | Implemented |
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` to interrupt a run and record why it was interrupted | Implemented |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
@@ -23,8 +24,11 @@ Clone or copy this repository, install its dependencies, and add the absolute re
 Pi's package list in `~/.pi/agent/settings.json`:
 
 ```bash
-npm install
+npm ci
 ```
+
+Node.js 22.19 or newer is required. Contributors should run `npm run check`; see
+[`docs/development.md`](docs/development.md) for the test, watch, type-check, and live smoke commands.
 
 ```json
 {
@@ -43,12 +47,11 @@ The other extensions use the same package and do not require a separate build or
 
 ## Quick start
 
-For the complete local-search feature set, start only the services used by implemented extensions:
+For the complete local-search feature set, start only the service used by implemented extensions:
 
 ```bash
-docker compose up -d searxng reranker
+docker compose up -d searxng
 curl 'http://localhost:8888/search?q=test&format=json'
-curl http://localhost:8787/health
 ```
 
 Then use the tools from Pi:
@@ -57,40 +60,39 @@ Then use the tools from Pi:
 search({"query":"Rust async cancellation"})
 fetch({"url":"https://docs.example.com/guide"})
 /search-status
+/safety safe
 /plan
 /stop stop after the current tool call
 ```
 
-The bundled `ling-tiny` service is not used by any currently implemented extension. It is optional
-infrastructure for future or external consumers and requires an NVIDIA GPU. Do not start the full
-Compose file on a machine without the NVIDIA container runtime; start the two named services above
-instead.
+The bundled `ling-tiny` service is used only when safety's optional `auto` classifier is enabled and
+requires an NVIDIA GPU. Do not start the full Compose file on a machine without the NVIDIA container
+runtime; start `searxng` alone instead.
 
 ## Services and credentials
 
 | Feature | Dependency | Required configuration |
 | --- | --- | --- |
 | Default web search | SearXNG, bundled as `searxng` | Docker service at `http://localhost:8888`, or a compatible SearXNG JSON API via `SEARXNG_URL` |
-| Web-result semantic reranking | Text Embeddings Inference, bundled as `reranker` | Service at `http://localhost:8787`; optional for `search`, required by `fetch` filters that call `rank()` |
 | Hosted web-search failover | Exa, Tavily, or Brave | `EXA_API_KEY`, `TAVILY_API_KEY`, or `BRAVE_API_KEY`; providers are skipped when their key is absent |
 | Wikipedia search | Wikipedia API | Internet access; no key or Docker service |
 | GitHub repository and issue search | GitHub API | Internet access; unauthenticated requests work with GitHub's lower rate limit |
 | GitHub code search and private GitHub fetches | GitHub API | `LS_GH_TOKEN`; code search requires one |
 | Smart compaction | None currently | No behavior is implemented |
-| Ling 3.0 Tiny | vLLM, bundled as `ling-tiny` | Optional; NVIDIA GPU/container runtime and the model download. No current extension calls it |
+| Safety residual classifier | OpenAI-compatible API; Ling 3.0 Tiny is bundled as `ling-tiny` | Optional; required only for `auto` safety mode. Bundled service requires NVIDIA GPU/container runtime and the model download |
 
-SearXNG and the reranker bind to loopback only. They have no authentication, so do not expose those
-ports beyond the local machine without changing the service configuration and adding authentication.
+SearXNG binds to loopback only. It has no authentication, so do not expose that port beyond the
+local machine without changing the service configuration and adding authentication.
 
 ### Docker services
 
-The Compose file contains three services:
+The Compose file contains two services:
 
 ```bash
 # Required for the default localsearch setup.
-docker compose up -d searxng reranker
+docker compose up -d searxng
 
-# Optional future/external local model service; requires NVIDIA Container Toolkit and a suitable GPU.
+# Optional safety classifier service; requires NVIDIA Container Toolkit and a suitable GPU.
 docker compose up -d ling-tiny
 ```
 
@@ -103,17 +105,13 @@ endpoint must accept `format=json`.
 adequate for the loopback-only setup; set a real secret in `.env` before exposing or sharing the
 service. It is not read by `localsearch`.
 
-The reranker is optional for ordinary web searches: if it is unavailable, results retain provider
-order and Pi reports a notice. It is not optional for semantic `rank()` calls inside `fetch`; those
-calls fail with instructions to start or configure a compatible reranking endpoint.
-
 ## `localsearch`
 
 `localsearch` registers two model tools and one user command:
 
 - `search` finds current information and returns titles, URLs, and short descriptions.
 - `fetch` reads a known URL and returns extracted content as Markdown, plain text, or the raw body.
-- `/search-status` displays provider health, quota state, cache size, and reranker status.
+- `/search-status` displays provider health, quota state, and cache size.
 
 Each call renders a one-line summary in the transcript — `search "rust async cancellation" in web`,
 `fetch docs.example.com/guide §Configuration · filter grep(/timeout/i, 3)` — so the exact query,
@@ -136,8 +134,9 @@ results. The default order is:
 `searxng → exa → tavily → brave → marginalia`
 
 SearXNG and Marginalia do not require keys. The hosted providers are failover options, not parallel
-requests. Web results are normally drawn from a pool of 30 candidates and reranked down to the
-requested count.
+requests. Results keep the provider's own ordering: a pool of 30 candidates is requested and cached,
+and the first `count` of them are returned, so a later, larger `count` for the same query is served
+from cache.
 
 Wikipedia and GitHub sources use their own APIs and do not use the web-provider chain. GitHub
 repository and issue searches can run without a token; code search cannot. `LS_GH_TOKEN` also
@@ -162,7 +161,7 @@ fetch(url, section="Configuration")             # Read a known heading
 fetch(url, filter="grep(/timeout/i, 3)")        # Find a term with context
 fetch(url, filter="lines.slice(500, 900)")      # Read a line range
 fetch(url, filter="code('python')")             # Extract Python fenced blocks
-fetch(url, filter='(await rank(sections, "retries")).slice(0, 2)')
+fetch(url, filter="sections.filter(s => /retries/i.test(s.heading))")
 ```
 
 The filter runs over extracted Markdown with these bindings:
@@ -174,10 +173,9 @@ The filter runs over extracted Markdown with these bindings:
 | `sections` | Objects with `heading`, `level`, `text`, `index`, `from`, and `to` |
 | `grep(re, ctx?)` | Matching lines with surrounding context; adjacent matches are merged |
 | `code(lang?)` | Fenced code blocks, optionally restricted by language |
-| `await rank(items, query, n?)` | Semantic ranking through the reranker; returns best-first items |
 
 The expression may be an expression or a statement list and may return a string, a section, or an
-array of those. The filter context does not expose `require`, `process`, `fetch`, or timers. It is a
+array of those. It runs synchronously; there is no `await`. The filter context does not expose `require`, `process`, `fetch`, or timers. It is a
 convenience sandbox for model-written expressions, not a security boundary.
 
 For an oversized unfiltered page, `fetch` returns an outline so the next call can select a section.
@@ -199,7 +197,6 @@ Environment values are read when a tool runs, so changing a key does not require
 | `LOCALSEARCH_CONFIG` | `~/.pi/agent/localsearch.json` | Path to the JSON configuration file |
 | `LOCALSEARCH_DIR` | `~/.pi/agent/localsearch` | Directory for provider quota state, search cache, fetch cache, and extracted-page sidecars |
 | `SEARXNG_URL` | `http://localhost:8888` | Overrides the SearXNG base URL |
-| `RERANK_URL` | `http://localhost:8787` | Overrides the Text Embeddings Inference base URL; `/rerank` is appended |
 | `EXA_API_KEY` | Unset | Enables Exa failover |
 | `TAVILY_API_KEY` | Unset | Enables Tavily failover |
 | `BRAVE_API_KEY` | Unset | Enables Brave failover |
@@ -216,13 +213,11 @@ the complete default configuration; only values that need changing must be prese
 {
   "order": ["searxng", "exa", "tavily", "brave", "marginalia"],
   "searxngUrl": "http://localhost:8888",
-  "rerankUrl": "http://localhost:8787",
   "count": 10,
   "maxCount": 25,
   "descriptionTokens": 100,
   "poolSize": 30,
   "cacheTtlHours": 24,
-  "rerankSources": ["web"],
   "timeoutMs": 12000,
   "limits": {
     "searxng": {},
@@ -235,10 +230,7 @@ the complete default configuration; only values that need changing must be prese
   "fetchMaxBytes": 2000000,
   "fetchCacheTtlHours": 6,
   "allowPrivateHosts": false,
-  "filterTimeoutMs": 15000,
-  "maxRankCalls": 4,
-  "chunkTokens": 250,
-  "maxChunks": 120
+  "filterTimeoutMs": 2000
 }
 ```
 
@@ -246,33 +238,89 @@ Configuration fields are merged over the defaults. `limits` is merged per provid
 customizations are:
 
 - Change `order` to prefer a hosted provider or a different fallback path.
-- Change `searxngUrl` or `rerankUrl` when using services outside the bundled Compose stack.
-- Raise `poolSize` for broader candidate retrieval, or lower it to reduce provider latency.
-- Add source names to `rerankSources` when Wikipedia or GitHub results should also be reranked.
+- Change `searxngUrl` when using a SearXNG instance outside the bundled Compose stack.
+- Raise `poolSize` for a larger cached candidate list, or lower it to reduce provider latency.
 - Adjust `fetchTimeoutMs` and `fetchMaxBytes` for large or slow documentation sites. Fetch results
   have a fixed 10,000-token ceiling; use `section` or `filter` to narrow larger pages.
 - Set `allowPrivateHosts: true` only when fetching local or private-network URLs is intentional.
   The default rejects loopback, RFC1918, link-local, and local-domain hostnames. This hostname check
   is not a complete SSRF defense.
-- Adjust `filterTimeoutMs`, `maxRankCalls`, `chunkTokens`, and `maxChunks` to trade filter/ranking
-  latency against the amount of content that can be ranked.
+- Raise `filterTimeoutMs` only for filters over very large pages; it is the sandbox's wall-clock
+  ceiling for one expression.
 
 ### Search troubleshooting
 
 Run `/search-status` first. It reports each configured provider, quota/cooldown state, the SearXNG
-and reranker probes, GitHub token capability and tracked operations for the current UTC day, and
+probe, GitHub token capability and tracked operations for the current UTC day, and
 cache settings. GitHub searches and API-backed GitHub fetches share that operation count; it does
 not represent raw HTTP requests. The usual checks are:
 
 ```bash
 docker compose ps
 curl 'http://localhost:8888/search?q=test&format=json'
-curl http://localhost:8787/health
 ```
 
-If SearXNG returns 403, its JSON format is not enabled. If web search works but reports that
-reranking is unavailable, either start `reranker`, set `RERANK_URL` to a compatible endpoint, or
-accept provider ordering. If a `rank()` filter fails, the reranker is mandatory for that call.
+If SearXNG returns 403, its JSON format is not enabled. If SearXNG is unreachable, `search` falls
+through to the next usable provider in `order` and reports which one answered.
+
+## `safety`
+
+Safety modes keep all tools active and interpose approval only where configured policy requires it:
+
+```text
+/safety                 # report yolo, auto, or safe
+/safety safe            # deterministic gates; unknown actions confirm
+/safety auto            # use the configured classifier for eligible residual cases
+/safety yolo            # stock Pi behavior; safety is inert
+/safety undo            # confirm and restore the newest Git checkpoint
+/safety log             # classifier decisions for this session
+Alt+S                   # cycle available modes
+pi --safety safe        # select the starting mode
+```
+
+`safe` confirms irreversible or outward-facing Bash commands, the first write to each file per
+session, and every unknown tool call. `auto` applies the same deterministic rules but may silently
+allow a structurally restricted unknown binary or a tool classified wholly read-only. It is
+selectable only while the configured OpenAI-compatible endpoint is available. `yolo` is the default
+and has no safety hook effects or status indicator.
+
+Gated in-workspace `write` and `edit` calls create one temporary-index Git checkpoint per agent turn.
+The snapshot includes non-ignored untracked files without changing the user's index or `HEAD`.
+Outside a Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
+safety, and a Bash call resolved by safety does not produce a second `confirm-bash` dialog.
+
+Configuration is loaded from `~/.pi/agent/safety.json`, overridable with `SAFETY_CONFIG`. Missing or
+invalid configuration uses these defaults:
+
+```json
+{
+  "mode": "yolo",
+  "classifier": {
+    "enabled": false,
+    "url": "http://localhost:8989/v1",
+    "model": "inclusionAI/Ling-3.0-tiny-int4",
+    "timeoutMs": 400,
+    "classifyBash": true,
+    "classifyUnknownTools": true
+  },
+  "allowBinaries": [],
+  "denyBinaries": [],
+  "allowTools": [],
+  "denyTools": [],
+  "checkpointRetain": 20
+}
+```
+
+| Environment variable | Default | Effect |
+| --- | --- | --- |
+| `SAFETY_CONFIG` | `~/.pi/agent/safety.json` | Overrides the safety configuration path |
+| `PI_SAFETY_HEADLESS` | Block confirmation-required calls | Set to `allow` to auto-approve gates in non-interactive modes |
+
+The optional `ling-tiny` Compose service is now consumed by `auto` mode when enabled. It still
+requires an NVIDIA GPU and is not needed for `safe` or `yolo`. The classifier is a fatigue-reduction
+mechanism, not a security boundary; it is disabled by default and every error path fails into a
+normal confirmation dialog. See the [safety manual](docs/extensions/safety.md) for policy details,
+checkpoint semantics, and classifier constraints.
 
 ## `confirm-bash`
 
@@ -378,6 +426,7 @@ observable effect.
 - [localsearch manual](docs/extensions/localsearch.md) — extraction, filtering, provider behavior,
   and implementation details
 - [confirm-bash manual](docs/extensions/confirm-bash.md)
+- [safety manual](docs/extensions/safety.md)
 - [plan-mode manual](docs/extensions/plan-mode.md)
 - [stop manual](docs/extensions/stop.md)
 - [smart-compaction status](docs/extensions/smart-compaction.md)

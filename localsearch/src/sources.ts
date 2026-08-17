@@ -1,8 +1,8 @@
 /**
  * Non-web sources: Wikipedia and GitHub.
  *
- * Both rank their own results well, so neither goes through the provider chain or the reranker —
- * they are single-endpoint lookups with their own auth and rate-limit rules.
+ * Both rank their own results well, so neither goes through the provider chain — they are
+ * single-endpoint lookups with their own auth and rate-limit rules.
  */
 
 import {

@@ -11,7 +11,7 @@
  */
 
 export const SEARCH = {
-	description: "Search the web, Wikipedia or GitHub. Returns ranked titles, URLs and snippets.",
+	description: "Search the web, Wikipedia or GitHub. Returns titles, URLs and snippets.",
 	guidelines: [
 		"Use search when you need current information, documentation, or prior art you do not already have.",
 	],
@@ -38,10 +38,9 @@ export const FETCH = {
 		url: "Absolute http(s) URL.",
 		section:
 			"Return only this section of the page, with its subsections. Match is on heading text, case-insensitive, so a heading printed in an outline or a truncation notice can be passed as-is. A URL fragment does the same thing.",
-		// Every binding appears in exactly one example. The parentheses around `await rank(...)` are
-		// load-bearing: `await` binds looser than a method call.
+		// Every binding appears in exactly one example.
 		filter:
-			'JS expression run over the page before it enters context. Bindings: text, lines, sections ({heading, level, text, from, to}), grep(re, ctx?) → matching lines ±ctx, adjacent runs merged, code(lang?), await rank(items, query, n?) over an array or over text. Return a string, a section, or an array of either. Examples: grep(/timeout/i, 3) · sections.filter(s => /error/i.test(s.heading)) · (await rank(sections, "how retries work")).slice(0, 2) · lines.slice(500, 900)',
+			'JS expression run over the page before it enters context. Bindings: text, lines, sections ({heading, level, text, from, to}), grep(re, ctx?) → matching lines ±ctx, adjacent runs merged, code(lang?). Return a string, a section, or an array of either. Examples: grep(/timeout/i, 3) · sections.filter(s => /error/i.test(s.heading)) · code("python") · lines.slice(500, 900)',
 		format: "markdown (default), text (markup stripped), or raw (the unprocessed response body).",
 	},
 };

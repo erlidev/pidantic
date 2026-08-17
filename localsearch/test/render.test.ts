@@ -70,10 +70,10 @@ test("formatFetchCall renders the filter as code and the section as a warning", 
 });
 
 test("formatFetchCall keeps a long filter on one line", () => {
-	const filter = '(await rank(sections, "retry behaviour and backoff configuration")).slice(0, 2)';
+	const filter = 'sections.filter(s => /retry behaviour and backoff configuration/i.test(s.heading))';
 	const line = plain(formatFetchCall({ url: "https://e.com/x", filter: `\n  ${filter}\n` }, theme));
 	assert.ok(!line.includes("\n"));
-	assert.ok(line.includes("(await rank(sections,"));
+	assert.ok(line.includes("sections.filter("));
 	assert.ok(line.endsWith("…"));
 });
 

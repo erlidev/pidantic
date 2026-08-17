@@ -118,19 +118,19 @@ const READ_ONLY_BUILTINS = new Set<string>(READ_ONLY_SHELL_BUILTINS);
 const FIND_DENY = new Set<string>(FIND_DENY_FLAGS);
 const ALWAYS_ASK = new Set<string>(ALWAYS_ASK_BINARIES);
 
-type ChainOperator = "start" | ";" | "&&" | "||" | "|" | "newline";
+export type ChainOperator = "start" | ";" | "&&" | "||" | "|" | "newline";
 
-type CommandSegment = {
+export type CommandSegment = {
 	tokens: string[];
 	operator: ChainOperator;
 };
 
-type TokenizeResult = {
+export type TokenizeResult = {
 	segments: CommandSegment[];
 	reason?: string;
 };
 
-function tokenize(command: string): TokenizeResult {
+export function tokenizeCommand(command: string): TokenizeResult {
 	const segments: CommandSegment[] = [];
 	let tokens: string[] = [];
 	let token = "";
@@ -369,7 +369,7 @@ function classifySegment(tokens: string[]): RuleResult {
  * outside the deliberately small read-only allowlist is sent to the user's confirmation dialog.
  */
 export function classify(command: string): BashPolicyResult {
-	const tokenized = tokenize(command);
+	const tokenized = tokenizeCommand(command);
 	if (tokenized.reason !== undefined) return ask(tokenized.reason);
 	if (tokenized.segments.length === 0) return { verdict: "allow" };
 

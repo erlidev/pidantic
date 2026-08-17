@@ -2,12 +2,11 @@
 #
 #   docker compose up -d
 #   curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
-#   curl http://localhost:8787/health                        # reranker
-#   curl http://localhost:8989/v1/models                    # Ling 3.0 Tiny
+#   curl http://localhost:8989/v1/models                     # Ling 3.0 Tiny
 #
-# SearXNG and the reranker bind to loopback only: the SearXNG limiter is off and neither service
-# has auth, so they must not be reachable off-host. Ling is exposed on all host interfaces to
-# preserve the original Docker port mapping.
+# SearXNG binds to loopback only: its limiter is off and it has no auth, so it must not be
+# reachable off-host. Ling is exposed on all host interfaces to preserve the original Docker port
+# mapping.
 
 # Preserve the existing project identity after moving this file from the localsearch directory.
 # The services are package-wide despite the legacy Docker names.
@@ -41,35 +40,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
-
-  # Cross-encoder that reranks the candidate pool down to the results the model sees.
-  # Optional: if this is down, searches keep the provider's own ordering and still work.
-  #
-  # 22M parameters on CPU — ~90MB to download, ready in ~25s, ~110ms to rank a 30-result pool.
-  # BAAI/bge-reranker-v2-m3 (568M) is stronger but needs a GPU: 16s for the same pool on CPU
-  # here, 140x slower for no visible gain on short search snippets. See README for that path.
-  reranker:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.3
-    container_name: localsearch-reranker
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8787:80"
-    volumes:
-      - ./docker/reranker-data:/data
-    command:
-      - "--model-id"
-      - "cross-encoder/ms-marco-MiniLM-L-6-v2"
-      # The default (16384) makes CPU warmup take so long the server never reports ready.
-      - "--max-batch-tokens"
-      - "4096"
-      - "--max-client-batch-size"
-      - "64"
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:80/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
 
   ling-tiny:
     image: vllm/vllm-openai:nightly

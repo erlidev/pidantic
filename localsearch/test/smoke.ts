@@ -13,7 +13,6 @@ import { searchWeb } from "../src/chain.ts";
 import { fetchPage, shape } from "../src/fetch.ts";
 import { runFilter } from "../src/filter.ts";
 import { formatResults } from "../src/format.ts";
-import { rerank } from "../src/rerank.ts";
 import { searchGitHub, searchWikipedia } from "../src/sources.ts";
 
 const argv = process.argv.slice(2);
@@ -43,11 +42,11 @@ const SAMPLE_URLS = [
 	"https://docs.rs/serde/latest/serde/trait.Serialize.html",
 ];
 
-/** Filters worth timing: the cheap lexical path, and the one that pays for a cross-encoder. */
+/** One filter per binding that has its own cost: line scanning, heading selection, fences. */
 const SAMPLE_FILTERS = [
 	"grep(/timeout/i, 3)",
-	'(await rank(sections, "how cancellation works")).slice(0, 2)',
-	'await rank(text, "how cancellation works")',
+	"sections.filter(s => /cancel/i.test(s.heading))",
+	"code()",
 ];
 
 if (argv[0] === "--filter") {
@@ -58,10 +57,9 @@ if (argv[0] === "--filter") {
 
 	for (const source of sources) {
 		try {
-			const [outcome, ms] = await time(() => runFilter(page.markdown, source, cfg, deps));
+			const [outcome, ms] = await time(async () => runFilter(page.markdown, source, cfg));
 			const body = outcome.kind === "ok" ? outcome.text + outcome.footer : outcome.message;
-			// `rank()` latency on CPU is the number this smoke test exists to report.
-			show(`${source} — ${outcome.stats.rankCalls} rank call(s), ${outcome.stats.rankMs}ms in TEI`, body.slice(0, 900), ms);
+			show(`${source} — ${outcome.stats.sandboxMs}ms in the sandbox`, body.slice(0, 900), ms);
 		} catch (err) {
 			console.log(`\n=== ${source} — failed ===\n${(err as Error).message}`);
 		}
@@ -90,17 +88,16 @@ if (argv[0] === "--fetch") {
 
 const query = argv.join(" ") || "tokio async runtime rust";
 console.log(`query: ${query}`);
-console.log(`searxng: ${cfg.searxngUrl}   reranker: ${cfg.rerankUrl}`);
+console.log(`searxng: ${cfg.searxngUrl}`);
 
 const [web, webMs] = await time(() => searchWeb(query, cfg.poolSize, cfg, deps));
 if (web.results.length === 0) {
 	show("web", `no results — ${web.attempts.map((a) => `${a.provider}: ${a.error}`).join("; ")}`, webMs);
 } else {
-	const [ranked, rankMs] = await time(() => rerank(query, web.results, cfg.count, cfg, deps));
 	show(
-		`web (providers: ${web.providers.join("+") || "cache"}, pool ${web.results.length}, ` +
-			`reranked: ${ranked.used ? `yes ${rankMs}ms` : ranked.error}${web.cached ? ", cached" : ""})`,
-		formatResults(ranked.results, cfg.descriptionTokens),
+		`web (providers: ${web.providers.join("+") || "cache"}, pool ${web.results.length}` +
+			`${web.cached ? ", cached" : ""})`,
+		formatResults(web.results.slice(0, cfg.count), cfg.descriptionTokens),
 		webMs,
 	);
 }

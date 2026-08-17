@@ -2,8 +2,8 @@
  * localsearch — `search` over the web, Wikipedia and GitHub, and `fetch` for reading a page.
  *
  * A web query goes to exactly one provider — self-hosted SearXNG by default, keyed APIs and
- * Marginalia as failover — which returns a wide candidate pool for a local cross-encoder to rank.
- * Everything the model sees is title, URL and a budgeted snippet.
+ * Marginalia as failover — and the model sees the top results as title, URL and a budgeted
+ * snippet.
  *
  * `fetch` completes the loop: search finds the URL, fetch reads it as Markdown.
  */
@@ -27,7 +27,6 @@ import { noProviderMessage, searchNotices, withNotices } from "./notices.ts";
 import { FETCH, SEARCH } from "./prompt.ts";
 import { readPage } from "./read.ts";
 import { formatFetchCall, formatSearchCall } from "./render.ts";
-import { type RerankOutcome, rerank } from "./rerank.ts";
 import { type GitHubKind, searchGitHub, searchWikipedia } from "./sources.ts";
 import { statusReport } from "./status.ts";
 
@@ -69,7 +68,7 @@ export default function localsearch(pi: ExtensionAPI) {
 			if (!query) {
 				return {
 					content: [{ type: "text" as const, text: `${source} search failed: query is empty.` }],
-					details: { source },
+					details: { source, query, count },
 					isError: true,
 				};
 			}
@@ -92,7 +91,7 @@ export default function localsearch(pi: ExtensionAPI) {
 					content: [
 						{ type: "text" as const, text: `${source} search failed: ${describeError(err)}` },
 					],
-					details: { source, query },
+					details: { source, query, count },
 					isError: true,
 				};
 			}
@@ -143,7 +142,7 @@ export default function localsearch(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("search-status", {
-		description: "Show search provider health, quota and reranker status",
+		description: "Show search provider health, quota and cache status",
 		handler: async (_args, ctx) => {
 			const deps = defaultDeps();
 			const cfg = await loadConfig(deps);
@@ -183,22 +182,16 @@ async function runWeb(
 		};
 	}
 
-	const ranked: RerankOutcome = cfg.rerankSources.includes("web")
-		? await rerank(query, chain.results, count, cfg, deps, signal)
-		: { results: chain.results.slice(0, count), used: false, error: "disabled" };
-	const notices = searchNotices(chain.providers[0], chain.attempts, ranked.error, cfg);
+	const results = chain.results.slice(0, count);
+	const notices = searchNotices(chain.providers[0], chain.attempts, cfg);
 
 	return {
-		text: withNotices(formatResults(ranked.results, cfg.descriptionTokens), notices),
+		text: withNotices(formatResults(results, cfg.descriptionTokens), notices),
 		details: {
 			providers: chain.providers,
 			attempts: chain.attempts,
 			cached: chain.cached,
 			pool: chain.results.length,
-			reranked: ranked.used,
-			rerankError: ranked.error,
-			// Lets you see what reranking changed without spending tokens on it.
-			preRerank: chain.results.slice(0, count).map((r) => r.url),
 		},
 	};
 }
@@ -216,13 +209,10 @@ async function runSource(
 			? await searchWikipedia(query, count, cfg, deps, signal)
 			: await searchGitHub(source.replace("github_", "") as GitHubKind, query, count, cfg, deps, signal);
 
-	const ranked: RerankOutcome = cfg.rerankSources.includes(source)
-		? await rerank(query, results, count, cfg, deps, signal)
-		: { results: results.slice(0, count), used: false };
-	const notices = searchNotices(undefined, [], ranked.error, cfg);
-
+	// These sources answer with at most `count` results of their own, so there is nothing to trim and
+	// no provider chain that could have degraded into a notice.
 	return {
-		text: withNotices(formatResults(ranked.results, cfg.descriptionTokens), notices),
-		details: { count: ranked.results.length, reranked: ranked.used },
+		text: formatResults(results, cfg.descriptionTokens),
+		details: { count: results.length },
 	};
 }

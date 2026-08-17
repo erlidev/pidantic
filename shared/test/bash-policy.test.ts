@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { classify } from "../src/bash-policy.ts";
+import { classify } from "../bash-policy.ts";
 
 const allowed = (command: string) => assert.deepEqual(classify(command), { verdict: "allow" });
 const needsConfirmation = (command: string) => assert.equal(classify(command).verdict, "ask");

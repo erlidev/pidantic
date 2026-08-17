@@ -1,8 +1,9 @@
 /** Shared fakes. Every test runs with no network, a controllable clock, and a throwaway state dir. */
 
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { after } from "node:test";
 
 import { DEFAULTS, type Config, type Deps } from "../src/config.ts";
 
@@ -28,6 +29,12 @@ export interface TestDeps extends Deps {
 	calls: { url: string; init?: RequestInit }[];
 }
 
+const stateDirectories: string[] = [];
+
+after(() => {
+	for (const directory of stateDirectories) rmSync(directory, { force: true, recursive: true });
+});
+
 export function makeDeps(
 	router: Router,
 	opts: { now?: number; env?: Record<string, string | undefined> } = {},
@@ -42,7 +49,10 @@ export function makeDeps(
 		if (route.error) throw route.error;
 
 		const raw = route.text !== undefined || route.bytes !== undefined;
-		const res = new Response(route.bytes ?? route.text ?? JSON.stringify(route.body ?? {}), {
+		const responseBody: BodyInit = route.bytes
+			? new Uint8Array(route.bytes)
+			: (route.text ?? JSON.stringify(route.body ?? {}));
+		const res = new Response(responseBody, {
 			status: route.status ?? 200,
 			headers: {
 				"Content-Type": route.contentType ?? (raw ? "text/plain" : "application/json"),
@@ -55,10 +65,12 @@ export function makeDeps(
 		return res;
 	}) as unknown as typeof globalThis.fetch;
 
+	const stateDir = mkdtempSync(join(tmpdir(), "localsearch-test-"));
+	stateDirectories.push(stateDir);
 	return {
 		fetch: fetchImpl,
 		now: () => clock.t,
-		stateDir: mkdtempSync(join(tmpdir(), "localsearch-test-")),
+		stateDir,
 		env: opts.env ?? {},
 		clock,
 		calls,

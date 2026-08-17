@@ -21,14 +21,13 @@ extensions belong there unless an extension requires deliberate dependency isola
 
 ## Shared services
 
-The root Compose stack supplies all local Docker services. It provides SearXNG on
-`127.0.0.1:8888`, a Text Embeddings Inference reranker on `127.0.0.1:8787`, and the Ling 3.0 Tiny
-vLLM server on `http://localhost:8989`.
+The root Compose stack defines all local Docker services. SearXNG listens on `127.0.0.1:8888`; the
+optional Ling 3.0 Tiny classifier listens on `http://localhost:8989` when safety `auto` mode is used.
 
 ```bash
-docker compose up -d
+docker compose up -d searxng
 curl 'http://localhost:8888/search?q=test&format=json'
-curl http://localhost:8787/health
+docker compose up -d ling-tiny
 curl http://localhost:8989/v1/models
 ```
 
@@ -37,17 +36,27 @@ in the volumes declared by `docker-compose.yml` rather than in the repository.
 
 ## Install dependencies and test
 
+Development requires Node.js 22.19 or newer. The repository pins npm 10.9.8 in `package.json` and
+uses Node's built-in TypeScript execution for tests; no transpilation step is required.
+
 ```bash
-npm install
-npm test
+npm ci
+npm run check
+npm run test:watch
 npm run smoke -- "your query"
 npm run smoke -- --fetch                          # live page fetches
-npm run smoke -- --filter <url> "grep(/x/i, 3)"   # live filter, with real rank() latency
+npm run smoke -- --filter <url> "grep(/x/i, 3)"   # live filter against a real page
 ```
 
-`npm test` runs the network-independent test suites of every extension. The smoke commands perform
-live queries and fetches, and therefore require the relevant local service or external provider
-configuration — `--filter` with a `rank()` expression needs the reranker running.
+`npm run check` runs strict TypeScript checking followed by every network-independent test suite.
+`npm test` runs only those tests, and `npm run test:watch` reruns affected tests while developing.
+The explicit test glob excludes `localsearch/test/smoke.ts`, because smoke commands perform live
+queries and fetches and require the relevant local service or external provider configuration.
+
+Pi and TypeBox are runtime peers supplied by the host. They are also development dependencies so
+the compiler can validate extension API usage. Keeping the same compatible ranges in both sections
+lets a clean checkout type-check while preserving the host contract when the package is distributed.
+The runtime HTML extraction packages remain regular dependencies.
 
 The Ling service requires Docker with the NVIDIA container runtime and a GPU with enough memory
 for the configured 65,536-token context window (a little over 16GB VRAM). The first launch

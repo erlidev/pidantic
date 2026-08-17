@@ -153,7 +153,7 @@ export interface CacheEntry<T = Result[]> {
 	results: T;
 }
 
-/** Cached pools are stored pre-rerank, so a hit still gets ranked for the current query. */
+/** Cached pools hold the whole candidate list, so a hit can serve a larger `count` than the first. */
 export async function readCache<T = Result[]>(
 	key: string,
 	ttlHours: number,

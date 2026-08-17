@@ -11,10 +11,9 @@
 
 import { runInNewContext } from "node:vm";
 
-import { type Config, type Deps } from "./config.ts";
+import { type Config } from "./config.ts";
 import { CHARS_PER_TOKEN, plural } from "./format.ts";
 import { type Section, headingList, headingText, splitSections } from "./fetch.ts";
-import { RankingUnavailableError, score } from "./rerank.ts";
 
 /** A section as the filter sees it. `text` carries the heading line and the body under it. */
 export interface FilterSection {
@@ -47,8 +46,6 @@ export interface FilterStats {
 	lines: number;
 	totalTokens: number;
 	keptTokens: number;
-	rankCalls: number;
-	rankMs: number;
 	sandboxMs: number;
 }
 
@@ -62,27 +59,17 @@ export type FilterOutcome =
 /** Every binding, in one line, appended to every failure. The filter is retried, not guessed at. */
 const BINDINGS =
 	"Bindings: text, lines[], sections[{heading, level, text, from, to}], " +
-	"grep(re, ctx?), code(lang?), await rank(items, query, n?).";
+	"grep(re, ctx?), code(lang?).";
 
 /** A filter returning more than this is a bug in the filter, not something to silently truncate. */
 const MAX_OUTPUT_CHARS = 4_000_000;
 
-/** Ceiling on synchronous execution. The awaited tail is bounded by `filterTimeoutMs` instead. */
-const SYNC_TIMEOUT_MS = 2000;
-
 /** Raised for anything the model can fix by rewriting the filter. */
 class FilterError extends Error {}
 
-export async function runFilter(
-	markdown: string,
-	source: string,
-	cfg: Config,
-	deps: Deps,
-	signal?: AbortSignal,
-): Promise<FilterOutcome> {
+export function runFilter(markdown: string, source: string, cfg: Config): FilterOutcome {
 	const lines = markdown.split("\n");
 	const sections = filterSections(markdown);
-	const counters = { rankCalls: 0, rankMs: 0 };
 	const started = Date.now();
 
 	const stats = (kept: string, keptSections?: number): FilterStats => ({
@@ -91,20 +78,14 @@ export async function runFilter(
 		lines: lines.length,
 		totalTokens: Math.round(markdown.length / CHARS_PER_TOKEN),
 		keptTokens: Math.round(kept.length / CHARS_PER_TOKEN),
-		rankCalls: counters.rankCalls,
-		rankMs: counters.rankMs,
 		sandboxMs: Date.now() - started,
 	});
 
 	let value: unknown;
 	try {
-		value = await evaluate(source, buildContext(markdown, lines, sections, cfg, deps, counters, signal), cfg);
+		value = evaluate(source, buildContext(markdown, lines, sections), cfg);
 	} catch (err) {
-		// Ranking is a service failure, not a filter mistake: it has to reach the tool boundary so the
-		// model is told to start the reranker rather than told to rewrite a filter that was correct.
-		if (err instanceof RankingUnavailableError) throw err;
-		if (signal?.aborted) throw err;
-		return { kind: "error", message: `${describe(err)}${awaitHint(err, source)}\n${BINDINGS}`, stats: stats("") };
+		return { kind: "error", message: `${describe(err)}\n${BINDINGS}`, stats: stats("") };
 	}
 
 	let rendered: Rendered;
@@ -143,36 +124,17 @@ type Bindings = Record<string, unknown>;
  *
  * A fresh `vm` context has no `require`, `process`, `fetch` or `setTimeout` — those are Node
  * globals, not JS builtins — so the default context is already clean and the bindings object is all
- * the filter can reach. Two guards apply: `runInNewContext`'s own timeout covers synchronous
- * runaway, and a wall-clock deadline covers the awaited tail. Neither can *terminate* an async
- * runaway such as `while (true) { await null }` — see the manual's honesty note.
+ * the filter can reach. `runInNewContext`'s own timeout is the single guard: the filter is
+ * synchronous, so there is no awaited tail that could outlive it.
  */
-async function evaluate(source: string, bindings: Bindings, cfg: Config): Promise<unknown> {
-	const script = wrap(source);
-	let promise: unknown;
+function evaluate(source: string, bindings: Bindings, cfg: Config): unknown {
 	try {
-		promise = runInNewContext(script, bindings, {
+		return runInNewContext(wrap(source), bindings, {
 			filename: "filter.js",
-			// The synchronous guard is its own, much shorter deadline: no honest expression over a text
-			// document spends seconds without awaiting, and `filterTimeoutMs` has to leave room for the
-			// cross-encoder round trip that `rank()` makes.
-			timeout: Math.min(cfg.filterTimeoutMs, SYNC_TIMEOUT_MS),
+			timeout: cfg.filterTimeoutMs,
 		});
 	} catch (err) {
 		throw new FilterError(describe(err));
-	}
-
-	let timer: NodeJS.Timeout | undefined;
-	const deadline = new Promise<never>((_, reject) => {
-		timer = setTimeout(
-			() => reject(new FilterError(`filter ran longer than ${cfg.filterTimeoutMs}ms`)),
-			cfg.filterTimeoutMs,
-		);
-	});
-	try {
-		return await Promise.race([promise as Promise<unknown>, deadline]);
-	} finally {
-		clearTimeout(timer);
 	}
 }
 
@@ -181,32 +143,18 @@ async function evaluate(source: string, bindings: Bindings, cfg: Config): Promis
  *
  * A forgotten `return` is the single most likely cause of a failed call, so both forms compile: the
  * expression form is tried first, and source that is a statement list falls back to a function body.
- * The result is always an async function call, because `await rank(...)` has to work.
  */
 function wrap(source: string): string {
 	try {
-		// Compiling without running is enough to tell an expression from a statement list. The probe
-		// has to be an async function: `await rank(...)` is a syntax error in a plain one.
-		new AsyncFunction(`return (\n${source}\n);`);
-		return `(async () => { return (\n${source}\n); })()`;
+		// Compiling without running is enough to tell an expression from a statement list.
+		new Function(`return (\n${source}\n);`);
+		return `(() => { return (\n${source}\n); })()`;
 	} catch {
-		return `(async () => {\n${source}\n})()`;
+		return `(() => {\n${source}\n})()`;
 	}
 }
 
-const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
-	body: string,
-) => unknown;
-
-function buildContext(
-	markdown: string,
-	lines: string[],
-	sections: FilterSection[],
-	cfg: Config,
-	deps: Deps,
-	counters: { rankCalls: number; rankMs: number },
-	signal?: AbortSignal,
-): Bindings {
+function buildContext(markdown: string, lines: string[], sections: FilterSection[]): Bindings {
 	const headingAt = headingIndex(lines.length, sections);
 
 	const grep = (pattern: RegExp | string, ctx = 2): Hit[] => {
@@ -235,33 +183,8 @@ function buildContext(
 	const code = (lang?: string): string[] =>
 		fences(lines).filter((b) => !lang || b.lang.toLowerCase() === lang.toLowerCase()).map((b) => b.text);
 
-	const rank = async (items: unknown, query: string, n = 10): Promise<unknown[]> => {
-		if (typeof query !== "string" || !query.trim()) {
-			throw new FilterError("rank(items, query) needs a query string as its second argument.");
-		}
-		if (++counters.rankCalls > cfg.maxRankCalls) {
-			throw new FilterError(
-				`rank() called more than ${cfg.maxRankCalls} times. Rank once over everything instead.`,
-			);
-		}
-		const at = Date.now();
-		try {
-			return await rankItems(items, query, n, sections, cfg, deps, signal);
-		} finally {
-			counters.rankMs += Date.now() - at;
-		}
-	};
-
-	// A filter that forgets `await` abandons the promise. Marking it handled here keeps that mistake
-	// a returned error message instead of an unhandled rejection in the agent's process.
-	const guarded = (items: unknown, query: string, n?: number) => {
-		const promise = rank(items, query, n);
-		promise.catch(() => {});
-		return promise;
-	};
-
 	// Frozen so a filter cannot reassign a binding and leave the next stage reading its own output.
-	return Object.freeze({ text: markdown, lines, sections, grep, code, rank: guarded });
+	return Object.freeze({ text: markdown, lines, sections, grep, code });
 }
 
 /** A per-call regex with `g`/`y` removed: `lastIndex` is shared state and `test` would skip lines. */
@@ -368,7 +291,7 @@ export function render(value: unknown): Rendered {
 	if (typeof value === "string") return { text: value };
 
 	if (value instanceof Promise || typeof (value as PromiseLike<unknown>)?.then === "function") {
-		throw new FilterError("filter returned a pending Promise: add `await` before rank().");
+		throw new FilterError("filter returned a Promise. Filters run synchronously; return text instead.");
 	}
 
 	if (isSection(value)) return { text: value.text, sections: 1 };
@@ -442,18 +365,6 @@ function footer(stats: FilterStats): string {
 	return `\n\n[${parts.join(" · ")}]`;
 }
 
-/**
- * The one sharp edge that allowing `await` introduces.
- *
- * `await rank(x, q).slice(0, 2)` parses as `await (rank(x, q).slice(0, 2))`, so the method lands on
- * a Promise and the call fails on a method name rather than on the missing parentheses. Naming the
- * fix turns the whole class of mistake into a ~1ms retry.
- */
-function awaitHint(err: unknown, source: string): string {
-	if (!/rank\s*\(/.test(source) || !/is not a function/.test(messageOf(err))) return "";
-	return "\nWrap the call: (await rank(items, query)).slice(0, 2).";
-}
-
 function describe(err: unknown): string {
 	return messageOf(err).replace(/\s+/g, " ").trim();
 }
@@ -466,152 +377,4 @@ function messageOf(err: unknown): string {
 	const e = err as { name?: string; message?: string };
 	if (typeof e?.message !== "string") return String(err);
 	return `${e.name && e.name !== "Error" ? `${e.name}: ` : ""}${e.message}`;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Semantic ranking
-// ---------------------------------------------------------------------------------------------
-
-interface Chunk {
-	heading: string;
-	from: number;
-	to: number;
-	text: string;
-}
-
-/**
- * `rank(items, query, n?)`, in its two useful shapes.
- *
- * An array is ranked as given and returned best-first, because that is what `.slice(0, 2)` on the
- * result means. A single string is the whole document, which has to be chunked before a
- * cross-encoder can score it — those chunks come back in document order, adjacent ones merged, so
- * the result still reads as a page.
- */
-async function rankItems(
-	items: unknown,
-	query: string,
-	n: number,
-	sections: FilterSection[],
-	cfg: Config,
-	deps: Deps,
-	signal?: AbortSignal,
-): Promise<unknown[]> {
-	if (typeof items === "string") {
-		const chunks = chunk(items, sections, cfg);
-		// Scoring is ~45ms a chunk on CPU, so an unbounded page would sit past any sane deadline.
-		// Saying so beats silently ranking the first part of the document and calling it the answer.
-		if (chunks.length > cfg.maxChunks) {
-			throw new FilterError(
-				`this page splits into ${chunks.length} chunks and rank() scores at most ${cfg.maxChunks}. ` +
-					"Rank the section list instead: (await rank(sections, query)).slice(0, 3).",
-			);
-		}
-		const scores = await score(query, chunks.map((c) => `${c.heading}\n${c.text}`.trim()), cfg, deps, signal);
-		const picked = top(chunks, scores, n).sort((a, b) => a.from - b.from);
-		return merge(picked);
-	}
-
-	if (!Array.isArray(items)) {
-		throw new FilterError("rank(items, query) needs an array or the whole `text` as its first argument.");
-	}
-	if (items.length === 0) return [];
-
-	const texts = items.map((item) => scorable(item));
-	if (texts.length > cfg.maxChunks) {
-		throw new FilterError(
-			`rank() was given ${texts.length} items; the limit is ${cfg.maxChunks}. Narrow the list first.`,
-		);
-	}
-	const scores = await score(query, texts, cfg, deps, signal);
-	return top(items, scores, n);
-}
-
-/** The text a cross-encoder scores, with heading context, which measurably improves relevance. */
-function scorable(item: unknown): string {
-	if (typeof item === "string") return item;
-	if (isSection(item)) return item.text;
-	if (isHit(item)) return `${item.heading}\n${item.text}`.trim();
-	if (item && typeof item === "object") return JSON.stringify(item);
-	return String(item);
-}
-
-function top<T>(items: T[], scores: number[], n: number): T[] {
-	return items
-		.map((item, i) => ({ item, score: scores[i] ?? Number.NEGATIVE_INFINITY }))
-		.sort((a, b) => b.score - a.score)
-		.slice(0, Math.max(1, Math.min(n, items.length)))
-		.map((s) => s.item);
-}
-
-/** Adjacent chunks rejoin, so a selection that straddles a boundary is not shown as two fragments. */
-function merge(chunks: Chunk[]): Chunk[] {
-	const out: Chunk[] = [];
-	for (const c of chunks) {
-		const last = out[out.length - 1];
-		if (last && c.from <= last.to + 1) {
-			last.to = Math.max(last.to, c.to);
-			last.text = `${last.text}\n${c.text}`;
-			continue;
-		}
-		out.push({ ...c });
-	}
-	return out;
-}
-
-/**
- * Split a document into scorable chunks: on section boundaries first, then on blank lines, never
- * inside a fence. Each chunk carries its heading path, which is prepended before scoring.
- */
-function chunk(markdown: string, sections: FilterSection[], cfg: Config): Chunk[] {
-	const limit = cfg.chunkTokens * CHARS_PER_TOKEN;
-	const out: Chunk[] = [];
-
-	for (const section of sections) {
-		const path = headingPath(sections, section);
-		if (section.text.length <= limit) {
-			out.push({ heading: path, from: section.from, to: section.to, text: section.text });
-			continue;
-		}
-
-		let buffer: string[] = [];
-		let start = section.from;
-		let length = 0;
-		let fenced = false;
-		const flush = (end: number) => {
-			if (buffer.length === 0) return;
-			out.push({ heading: path, from: start, to: end, text: buffer.join("\n") });
-			buffer = [];
-			length = 0;
-			start = end + 1;
-		};
-
-		const body = section.text.split("\n");
-		for (let i = 0; i < body.length; i++) {
-			const line = body[i];
-			if (/^\s*(`{3,}|~{3,})/.test(line)) fenced = !fenced;
-			// A paragraph break outside a fence is the only place a chunk may end.
-			if (!fenced && length >= limit && line.trim() === "") {
-				flush(section.from + i);
-				continue;
-			}
-			buffer.push(line);
-			length += line.length + 1;
-		}
-		flush(section.to);
-	}
-
-	return out;
-}
-
-/** `# Guide · ## Timeouts · ### Retries` — the enclosing headings of a section, outermost first. */
-function headingPath(sections: FilterSection[], section: FilterSection): string {
-	const path = [section.heading];
-	let level = section.level;
-	for (let i = section.index - 1; i >= 0 && level > 1; i--) {
-		if (sections[i].level > 0 && sections[i].level < level) {
-			path.unshift(sections[i].heading);
-			level = sections[i].level;
-		}
-	}
-	return path.filter(Boolean).join(" · ");
 }

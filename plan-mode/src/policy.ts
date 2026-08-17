@@ -1,7 +1,5 @@
 import type { ToolInfo } from "@earendil-works/pi-coding-agent";
-
-export const READ_ONLY_BUILTINS = ["read", "grep", "find", "ls"] as const;
-export const KNOWN_READ_ONLY_EXTENSION_TOOLS = ["search", "fetch"] as const;
+import { availableReadOnlyTools } from "../../shared/read-only-tools.ts";
 
 const PLAN_MODE_TOOLS = ["bash", "write_plan"] as const;
 
@@ -13,12 +11,7 @@ const PLAN_MODE_TOOLS = ["bash", "write_plan"] as const;
  * exit from plan mode; both are part of the plan-mode contract and are included unconditionally.
  */
 export function planToolSet(allTools: ToolInfo[]): string[] {
-	const available = new Set(allTools.map((tool) => tool.name));
-	const readOnlyTools = [...READ_ONLY_BUILTINS, ...KNOWN_READ_ONLY_EXTENSION_TOOLS].filter((name) =>
-		available.has(name),
-	);
-
-	return [...readOnlyTools, ...PLAN_MODE_TOOLS];
+	return [...availableReadOnlyTools(allTools), ...PLAN_MODE_TOOLS];
 }
 
 /**

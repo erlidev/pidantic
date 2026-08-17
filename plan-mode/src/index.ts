@@ -9,7 +9,8 @@ import {
 import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import { askConfirmation } from "../../shared/confirm-dialog.ts";
-import { classify } from "./bash-policy.ts";
+import { classify } from "../../shared/bash-policy.ts";
+import { setPlanModeActive } from "../../shared/mode-registry.ts";
 import { planFileExists, resolvePlanPath, writePlanFile } from "./plan-file.ts";
 import { denyReason, planToolSet } from "./policy.ts";
 import { BRIEF } from "./prompt.ts";
@@ -169,6 +170,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		persist();
 		applyPlanTools();
 		setPlanStatus(ctx, true);
+		setPlanModeActive(true);
 	}
 
 	function leave(ctx: ExtensionContext, message = "Plan mode disabled. No plan file was written; full tool access returns next turn."): void {
@@ -179,6 +181,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		persist();
 		pi.setActiveTools(restoredTools);
 		setPlanStatus(ctx, false);
+		setPlanModeActive(false);
 		ctx.ui.notify(message, "info");
 	}
 
@@ -192,7 +195,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		type: "boolean",
 	});
 
-	pi.registerTool<typeof writePlanParameters, WritePlanDetails, WritePlanRenderState>({
+	pi.registerTool<typeof writePlanParameters, WritePlanDetails | undefined, WritePlanRenderState>({
 		name: WRITE_PLAN_TOOL,
 		label: "Write plan",
 		description:
@@ -282,6 +285,7 @@ export default function planMode(pi: ExtensionAPI): void {
 			state = exitPlanMode();
 			persist();
 			setPlanStatus(ctx, false);
+			setPlanModeActive(false);
 
 			return {
 				...textResult(
@@ -360,6 +364,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		}
 		applySessionStartTools(pi, state);
 		setPlanStatus(ctx, state.active);
+		setPlanModeActive(state.active);
 	});
 
 	pi.on("before_agent_start", async (event) => {
@@ -367,9 +372,9 @@ export default function planMode(pi: ExtensionAPI): void {
 		return { systemPrompt: `${event.systemPrompt}\n${BRIEF}` };
 	});
 
-	pi.registerEntryRenderer<PlanModeEntryData>("plan-mode", (entry: CustomEntry<PlanModeEntryData>, { outputPad }, theme) => {
+	pi.registerEntryRenderer<PlanModeEntryData>("plan-mode", (entry: CustomEntry<PlanModeEntryData>, _options, theme) => {
 		const active = entry.data?.active === true;
-		const box = new Box(outputPad, 0, (text) => theme.bg("customMessageBg", text));
+		const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(transitionContent(active, theme), 0, 0));
 		return box;
 	});

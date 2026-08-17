@@ -47,9 +47,7 @@ test("the ladder states conditions and never hedges", () => {
 });
 
 test("every filter binding appears in the parameter description", () => {
-	for (const binding of ["text", "lines", "sections", "grep(", "code(", "rank("]) {
+	for (const binding of ["text", "lines", "sections", "grep(", "code("]) {
 		assert.ok(FETCH.params.filter.includes(binding), binding);
 	}
-	// `await` binds looser than a method call, so the example has to carry the parentheses.
-	assert.match(FETCH.params.filter, /\(await rank\([^)]*\)\)\.slice/);
 });

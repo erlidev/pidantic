@@ -1,6 +1,3 @@
-# Reranker model weights, downloaded on first container start.
-docker/reranker-data/
-
 # Optional compose overrides (SEARXNG_SECRET).
 .env
 

@@ -4,9 +4,9 @@ Web, Wikipedia and GitHub search and page fetching for the
 [pi](https://github.com/earendil-works) coding agent.
 
 Two tools. `search` sends a web query to exactly one provider — self-hosted SearXNG by default —
-which returns a wide candidate pool, and a local cross-encoder picks the most relevant results. The
-model sees title, URL and a snippet capped at ~100 tokens. The chain drops to the next provider only
-when the current one cannot answer: rate limited, out of quota, or down.
+and returns that provider's own top results. The model sees title, URL and a snippet capped at ~100
+tokens. The chain drops to the next provider only when the current one cannot answer: rate limited,
+out of quota, or down.
 
 `fetch` reads a URL and returns it as Markdown, so search finds the page and fetch reads it.
 
@@ -56,44 +56,23 @@ refusing: `curl 'http://localhost:8888/search?q=test&format=json' | jq '.unrespo
 ### 1. Services
 
 ```bash
-docker compose up -d searxng reranker
+docker compose up -d searxng
 curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
-curl http://localhost:8787/health                        # reranker
 ```
 
-These are the two services used by the implemented localsearch features. Both are CPU-only and
-bound to loopback:
+This is the only service used by the implemented localsearch features. It is CPU-only and bound to
+loopback:
 
 **SearXNG** (required for the default web provider; replaceable with a compatible JSON API through
 `SEARXNG_URL`). `json` in `search.formats` and `server.limiter: false` are both mandatory —
 without them the API returns 403 or rate-limits your own agent.
 
-**Reranker** (optional but recommended for search, required for `rank()`).
-`cross-encoder/ms-marco-MiniLM-L-6-v2`: ~90MB, ready in ~25s, ~110ms to rank a 30-result pool.
-Without it, searches fall back to the provider's own ordering and include a model-facing notice with
-configuration instructions. An explicit `rank()` inside a `fetch` filter fails the call instead,
-because provider or lexical order is not an equivalent implementation of a requested semantic
-ranking.
+> A local cross-encoder reranker used to sit in front of the results. It was removed: measured
+> against real queries it did not reorder the pool usefully enough to justify a second service, a
+> ~90MB model download and its latency. Web results are now the provider's own ordering.
 
-The reranker earns its place. For "tokio async runtime rust", the unranked pool put Tokyo (the
-city), TOKIO (the band) and a Tokyo travel guide in the top 10; after reranking all ten results are
-Rust content.
-
-**GPU upgrade path.** `BAAI/bge-reranker-v2-m3` (568M) is the stronger model, but it needs a GPU:
-on CPU it took 16s for a 30-result pool here, 140x slower than MiniLM, for no visible gain on short
-snippets. To use it, swap the reranker image to
-`ghcr.io/huggingface/text-embeddings-inference:86-1.9.3` (Ampere; see the TEI README for other
-architectures), set `--model-id BAAI/bge-reranker-v2-m3`, drop `--max-batch-tokens`, and add a
-`deploy.resources.reservations.devices` GPU block.
-
-> On this machine that path currently fails: TEI reports
-> `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH` and silently falls back to CPU, even though `nvidia-smi` works
-> inside the container and libcuda (610.43.03) matches the loaded kernel module. Not SELinux, not a
-> missing `nvidia-uvm` device — both were ruled out. It looks like a host driver/CUDA-runtime issue
-> rather than anything container-side. The CPU default avoids it entirely.
-
-The Compose file also defines `ling-tiny`, a GPU-backed vLLM service. No current extension uses it.
-Start only `searxng` and `reranker` on machines without NVIDIA Container Toolkit. `SEARXNG_SECRET`
+The Compose file also defines `ling-tiny`, a GPU-backed vLLM service used only by safety's optional
+`auto` classifier; localsearch does not call it. Start only `searxng` on machines without NVIDIA Container Toolkit. `SEARXNG_SECRET`
 is consumed by Compose/SearXNG, not by this extension; set a real value in `.env` before exposing
 the service beyond loopback.
 
@@ -176,7 +155,7 @@ search "rust async cancellation" in web
 search "tokio select" in github_repos limit 5
 fetch docs.example.com/guide §Configuration
 fetch raw.githubusercontent.com/o/n/main/src/read.ts · filter grep(/timeout/i, 3)
-fetch e.com/api · filter (await rank(sections, "retry behaviour and back… · raw
+fetch e.com/api · filter sections.filter(s => /retry behaviour and ba… · raw
 ```
 
 `in <source>` is always shown; `limit` only when the model set `count`. `https://` is stripped from
@@ -267,12 +246,10 @@ wrong cheaply, in one tool call, instead of being right slowly across four.
 | `sections` | `{heading, level, text, index, from, to}[]`, `from`/`to` indexing into `lines` |
 | `grep(re, ctx = 2)` | matching lines with context; adjacent and overlapping hits merge |
 | `code(lang?)` | fenced blocks, rails included, optionally by language tag |
-| `await rank(items, query, n = 10)` | cross-encoder ranking, see below |
 
 ```
 grep(/timeout/i, 3)                                  a term
 sections.filter(s => /error/i.test(s.heading))       a pattern over headings
-(await rank(sections, "how retries work")).slice(0, 2)   a question
 lines.slice(500, 900)                                a line range — this is pagination
 code("python")                                       every Python example on the page
 ```
@@ -280,8 +257,8 @@ code("python")                                       every Python example on the
 `return` is optional: an expression and a statement list that returns both compile. The result is
 duck-typed — a string is used as-is, sections and grep hits render in document order, an array of
 single-line strings joins on newlines and an array of blocks on blank lines, and any other object
-becomes JSON in a fence. A return that cannot be rendered — a number, `undefined`, a pending
-`Promise` — is an error naming the shapes that can, never a silent empty result.
+becomes JSON in a fence. A return that cannot be rendered — a number, `undefined`, a `Promise` — is
+an error naming the shapes that can, never a silent empty result.
 
 Output is returned **raw**: no title, no header, nothing summarised. It ends with the coordinate
 space, which is what makes `.slice()` usable as pagination:
@@ -294,30 +271,20 @@ A filter that matches nothing returns a map of the page instead of nothing, and 
 returns the message plus the binding list. Both cost a round trip; both make the next attempt
 obvious.
 
-`rank()` has two shapes. Given an array it scores those items and returns them **best first**, which
-is what `.slice(0, 2)` on the result means. Given `text` it chunks the document on section
-boundaries — never inside a fence, ~250 tokens, heading path prepended before scoring — and returns
-the selected chunks in **document order**, adjacent ones merged. Scoring costs ~45ms a chunk on CPU:
-~1.2s to rank the 55 sections of a 14k-token page, ~2.5s to chunk and rank the same page whole. A
-document that splits past `maxChunks` is an error telling the model to rank `sections` instead, and
-a reranker that is down or slow fails the call with the `RERANK_URL` fix rather than quietly
-substituting lexical order.
-
-`await` binds looser than a method call, so `await rank(x, q).slice(0, 2)` applies `.slice` to the
-Promise. That specific failure is detected and answered with the parenthesised form.
+Filters run **synchronously**. There is no `await` and no binding that performs I/O, so a filter
+either selects text or fails immediately.
 
 **The sandbox is not a security boundary.** Filters run in a `node:vm` context with frozen bindings
 and no `require`, `process` or `fetch` — those are Node globals, not JS builtins, so a fresh context
-is already clean. Synchronous runaway is cut off after 2s and the awaited tail after
-`filterTimeoutMs`. What `vm` cannot do is *terminate* an async runaway: `while (true) { await null }`
-leaks a promise loop for the life of the process. The code here is written by the model for itself,
-not by an attacker, so that trade is accepted; worker threads remain the upgrade path if it ever
-bites. Read this the way you read the `isPrivateHost` note above.
+is already clean. Runaway execution is cut off by `vm`'s own timeout after `filterTimeoutMs`, which
+works because nothing in the sandbox can yield to the event loop. The code here is written by the
+model for itself, not by an attacker, so that trade is accepted; worker threads remain the upgrade
+path if it ever bites. Read this the way you read the `isPrivateHost` note above.
 
 With `format: "raw"` the filter still runs — `sections` degrades to one section covering the whole
 body, and `text`, `lines`, `grep` and `code` work as usual.
 
-`/search-status` reports provider health, remaining quota, and whether SearXNG and the reranker are up.
+`/search-status` reports provider health, remaining quota, and whether SearXNG is up.
 The GitHub line includes cooldown state, token capability, and locally tracked operations for the
 current UTC day. That count combines GitHub searches with API-backed GitHub fetches because both use
 the same persistent state entry; it is not a search-only or raw HTTP-request count.
@@ -403,13 +370,13 @@ when a site extracts badly.
 
 ## How a web search runs
 
-1. **Cache** — 24h, keyed on the query. Stored pre-rerank, so a hit is still ranked for this query.
+1. **Cache** — 24h, keyed on the query. The whole candidate pool is stored, so a hit can serve a
+   larger `count` than the call that filled it.
 2. **One provider** — the first in configured order that has credentials, quota and no active
    cooldown. Anything it returns ends the search; the rest of the chain is never contacted.
 3. **Pool** — 30 candidates from that one provider.
 4. **Dedupe** — by normalized URL (scheme, `www.`, trailing slash and tracking params ignored).
-5. **Rerank** — cross-encoder picks the top `count`. If the server is down, provider order is kept
-   and the tool result tells the model how to configure or start the ranking API.
+5. **Take `count`** — the first `count` results, in the provider's own order.
 6. **Truncate** — descriptions to ~100 tokens, cut on a word boundary.
 
 Failures are one actionable line, not a stack trace:
@@ -419,9 +386,8 @@ web search failed: no provider returned results (searxng: connection refused; ta
 Start SearXNG: docker compose up -d
 ```
 
-Provider used, timings, quota and the pre-rerank ordering go to the tool's `details`. Provider and
-ranking API degradation is also included as a concise notice in tool content because `details` is
-not sent to the model.
+Provider used, timings, quota and pool size go to the tool's `details`. Provider degradation is also
+included as a concise notice in tool content because `details` is not sent to the model.
 
 ## Quota and failover
 
@@ -448,13 +414,11 @@ SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/mo
 {
   "order": ["searxng", "exa", "tavily", "brave", "marginalia"],
   "searxngUrl": "http://localhost:8888",
-  "rerankUrl": "http://localhost:8787",
   "count": 10,
   "maxCount": 25,
   "descriptionTokens": 100,
   "poolSize": 30,
   "cacheTtlHours": 24,
-  "rerankSources": ["web"],
   "timeoutMs": 12000,
   "limits": {
     "searxng": {},
@@ -469,22 +433,18 @@ SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/mo
   "fetchCacheTtlHours": 6,
   "allowPrivateHosts": false,
 
-  "filterTimeoutMs": 15000,
-  "maxRankCalls": 4,
-  "chunkTokens": 250,
-  "maxChunks": 120
+  "filterTimeoutMs": 2000
 }
 ```
 
-The fetch content ceiling is fixed at 10,000 tokens. `filterTimeoutMs` is the wall clock
-for one filter, ranking included; synchronous runaway is cut off after a fixed 2s regardless.
-`maxChunks` bounds one `rank()` call — at ~45ms a chunk, 120 is a ~5s worst case.
+The fetch content ceiling is fixed at 10,000 tokens. `filterTimeoutMs` is the wall clock for one
+filter expression; an honest filter over a large page finishes in single-digit milliseconds.
 
 `order` is a preference list, not a fan-out list — only its first usable entry is queried. Move `exa`
 to the front to buy quality with quota; drop a provider from the array to take it out of rotation.
 
 The configuration file is optional. Missing, invalid, or unreadable JSON falls back to defaults.
-`limits` is merged per provider. Environment variables override the two service URLs and credentials
+`limits` is merged per provider. Environment variables override the service URL and credentials
 are never written to config:
 
 | Variable | Default | Effect |
@@ -492,7 +452,6 @@ are never written to config:
 | `LOCALSEARCH_CONFIG` | `~/.pi/agent/localsearch.json` | Alternate configuration file |
 | `LOCALSEARCH_DIR` | `~/.pi/agent/localsearch` | Cache, quota state, and extracted-page sidecars |
 | `SEARXNG_URL` | `http://localhost:8888` | SearXNG base URL |
-| `RERANK_URL` | `http://localhost:8787` | Reranker base URL; `/rerank` is appended |
 | `EXA_API_KEY` | Unset | Enables Exa failover |
 | `TAVILY_API_KEY` | Unset | Enables Tavily failover |
 | `BRAVE_API_KEY` | Unset | Enables Brave failover |
@@ -506,7 +465,7 @@ npm test                                 # unit tests, no network
 npm run smoke -- "your query"            # live: hits SearXNG, Wikipedia, GitHub, Marginalia
 npm run smoke -- --fetch                 # live: fetches one page per generator and GitHub URL shape
 npm run smoke -- --fetch <url>…          # live: fetches the given URLs
-npm run smoke -- --filter <url> "<expr>" # live: one filter, with real rank() latency
+npm run smoke -- --filter <url> "<expr>" # live: one filter against a real page
 ```
 
 ### Adding a model-facing parameter
@@ -524,7 +483,7 @@ Hold a new parameter to the same bar:
 - [ ] The choice is written as a condition, not a suggestion: "no heading in hand → plain fetch".
 - [ ] One concept per sentence, no subordinate clauses, written for a model reading cold.
 - [ ] No hedging — no "may", "can optionally", "if desired", "consider".
-- [ ] Nothing the model cannot act on: no chunking, no cross-encoder, no cache format. The one
+- [ ] Nothing the model cannot act on: no extraction internals, no cache format. The one
       exception is that the page is cached, because it changes whether a retry is worth making.
 - [ ] Every error names the fix and echoes the detail needed to apply it.
 - [ ] A ceiling for the new string in `test/prompt.test.ts`, counted before the code lands.

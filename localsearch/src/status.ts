@@ -36,7 +36,6 @@ export async function statusReport(cfg: Config, deps: Deps): Promise<string> {
 	}
 
 	lines.push(`searxng url: ${cfg.searxngUrl} (${await probe(cfg.searxngUrl, deps)})`);
-	lines.push(`reranker: ${cfg.rerankUrl} (${await probe(`${cfg.rerankUrl}/health`, deps)})`);
 	const github = entryFor(state, "github", now);
 	const githubLimit = cfg.limits.github ?? {};
 	const githubUsage = [

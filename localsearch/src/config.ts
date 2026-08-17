@@ -39,17 +39,17 @@ export interface Config {
 	 */
 	order: string[];
 	searxngUrl: string;
-	rerankUrl: string;
 	/** Default number of results returned to the model. */
 	count: number;
 	maxCount: number;
 	/** Per-result description budget, in tokens. Converted to characters at ~4 chars/token. */
 	descriptionTokens: number;
-	/** Candidate pool size requested from providers before reranking. */
+	/**
+	 * Candidates requested from a provider and cached. The model sees the first `count` of them in
+	 * provider order; the rest make a later, larger `count` for the same query a cache hit.
+	 */
 	poolSize: number;
 	cacheTtlHours: number;
-	/** Sources that get reranked. Wikipedia and GitHub rank well on their own. */
-	rerankSources: string[];
 	timeoutMs: number;
 	limits: Record<string, Limit>;
 
@@ -60,14 +60,8 @@ export interface Config {
 	/** Allow `fetch` to reach loopback, RFC1918 and link-local addresses. */
 	allowPrivateHosts: boolean;
 
-	/** Wall-clock ceiling for one `filter` expression, sandbox and ranking included. */
+	/** Wall-clock ceiling for one `filter` expression. */
 	filterTimeoutMs: number;
-	/** `rank()` calls allowed per filter. Each one is a round trip to the cross-encoder. */
-	maxRankCalls: number;
-	/** Target size of a chunk handed to the cross-encoder, in tokens. */
-	chunkTokens: number;
-	/** Ceiling on items or chunks scored in one `rank()` call, which bounds its latency. */
-	maxChunks: number;
 }
 
 /** Fixed content ceiling for every fetch result. Narrow further with section or filter. */
@@ -76,23 +70,17 @@ export const FETCH_CONTENT_TOKENS = 10_000;
 export const DEFAULTS: Config = {
 	order: ["searxng", "exa", "tavily", "brave", "marginalia"],
 	searxngUrl: "http://localhost:8888",
-	rerankUrl: "http://localhost:8787",
 	count: 10,
 	maxCount: 25,
 	descriptionTokens: 100,
 	poolSize: 30,
 	cacheTtlHours: 24,
-	rerankSources: ["web"],
 	timeoutMs: 12000,
 	fetchTimeoutMs: 20000,
 	fetchMaxBytes: 2_000_000,
 	fetchCacheTtlHours: 6,
 	allowPrivateHosts: false,
-	filterTimeoutMs: 15000,
-	maxRankCalls: 4,
-	chunkTokens: 250,
-	// ~45ms a chunk on CPU, measured against a 14k-token page, so this is a ~5s worst case.
-	maxChunks: 120,
+	filterTimeoutMs: 2000,
 	limits: {
 		searxng: {},
 		tavily: { month: 1000 },
@@ -135,10 +123,8 @@ export async function loadConfig(deps: Deps): Promise<Config> {
 		limits: { ...DEFAULTS.limits, ...(file.limits ?? {}) },
 	};
 	if (deps.env.SEARXNG_URL) cfg.searxngUrl = deps.env.SEARXNG_URL;
-	if (deps.env.RERANK_URL) cfg.rerankUrl = deps.env.RERANK_URL;
 	// Trailing slashes would produce "//search" style paths on join.
 	cfg.searxngUrl = cfg.searxngUrl.replace(/\/+$/, "");
-	cfg.rerankUrl = cfg.rerankUrl.replace(/\/+$/, "");
 	return cfg;
 }
 

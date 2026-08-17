@@ -19,7 +19,6 @@ export function noProviderMessage(
 export function searchNotices(
 	provider: string | undefined,
 	attempts: { provider: string; error: string }[],
-	rerankError: string | undefined,
 	cfg: Config,
 ): string[] {
 	const notices: string[] = [];
@@ -40,18 +39,7 @@ export function searchNotices(
 				`Set SEARXNG_URL to a reachable JSON API (currently ${cfg.searxngUrl}), or configure EXA_API_KEY, TAVILY_API_KEY, or BRAVE_API_KEY.`,
 		);
 	}
-	if (rerankError && rerankError !== "disabled" && rerankError !== "not needed") {
-		notices.push(rankingNotice(rerankError, cfg));
-	}
 	return notices;
-}
-
-function rankingNotice(reason: string, cfg: Config): string {
-	return (
-		`Semantic reranking unavailable (${reason}); results use provider order. ` +
-		`Set RERANK_URL to a compatible Text Embeddings Inference /rerank API (currently ${cfg.rerankUrl}), ` +
-		"or start the bundled service with `docker compose up -d`."
-	);
 }
 
 export function withNotices(body: string, notices: string[]): string {

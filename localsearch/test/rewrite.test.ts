@@ -5,6 +5,20 @@ import assert from "node:assert/strict";
 
 import { planFetch } from "../src/rewrite.ts";
 
+function githubPlan(url: string) {
+	const plan = planFetch(url);
+	assert.equal(plan.kind, "github");
+	if (plan.kind !== "github") assert.fail(`Expected a GitHub plan for ${url}`);
+	return plan;
+}
+
+function textPlan(url: string) {
+	const plan = planFetch(url);
+	assert.equal(plan.kind, "text");
+	if (plan.kind !== "text") assert.fail(`Expected a text plan for ${url}`);
+	return plan;
+}
+
 test("a repository root becomes a README lookup", () => {
 	assert.deepEqual(planFetch("https://github.com/tokio-rs/tokio"), {
 		kind: "github",
@@ -51,20 +65,20 @@ test("a pull request's files view asks for the diff instead of the discussion", 
 });
 
 test("tree, release and gist URLs each get their own op", () => {
-	assert.deepEqual(planFetch("https://github.com/a/b/tree/main/src/util").op, {
+	assert.deepEqual(githubPlan("https://github.com/a/b/tree/main/src/util").op, {
 		op: "tree",
 		owner: "a",
 		repo: "b",
 		ref: "main",
 		path: "src/util",
 	});
-	assert.deepEqual(planFetch("https://github.com/a/b/releases/tag/v1.2.0").op, {
+	assert.deepEqual(githubPlan("https://github.com/a/b/releases/tag/v1.2.0").op, {
 		op: "release",
 		owner: "a",
 		repo: "b",
 		tag: "v1.2.0",
 	});
-	assert.deepEqual(planFetch("https://gist.github.com/someone/abc123def").op, {
+	assert.deepEqual(githubPlan("https://gist.github.com/someone/abc123def").op, {
 		op: "gist",
 		id: "abc123def",
 	});
@@ -104,7 +118,7 @@ test("known text extensions skip the HTML pipeline", () => {
 	assert.equal(planFetch("https://example.com/spec.yaml").kind, "text");
 	assert.equal(planFetch("https://example.com/CHANGELOG.md").kind, "text");
 	// Markdown and plain text are already prose and must not be wrapped in a code fence.
-	assert.equal(planFetch("https://example.com/CHANGELOG.md").lang, undefined);
+	assert.equal(textPlan("https://example.com/CHANGELOG.md").lang, undefined);
 });
 
 test("anything else is HTML", () => {

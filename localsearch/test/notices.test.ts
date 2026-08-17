@@ -6,36 +6,22 @@ import { config } from "./helpers.ts";
 
 test("successful SearXNG failover is visible and actionable to the model", () => {
 	const cfg = config();
-	const notices = searchNotices(
-		"marginalia",
-		[{ provider: "searxng", error: "connection refused" }],
-		undefined,
-		cfg,
-	);
+	const notices = searchNotices("marginalia", [{ provider: "searxng", error: "connection refused" }], cfg);
 	assert.equal(notices.length, 1);
 	assert.match(notices[0], /SearXNG unavailable \(connection refused\); used marginalia fallback/);
 	assert.match(notices[0], /SEARXNG_URL/);
 	assert.match(notices[0], /EXA_API_KEY/);
 });
 
-test("automatic reranking fallback says that provider order was preserved", () => {
-	const notices = searchNotices("searxng", [], "timed out", config());
-	assert.equal(notices.length, 1);
-	assert.match(notices[0], /Semantic reranking unavailable \(timed out\)/);
-	assert.match(notices[0], /results use provider order/);
-	assert.match(notices[0], /RERANK_URL/);
-});
-
 test("a cached result retains notice that it came from a fallback provider", () => {
-	const notices = searchNotices("marginalia", [], undefined, config());
+	const notices = searchNotices("marginalia", [], config());
 	assert.equal(notices.length, 1);
 	assert.match(notices[0], /cached marginalia fallback results/);
 	assert.match(notices[0], /SEARXNG_URL/);
 });
 
-test("disabled or unnecessary reranking does not produce a degradation notice", () => {
-	assert.deepEqual(searchNotices("searxng", [], "disabled", config()), []);
-	assert.deepEqual(searchNotices("searxng", [], "not needed", config()), []);
+test("a healthy primary provider produces no degradation notice", () => {
+	assert.deepEqual(searchNotices("searxng", [], config()), []);
 });
 
 test("notices are included in model content without replacing results", () => {
