@@ -165,6 +165,30 @@ The three reading modes form a ladder, and the tool description states it as con
 advice: no heading in hand → plain `fetch`; a heading in hand → `section`; a term, pattern, question
 or line range → `filter`.
 
+### In the transcript
+
+Both tools render their own call line, so the transcript shows what was asked for rather than the
+bare tool name pi falls back to. The layout follows pi's built-in tools: bold title, the primary
+argument in the accent color, modifiers dimmed.
+
+```text
+search "rust async cancellation" in web
+search "tokio select" in github_repos limit 5
+fetch docs.example.com/guide §Configuration
+fetch raw.githubusercontent.com/o/n/main/src/read.ts · filter grep(/timeout/i, 3)
+fetch e.com/api · filter (await rank(sections, "retry behaviour and back… · raw
+```
+
+`in <source>` is always shown; `limit` only when the model set `count`. `https://` is stripped from
+the URL, an over-long URL is elided around its middle so host and filename both survive, and the
+section, filter and non-default format appear only when used. The filter is collapsed to one line
+and elided, so its head — which binding was used and on what — is what stays visible. Arguments are
+rendered as they stream, so a partial call shows `search …` until the query arrives.
+
+`src/render.ts` holds these formatters. It imports nothing, takes the theme as a structural
+argument, and is therefore unit-tested like the rest of the package; `src/index.ts` only wraps the
+returned string in a reused pi-tui `Text`.
+
 ### The budget rule
 
 A page that fits the budget is returned. A page that does not depends on whether the call asked
@@ -294,6 +318,9 @@ With `format: "raw"` the filter still runs — `sections` degrades to one sectio
 body, and `text`, `lines`, `grep` and `code` work as usual.
 
 `/search-status` reports provider health, remaining quota, and whether SearXNG and the reranker are up.
+The GitHub line includes cooldown state, token capability, and locally tracked operations for the
+current UTC day. That count combines GitHub searches with API-backed GitHub fetches because both use
+the same persistent state entry; it is not a search-only or raw HTTP-request count.
 
 ## How a fetch runs
 

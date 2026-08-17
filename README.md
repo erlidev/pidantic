@@ -115,6 +115,10 @@ calls fail with instructions to start or configure a compatible reranking endpoi
 - `fetch` reads a known URL and returns extracted content as Markdown, plain text, or the raw body.
 - `/search-status` displays provider health, quota state, cache size, and reranker status.
 
+Each call renders a one-line summary in the transcript — `search "rust async cancellation" in web`,
+`fetch docs.example.com/guide §Configuration · filter grep(/timeout/i, 3)` — so the exact query,
+source, section, filter, and non-default format are visible without expanding the tool output.
+
 ### `search` parameters
 
 `search(query, source?, count?)`
@@ -256,7 +260,9 @@ customizations are:
 ### Search troubleshooting
 
 Run `/search-status` first. It reports each configured provider, quota/cooldown state, the SearXNG
-and reranker probes, GitHub token presence, and cache settings. The usual checks are:
+and reranker probes, GitHub token capability and tracked operations for the current UTC day, and
+cache settings. GitHub searches and API-backed GitHub fetches share that operation count; it does
+not represent raw HTTP requests. The usual checks are:
 
 ```bash
 docker compose ps

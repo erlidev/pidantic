@@ -248,8 +248,9 @@ function githubHeaders(accept: string, deps: Deps): Record<string, string> {
 }
 
 /**
- * Run a GitHub read against the same quota entry `searchGitHub` uses — it is the same upstream
- * rate-limit bucket, so accounting them separately would let one starve the other silently.
+ * Run a GitHub read against the same local quota entry `searchGitHub` uses. This deliberately
+ * tracks high-level operations rather than raw HTTP requests; one issue fetch, for example, makes
+ * separate issue and comment requests but increments the shared counter once.
  */
 async function withQuota<T>(cfg: Config, deps: Deps, run: () => Promise<T>): Promise<T> {
 	const state = await loadState(deps);

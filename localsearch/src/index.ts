@@ -8,11 +8,9 @@
  * `fetch` completes the loop: search finds the URL, fetch reads it as Markdown.
  */
 
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { type Component, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import {
@@ -20,19 +18,18 @@ import {
 	type Deps,
 	defaultDeps,
 	describeError,
-	describeNetworkError,
-	FETCH_CONTENT_TOKENS,
 	loadConfig,
 } from "./config.ts";
-import { blockedReason, entryFor, loadState, searchWeb } from "./chain.ts";
+import { searchWeb } from "./chain.ts";
 import type { Format } from "./fetch.ts";
 import { formatResults } from "./format.ts";
 import { noProviderMessage, searchNotices, withNotices } from "./notices.ts";
 import { FETCH, SEARCH } from "./prompt.ts";
-import { PROVIDERS } from "./providers.ts";
 import { readPage } from "./read.ts";
+import { formatFetchCall, formatSearchCall } from "./render.ts";
 import { type RerankOutcome, rerank } from "./rerank.ts";
 import { type GitHubKind, searchGitHub, searchWikipedia } from "./sources.ts";
+import { statusReport } from "./status.ts";
 
 const SOURCES = ["web", "wikipedia", "github_code", "github_repos", "github_issues"] as const;
 type Source = (typeof SOURCES)[number];
@@ -56,6 +53,10 @@ export default function localsearch(pi: ExtensionAPI) {
 			),
 			count: Type.Optional(Type.Number({ description: SEARCH.params.count })),
 		}),
+
+		renderCall(args, theme, context) {
+			return reuseLine(context.lastComponent, formatSearchCall(args, theme));
+		},
 
 		async execute(_toolCallId, params, signal) {
 			const started = Date.now();
@@ -114,6 +115,10 @@ export default function localsearch(pi: ExtensionAPI) {
 			),
 		}),
 
+		renderCall(args, theme, context) {
+			return reuseLine(context.lastComponent, formatFetchCall(args, theme));
+		},
+
 		async execute(_toolCallId, params, signal) {
 			const deps = defaultDeps();
 			const cfg = await loadConfig(deps);
@@ -147,6 +152,13 @@ export default function localsearch(pi: ExtensionAPI) {
 	});
 }
 
+
+/** Arguments stream in token by token, so update the existing line instead of replacing it. */
+function reuseLine(last: Component | undefined, text: string): Text {
+	const line = last instanceof Text ? last : new Text("", 0, 0);
+	line.setText(text);
+	return line;
+}
 
 interface Outcome {
 	text: string;
@@ -213,59 +225,4 @@ async function runSource(
 		text: withNotices(formatResults(ranked.results, cfg.descriptionTokens), notices),
 		details: { count: ranked.results.length, reranked: ranked.used },
 	};
-}
-
-async function statusReport(cfg: Config, deps: Deps): Promise<string> {
-	const state = await loadState(deps);
-	const now = deps.now();
-	const lines: string[] = [];
-
-	for (const name of cfg.order) {
-		const provider = PROVIDERS[name];
-		if (!provider) {
-			lines.push(`${name}: unknown provider`);
-			continue;
-		}
-		if (!provider.available(cfg, deps)) {
-			lines.push(`${name}: no API key`);
-			continue;
-		}
-		const entry = entryFor(state, name, now);
-		const limit = cfg.limits[name] ?? {};
-		const quota = limit.month
-			? `${entry.monthUsed}/${limit.month} this month`
-			: limit.day
-				? `${entry.dayUsed}/${limit.day} today`
-				: `${entry.dayUsed} today, unlimited`;
-		lines.push(`${name}: ${blockedReason(state, name, cfg, now) ?? "ready"} — ${quota}`);
-	}
-
-	lines.push(`searxng url: ${cfg.searxngUrl} (${await probe(cfg.searxngUrl, deps)})`);
-	lines.push(`reranker: ${cfg.rerankUrl} (${await probe(`${cfg.rerankUrl}/health`, deps)})`);
-	lines.push(`github: ${deps.env.LS_GH_TOKEN ? "token set" : "no token (code search unavailable)"}`);
-	lines.push(
-		`fetch: ${await cacheSize(deps)} cached pages/searches, ` +
-			`${FETCH_CONTENT_TOKENS} token budget, ${cfg.fetchCacheTtlHours}h ttl` +
-			`${cfg.allowPrivateHosts ? ", private hosts allowed" : ""}`,
-	);
-	return lines.join("\n");
-}
-
-async function cacheSize(deps: Deps): Promise<number> {
-	try {
-		// Only the JSON entries are cached items; each one may have a `.md` sidecar beside it.
-		return (await readdir(join(deps.stateDir, "cache"))).filter((f) => f.endsWith(".json")).length;
-	} catch {
-		// No cache directory yet is a count of zero, not a status failure.
-		return 0;
-	}
-}
-
-async function probe(url: string, deps: Deps): Promise<string> {
-	try {
-		const res = await deps.fetch(url, { signal: AbortSignal.timeout(1500) });
-		return res.ok ? "up" : `HTTP ${res.status}`;
-	} catch (err) {
-		return describeNetworkError(err);
-	}
 }

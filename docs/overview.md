@@ -32,7 +32,7 @@ pidantic/
 │   │   ├── smart-compaction.md
 │   │   └── stop.md
 │   └── roadmaps/
-│       └── plan-mode.md
+│       └── safety.md
 ├── shared/
 │   └── confirm-dialog.ts
 ├── confirm-bash/
@@ -70,9 +70,11 @@ pidantic/
     │   ├── prompt.ts
     │   ├── providers.ts
     │   ├── read.ts
+    │   ├── render.ts
     │   ├── rerank.ts
     │   ├── rewrite.ts
-    │   └── sources.ts
+    │   ├── sources.ts
+    │   └── status.ts
     └── test/
         ├── helpers.ts
         ├── chain.test.ts
@@ -84,9 +86,11 @@ pidantic/
         ├── prompt.test.ts
         ├── providers.test.ts
         ├── read.test.ts
+        ├── render.test.ts
         ├── rerank.test.ts
         ├── rewrite.test.ts
         ├── sources.test.ts
+        ├── status.test.ts
         ├── smoke.ts
         └── fixtures/
             ├── docusaurus.html
@@ -134,8 +138,9 @@ not expressible in a schema remain in `promptGuidelines`.
   failover, fetching, extraction, formatting, notices, URL rewriting, source adapters, and reranking.
   `prompt.ts` holds every model-facing instruction string so the permanent token cost can be
   budgeted and tested in one place; `read.ts` holds the `fetch` pipeline, and `filter.ts` the
-  sandboxed expression evaluator it runs. Both are kept out of `index.ts`, which imports Pi's
-  peer dependencies and therefore cannot be loaded by the tests.
+  sandboxed expression evaluator it runs. `render.ts` builds the compact transcript line for each
+  tool call and takes the theme as a structural argument rather than importing it. All are kept out
+  of `index.ts`, which imports Pi's peer dependencies and therefore cannot be loaded by the tests.
 
 ## Localsearch tests
 
