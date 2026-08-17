@@ -20,8 +20,14 @@ export interface ClassifierConfig {
 	sampler: Record<string, unknown>;
 	classifyBash: boolean;
 	classifyUnknownTools: boolean;
-	/** Describe Bash commands the deterministic policy resolved on its own. Requires `enabled`. */
+	/** Master switch for command explanations. Requires `enabled`. */
 	explainBash: boolean;
+	/**
+	 * Describe Bash commands the deterministic rules allowed outright. These are the safest calls and
+	 * the highest-volume ones, so their explanations can be turned off without losing the explanations
+	 * under a classifier auto-approval or inside a confirmation dialog. Requires `explainBash`.
+	 */
+	explainRuleAllowed: boolean;
 }
 
 export interface SafetyConfig {
@@ -41,7 +47,9 @@ export const DEFAULTS: SafetyConfig = {
 		enabled: false,
 		url: "http://localhost:8989/v1",
 		model: "inclusionAI/Ling-3.0-tiny-int4",
-		timeoutMs: 2000,
+		// A verdict holds the command up, but a budget under a local model's real latency only turns
+		// classifiable commands into fail-closed dialogs, which is the failure this budget exists to avoid.
+		timeoutMs: 4000,
 		explainTimeoutMs: 15000,
 		maxTokens: 1024,
 		thinking: null,
@@ -50,6 +58,7 @@ export const DEFAULTS: SafetyConfig = {
 		classifyBash: true,
 		classifyUnknownTools: true,
 		explainBash: true,
+		explainRuleAllowed: true,
 	},
 	allowBinaries: [],
 	denyBinaries: [],
@@ -121,6 +130,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 			classifyBash: typeof classifier.classifyBash === "boolean" ? classifier.classifyBash : DEFAULTS.classifier.classifyBash,
 			classifyUnknownTools: typeof classifier.classifyUnknownTools === "boolean" ? classifier.classifyUnknownTools : DEFAULTS.classifier.classifyUnknownTools,
 			explainBash: typeof classifier.explainBash === "boolean" ? classifier.explainBash : DEFAULTS.classifier.explainBash,
+			explainRuleAllowed: typeof classifier.explainRuleAllowed === "boolean" ? classifier.explainRuleAllowed : DEFAULTS.classifier.explainRuleAllowed,
 		},
 		allowBinaries: strings(raw.allowBinaries) ?? DEFAULTS.allowBinaries,
 		denyBinaries: strings(raw.denyBinaries) ?? DEFAULTS.denyBinaries,

@@ -161,7 +161,8 @@ test("an auto-approved call is annotated under the call when its renderer draws 
 	// confirm-bash declares this at load; the harness loads safety alone and resets the registry.
 	markToolNoteRenderer("bash");
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "frobnicate --check" }, "call-7")), "allowed");
-	assert.match(toolNote("call-7") ?? "", /^auto-approved · /);
+	assert.equal(toolNote("call-7")?.text, "classifier: safe · harness verdict");
+	assert.equal(toolNote("call-7")?.tone, "info");
 	// The note replaces the notice rather than doubling it.
 	assert.equal(gate.notices.filter((notice) => notice.message.includes("Safety classifier allowed")).length, 0);
 	// An unknown tool has no note renderer, so it still reports through a notice.
@@ -179,7 +180,7 @@ test("a deterministically allowed command is explained in the background", async
 	// The command is not held while the explanation is produced.
 	assert.equal(toolNote("call-1"), undefined);
 	await gate.idle();
-	assert.equal(toolNote("call-1"), "harness explanation");
+	assert.equal(toolNote("call-1")?.text, "what this does · harness explanation");
 	// An explanation decides nothing, so it is not a classification.
 	assert.equal(gate.classifierCalls, 0);
 	assert.equal(gate.explanationCalls, 1);
@@ -187,8 +188,26 @@ test("a deterministically allowed command is explained in the background", async
 	// The same command in a later call is served from the explanation cache.
 	assert.equal(await gate.toolCall("bash", { command: "git   status" }, "call-2"), undefined);
 	await gate.idle();
-	assert.equal(toolNote("call-2"), "harness explanation");
+	assert.equal(toolNote("call-2")?.text, "what this does · harness explanation");
 	assert.equal(gate.explanationCalls, 1);
+});
+
+test("a failed explanation says so under the call instead of leaving it blank", async (t) => {
+	const cwd = await repository(t);
+	const failing: typeof globalThis.fetch = (async (url: string | URL | Request) =>
+		String(url).includes("/models")
+			? new Response(JSON.stringify({ data: [] }), { status: 200 })
+			: new Response("", { status: 503 })) as typeof globalThis.fetch;
+	const gate = await harness(t, { cwd, config: { mode: "safe", classifier: CLASSIFIER }, fetch: failing, interactive: true });
+	markToolNoteRenderer("bash");
+
+	assert.equal(await gate.toolCall("bash", { command: "git status" }, "call-1"), undefined);
+	await gate.idle();
+	assert.equal(toolNote("call-1")?.text, "no explanation: classifier endpoint returned HTTP 503");
+	// A failing endpoint does not latch: the next command is still attempted.
+	assert.equal(await gate.toolCall("bash", { command: "ls -la" }, "call-2"), undefined);
+	await gate.idle();
+	assert.equal(gate.explanationCalls, 2);
 });
 
 test("explanations are skipped when nothing can draw them or the classifier is off", async (t) => {
@@ -214,13 +233,36 @@ test("explanations are skipped when nothing can draw them or the classifier is o
 	assert.equal(toolNote("call-2"), undefined);
 });
 
+test("explainRuleAllowed drops explanations for rule-allowed commands only", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, {
+		cwd,
+		config: { mode: "auto", classifier: { ...CLASSIFIER, explainRuleAllowed: false } },
+		fetch: endpoint("safe"),
+		interactive: true,
+	});
+	markToolNoteRenderer("bash");
+
+	// The deterministic rules allowed this outright, so nothing is asked and nothing is drawn.
+	assert.equal(await gate.toolCall("bash", { command: "git status" }, "call-1"), undefined);
+	await gate.idle();
+	assert.equal(toolNote("call-1"), undefined);
+	assert.equal(gate.explanationCalls, 0);
+
+	// A classifier auto-approval still carries the description that came with its verdict.
+	assert.equal(await gate.toolCall("bash", { command: "frobnicate --check" }, "call-2"), undefined);
+	await gate.idle();
+	assert.equal(toolNote("call-2")?.text, "classifier: safe · harness verdict");
+	assert.equal(gate.classifierCalls, 1);
+});
+
 test("an auto-approved command reuses its verdict's explanation instead of asking again", async (t) => {
 	const cwd = await repository(t);
 	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe"), interactive: true });
 	markToolNoteRenderer("bash");
 	assert.equal(await gate.toolCall("bash", { command: "frobnicate --check" }, "call-1"), undefined);
 	await gate.idle();
-	assert.equal(toolNote("call-1"), "auto-approved · harness verdict");
+	assert.equal(toolNote("call-1")?.text, "classifier: safe · harness verdict");
 	assert.equal(gate.classifierCalls, 1);
 	assert.equal(gate.explanationCalls, 0);
 });
@@ -230,9 +272,61 @@ test("a gated command keeps its verdict's explanation in the transcript as well 
 	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
 	markToolNoteRenderer("bash");
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "frobnicate --check" }, "call-1")), "gated");
-	assert.equal(toolNote("call-1"), "harness verdict");
+	assert.equal(toolNote("call-1")?.text, "classifier: unsafe · harness verdict");
+	assert.equal(toolNote("call-1")?.tone, "warn");
 	// The verdict already described the command, so no explanation-only request is made for it.
 	assert.equal(gate.explanationCalls, 0);
+});
+
+test("a hold names what produced it: a rule, the model, or a question never asked", async (t) => {
+	const cwd = await repository(t);
+	markToolNoteRenderer("bash");
+
+	// A behavior violation is deterministic and is never delegated.
+	const rule = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
+	markToolNoteRenderer("bash");
+	assert.equal(await outcome(() => rule.toolCall("bash", { command: "rm tracked.txt" }, "call-1")), "gated");
+	assert.equal(toolNote("call-1")?.text, "deterministic rule");
+
+	// A residual the pre-gate refuses names the structure that made it ineligible.
+	assert.equal(await outcome(() => rule.toolCall("bash", { command: "frobnicate $(cat list)" }, "call-2")), "gated");
+	assert.match(toolNote("call-2")?.text ?? "", /^deterministic rule · classifier not consulted: command substitution$/);
+
+	// safe mode never delegates, and says so rather than implying the model saw the command.
+	const strict = await harness(t, { cwd, config: { mode: "safe", classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
+	markToolNoteRenderer("bash");
+	assert.equal(await outcome(() => strict.toolCall("bash", { command: "frobnicate --check" }, "call-3")), "gated");
+	assert.match(toolNote("call-3")?.text ?? "", /^deterministic rule · classifier not consulted: safe mode does not delegate$/);
+
+	// An endpoint that fails the verdict request is a hold no model actually judged. The label already
+	// names the classifier, so the reason is not repeated with its own prefix.
+	const broken: typeof globalThis.fetch = (async (url: string | URL | Request) =>
+		String(url).includes("/models")
+			? new Response(JSON.stringify({ data: [] }), { status: 200 })
+			: new Response("", { status: 500 })) as typeof globalThis.fetch;
+	const down = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: broken });
+	markToolNoteRenderer("bash");
+	assert.equal(await outcome(() => down.toolCall("bash", { command: "frobnicate --check" }, "call-4")), "gated");
+	assert.equal(toolNote("call-4")?.text, "deterministic rule · classifier unavailable: endpoint returned HTTP 500");
+});
+
+test("auto classifies a pipeline whose every segment is structurally eligible", async (t) => {
+	const cwd = await repository(t);
+	const allowing = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe") });
+	markToolNoteRenderer("bash");
+	const command = 'ps -ef | grep -F "earendil" | grep -v grep; echo ---';
+	assert.equal(await outcome(() => allowing.toolCall("bash", { command }, "call-1")), "allowed");
+	assert.equal(allowing.classifierCalls, 1);
+	// The identity carries every binary in the chain, not just the one that was unrecognized.
+	assert.ok(allowing.notices.every((notice) => !notice.message.includes("Safety classifier allowed")));
+	assert.equal(toolNote("call-1")?.text, "classifier: safe · harness verdict");
+
+	// A segment the pre-gate refuses still keeps the whole command away from the classifier.
+	assert.equal(await outcome(() => allowing.toolCall("bash", { command: "ps -ef | grep x > /tmp/out.txt" })), "gated");
+	assert.equal(allowing.classifierCalls, 1);
+
+	const gating = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
+	assert.equal(await outcome(() => gating.toolCall("bash", { command })), "gated");
 });
 
 test("auto classifies an unknown tool call including its arguments", async (t) => {

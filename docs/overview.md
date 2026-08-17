@@ -40,11 +40,13 @@ pidantic/
 │   ├── command-findings.ts
 │   ├── confirm-dialog.ts
 │   ├── mode-registry.ts
+│   ├── process-registry.ts
 │   ├── read-only-tools.ts
 │   ├── tool-notes.ts
 │   └── test/
 │       ├── bash-policy.test.ts
 │       ├── command-findings.test.ts
+│       ├── process-registry.test.ts
 │       └── tool-notes.test.ts
 ├── confirm-bash/
 │   └── index.ts
@@ -175,10 +177,16 @@ not expressible in a schema remain in `promptGuidelines`.
   optional `onRefresh` callback so a caller can redraw an open dialog when the state its renderer
   closes over changes — safety's command explanation arrives while the dialog is already up.
   `tool-notes.ts` carries one-line annotations from the extension that decides something about a tool
-  call to the extension that renders it, keyed by `toolCallId`; safety's classifier auto-approvals and
-  its background command explanations reach confirm-bash's Bash result renderer this way. Because an
+  call to the extension that renders it, keyed by `toolCallId`; safety's classifier verdicts, its
+  background command explanations, and its account of what held a gated call reach confirm-bash's Bash
+  result renderer this way, each with a tone the renderer turns into a marker. Because an
   explanation can land after the row has been drawn, a renderer also registers that row's repaint
-  callback there, and recording a note fires it. `confirm-bash/index.ts` registers the Bash override
+  callback there, and recording a note fires it.
+  Both cross-extension channels keep their state in `process-registry.ts`, not in module scope: pi
+  loads every extension entry point through its own jiti instance with module caching disabled, so a
+  module two extensions import is evaluated once per extension. A module-level map would give each
+  extension a private copy, which silently breaks note delivery and mode arbitration alike;
+  `sharedState` puts the value in a `Symbol.for` slot on `globalThis`, which every copy reaches. `confirm-bash/index.ts` registers the Bash override
   and gate.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
 - `plan-mode/` provides a read-only investigation mode with policy-guarded Bash and an approval
@@ -222,6 +230,9 @@ threshold that stops asking a failing endpoint.
 The shared Bash policy, the finding renderer, and the tool-note channel keep their suites in
 `shared/test/`; the policy suite also pins segment spans against quoted, escaped, and multi-line
 commands, and the tool-note suite pins the repaint callback a late note fires.
+`process-registry.test.ts` reproduces pi's per-extension loading by importing the same module twice
+under different query strings, which re-evaluates it, and asserts that notes and mode arbitration
+still cross between the two copies.
 
 `harness.ts` and `gate.test.ts` cover the registration wiring the unit suites cannot reach. The
 harness loads the real extension against a fake `ExtensionAPI`, captures the registered hooks, and

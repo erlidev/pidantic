@@ -25,7 +25,7 @@ import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { askConfirmation } from "../shared/confirm-dialog.ts";
 import { getSafetyMode, wasSafetyResolved } from "../shared/mode-registry.ts";
-import { markToolNoteRenderer, toolNote, watchToolNote } from "../shared/tool-notes.ts";
+import { markToolNoteRenderer, type ToolNote, toolNote, watchToolNote } from "../shared/tool-notes.ts";
 
 /** Escape hatch for non-interactive runs (`pi -p`, `--mode json`), where there is nobody to ask. */
 const HEADLESS_ENV = "PI_CONFIRM_BASH_HEADLESS";
@@ -71,14 +71,16 @@ const NOTE_MAX = 200;
 
 /**
  * Built-in bash result components accept children; the guard keeps a future pi build from throwing.
- * The note is printed verbatim — safety composes the whole line, which is a command explanation on
- * its own or prefixed with the decision that produced it.
+ * The note text is printed verbatim — safety composes the whole line, which is a command explanation
+ * on its own or prefixed with the decision that produced it. Only the marker is interpreted here:
+ * a note about a call that was held reads as a warning rather than as an approval.
  */
-function appendNote(component: Component, note: string, theme: Theme): void {
+function appendNote(component: Component, note: ToolNote, theme: Theme): void {
 	const parent = component as Component & { addChild?: (child: Component) => void };
 	if (typeof parent.addChild !== "function") return;
-	const text = note.replace(/\s+/g, " ").trim().slice(0, NOTE_MAX);
-	parent.addChild(new Text(`\n${theme.fg("success", "◆")} ${theme.fg("muted", text)}`, 0, 0));
+	const text = note.text.replace(/\s+/g, " ").trim().slice(0, NOTE_MAX);
+	const marker = note.tone === "warn" ? theme.fg("warning", "▲") : theme.fg("success", "◆");
+	parent.addChild(new Text(`\n${marker} ${theme.fg("muted", text)}`, 0, 0));
 }
 
 export default function confirmBash(pi: ExtensionAPI) {

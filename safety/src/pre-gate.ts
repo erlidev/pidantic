@@ -5,7 +5,10 @@ import { tokenizeCommand } from "../../shared/bash-policy.ts";
 export interface PreGateResult {
 	eligible: boolean;
 	reason?: string;
-	tokens?: string[];
+	/** Tokens of every eligible segment, in chain order. */
+	segments?: string[][];
+	/** First token of each segment, in chain order; the command's identity for the audit trail. */
+	binaries?: string[];
 }
 
 function inside(cwd: string, path: string): boolean {
@@ -50,30 +53,44 @@ export interface PreGateOptions {
 	allowExternalPaths?: boolean;
 }
 
-/** Restrict classifier input to one simple command whose apparent paths remain in the workspace. */
+/**
+ * Restrict classifier input to simple commands whose apparent paths remain in the workspace.
+ *
+ * Every rule is per segment, so an ordinary chain or pipeline (`ps -ef | grep x | head -5`) is
+ * eligible when each of its segments is: chaining does not add capability that the segments do not
+ * already have, and refusing it only meant that no pipeline was ever classified. Constructs whose
+ * effect cannot be read off the text at all — command and process substitution, backgrounding — are
+ * still rejected as tokenizer issues below.
+ */
 export function classifierPreGate(command: string, cwd: string, options: PreGateOptions = {}): PreGateResult {
 	const parsed = tokenizeCommand(command);
 	for (const issue of parsed.issues) {
 		if (!CLASSIFIABLE_ISSUES.has(issue.reason)) return { eligible: false, reason: issue.reason };
 	}
-	if (parsed.segments.length !== 1) return { eligible: false, reason: "only a single command is eligible" };
-	const segment = parsed.segments[0]!;
-	const tokens = segment.tokens;
-	if (tokens.length === 0) return { eligible: false, reason: "empty command" };
-	if (["sudo", "doas", "su"].includes(tokens[0]!)) return { eligible: false, reason: "privilege-changing prefix" };
-	// Output may only be discarded or duplicated; a file target is a write the classifier is not asked to approve.
-	for (const redirection of segment.redirections) {
-		const target = redirection.target;
-		if (target.startsWith("&") || target === "/dev/null") continue;
-		if (redirection.operator.endsWith("<") && !unexpandedPath(target) && (options.allowExternalPaths || inside(cwd, target))) continue;
-		return { eligible: false, reason: `redirection is not eligible: ${redirection.operator} ${target}` };
+	if (parsed.segments.length === 0) return { eligible: false, reason: "empty command" };
+
+	const segments: string[][] = [];
+	for (const segment of parsed.segments) {
+		const tokens = segment.tokens;
+		// Output may only be discarded or duplicated; a file target is a write the classifier is not asked to approve.
+		for (const redirection of segment.redirections) {
+			const target = redirection.target;
+			if (target.startsWith("&") || target === "/dev/null") continue;
+			if (redirection.operator.endsWith("<") && !unexpandedPath(target) && (options.allowExternalPaths || inside(cwd, target))) continue;
+			return { eligible: false, reason: `redirection is not eligible: ${redirection.operator} ${target}` };
+		}
+		// A redirection-only segment (`> out`) has no binary; its redirections were just checked.
+		if (tokens.length === 0) continue;
+		if (["sudo", "doas", "su"].includes(tokens[0]!)) return { eligible: false, reason: "privilege-changing prefix" };
+		for (const token of tokens.slice(1)) {
+			const path = pathValue(token);
+			if (!path) continue;
+			if (unexpandedPath(path)) return { eligible: false, reason: `path contains an unexpanded value: ${token}` };
+			if (options.allowExternalPaths) continue;
+			if (path === "~" || path.startsWith("~/") || !inside(cwd, path)) return { eligible: false, reason: `path resolves outside workspace: ${token}` };
+		}
+		segments.push(tokens);
 	}
-	for (const token of tokens.slice(1)) {
-		const path = pathValue(token);
-		if (!path) continue;
-		if (unexpandedPath(path)) return { eligible: false, reason: `path contains an unexpanded value: ${token}` };
-		if (options.allowExternalPaths) continue;
-		if (path === "~" || path.startsWith("~/") || !inside(cwd, path)) return { eligible: false, reason: `path resolves outside workspace: ${token}` };
-	}
-	return { eligible: true, tokens };
+	if (segments.length === 0) return { eligible: false, reason: "empty command" };
+	return { eligible: true, segments, binaries: segments.map((tokens) => tokens[0]!) };
 }

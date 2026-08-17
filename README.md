@@ -283,7 +283,9 @@ every unknown tool call. `auto` applies the same deterministic rules but may sil
 allow a structurally restricted unknown binary or an unknown tool call classified safe, judging the
 call's own arguments rather than the tool in the abstract. It also sends a read-only command whose
 only problem is a path outside the workspace, or a command whose only problem is an unexpanded
-variable such as `ls $PWD`, to the classifier instead of confirming it. It also allows
+variable such as `ls $PWD`, to the classifier instead of confirming it. Eligibility is judged per
+segment, so an ordinary pipeline such as `ps -ef | grep -F x | head -5` is one classifier question
+rather than an automatic dialog. It also allows
 checkpointed in-workspace writes without a dialog, relying on `/safety undo` for recovery; writes
 outside the workspace or without a usable checkpoint still confirm. `auto` is selectable only while
 the configured OpenAI-compatible endpoint is available. `yolo` is the default and has no safety hook
@@ -297,11 +299,18 @@ destructive or outward-facing one. Redirections are parsed rather than pattern-m
 in-workspace target, `/dev/null`, and `2>&1` need no dialog. Plan mode's Bash confirmation uses the
 same presentation.
 
+Every Bash confirmation also names what held the command: `▲ deterministic rule` when a rule matched,
+`▲ classifier: unsafe` when the model itself judged the command, and
+`▲ deterministic rule · classifier not consulted: <reason>` or `· classifier unavailable: <reason>`
+when the model was never asked or could not answer. The same line is kept in the transcript under the
+call, so a rule match is never mistaken for a model's verdict.
+
 When the classifier is enabled, every Bash command it gates or allows is also described in one or
 two plain sentences, so a long one-liner does not have to be reverse-engineered before it is
 approved. A command the classifier judged carries its explanation from that same request; a command
 deterministic policy resolved on its own gets a separate, background explanation request that never
-holds the command up — the transcript line and the open dialog both fill in when it arrives.
+holds the command up — the transcript line and the open dialog both fill in when it arrives. A
+request that fails says so in that slot (`no explanation: …`) rather than leaving it blank.
 Explanations are advisory text from a small local model, not a decision and not a security boundary;
 read the highlighted command itself before approving it.
 
@@ -322,7 +331,7 @@ invalid configuration uses these defaults:
     "enabled": false,
     "url": "http://localhost:8989/v1",
     "model": "inclusionAI/Ling-3.0-tiny-int4",
-    "timeoutMs": 2000,
+    "timeoutMs": 4000,
     "explainTimeoutMs": 15000,
     "maxTokens": 1024,
     "thinking": null,
@@ -330,7 +339,8 @@ invalid configuration uses these defaults:
     "sampler": {},
     "classifyBash": true,
     "classifyUnknownTools": true,
-    "explainBash": true
+    "explainBash": true,
+    "explainRuleAllowed": true
   },
   "allowBinaries": [],
   "denyBinaries": [],
@@ -349,8 +359,11 @@ The optional `ling-tiny` Compose service is now consumed by `auto` mode when ena
 requires an NVIDIA GPU and is not needed for `safe` or `yolo`. The classifier is a fatigue-reduction
 mechanism, not a security boundary; it is disabled by default and every error path fails into a
 normal confirmation dialog. When the classifier auto-approves a Bash call, its explanation is shown
-under that call in the transcript, after Pi's `Took 1.2s` line; `/safety log` keeps the full list.
-Set `classifier.explainBash` to `false` to keep verdicts without the extra explanation requests. See
+under that call in the transcript, after Pi's `Took 1.2s` line, as `◆ classifier: safe · <explanation>`; `/safety log` keeps the full list.
+Set `classifier.explainBash` to `false` to keep verdicts without the extra explanation requests, or
+`classifier.explainRuleAllowed` to `false` to drop only the explanations for commands the
+deterministic rules allowed outright — the safest and most frequent case — while keeping them under
+classifier auto-approvals and in confirmation dialogs. See
 the [safety manual](docs/extensions/safety.md) for policy details, checkpoint semantics, explanation
 behavior, and classifier constraints.
 

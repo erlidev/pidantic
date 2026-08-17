@@ -81,7 +81,7 @@ export async function repository(t: TestContext): Promise<string> {
 
 /**
  * Loads the real extension against a fake ExtensionAPI so the registered hooks can be driven
- * directly. Process-global mode-registry state and the environment are restored on test teardown.
+ * directly. Process-global registry state and the environment are restored on test teardown.
  */
 export async function harness(t: TestContext, options: HarnessOptions): Promise<Harness> {
 	const notices: Notice[] = [];
@@ -116,7 +116,7 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 		throw new Error("unexpected classifier request");
 	}) as typeof globalThis.fetch;
 
-	// The registries are module-global and shared with plan-mode and confirm-bash, so every case
+	// The registries are process-global and shared with plan-mode and confirm-bash, so every case
 	// must start clean.
 	setPlanModeActive(false);
 	setSafetyMode("yolo");

@@ -7,8 +7,11 @@ test("a note reaches the renderer that declared itself", () => {
 	assert.equal(rendersToolNotes("bash"), false);
 	markToolNoteRenderer("bash");
 	assert.equal(rendersToolNotes("bash"), true);
-	recordToolNote("call-1", "auto-approved · lists files");
-	assert.equal(toolNote("call-1"), "auto-approved · lists files");
+	recordToolNote("call-1", "classifier: safe · lists files");
+	assert.deepEqual(toolNote("call-1"), { text: "classifier: safe · lists files", tone: "info" });
+	// A note about a held call carries its tone, so a renderer marks it without reading the text.
+	recordToolNote("call-3", "classifier: unsafe · deletes the build directory", "warn");
+	assert.equal(toolNote("call-3")?.tone, "warn");
 	assert.equal(toolNote("call-2"), undefined);
 	assert.equal(toolNote(undefined), undefined);
 });
@@ -27,14 +30,14 @@ test("a note recorded after the row was drawn repaints exactly that row", () => 
 	watchToolNote("call-1", () => { repaints += 1; });
 	recordToolNote("call-1", "updated");
 	assert.equal(repaints, 2);
-	assert.equal(toolNote("call-1"), "updated");
+	assert.equal(toolNote("call-1")?.text, "updated");
 });
 
 test("a torn-down row cannot break the decision that produced the note", () => {
 	resetToolNotes();
 	watchToolNote("call-1", () => { throw new Error("disposed"); });
 	recordToolNote("call-1", "still recorded");
-	assert.equal(toolNote("call-1"), "still recorded");
+	assert.equal(toolNote("call-1")?.text, "still recorded");
 });
 
 test("empty notes and ids are ignored", () => {

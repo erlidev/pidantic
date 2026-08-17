@@ -72,8 +72,10 @@ Two pieces, both in `index.ts`:
   `createBashToolDefinition()`. Only the parameter schema grows; execution, streaming, truncation,
   `PI_*` env injection, and process-tree kill are inherited. The result renderer delegates to the
   built-in one and only appends an extension note under it when one was recorded for that
-  `toolCallId` in `shared/tool-notes.ts` — a safety classifier auto-approval or its explanation of
-  what the command does, drawn after pi's `Took 1.2s` line. Output preview, truncation warnings, and
+  `toolCallId` in `shared/tool-notes.ts` — a safety classifier verdict, its explanation of what the
+  command does, or what held a gated call — drawn after pi's `Took 1.2s` line. The note's text is
+  printed verbatim; only its marker is interpreted here, `◆` for an approval or description and a
+  `warning`-coloured `▲` for a note about a call that was held. Output preview, truncation warnings, and
   timing stay pi's. The built-in rebuilds the same component object on each render and clears its
   children first, so the note is re-appended after every delegation. The renderer also registers the
   row's `invalidate` callback with `tool-notes.ts`, so a note recorded after the call finished —

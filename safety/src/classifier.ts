@@ -24,6 +24,8 @@ export interface ClassifierVerdict {
 export interface ClassifierExplanation {
 	explanation: string;
 	cached: boolean;
+	/** True when `explanation` reports why no description could be produced, rather than describing the call. */
+	failed: boolean;
 }
 
 type FetchLike = typeof globalThis.fetch;
@@ -48,15 +50,55 @@ export async function probeClassifier(config: ClassifierConfig, fetchFn: FetchLi
 }
 
 /** Mirrors the schema's maxLength; the field is printed into the transcript, so it is clamped locally too. */
-const EXPLANATION_LIMIT = 240;
+const EXPLANATION_LIMIT = 350;
+
+/** The prompt asks for at most two sentences; a model that keeps going is cut after the second. */
+const SENTENCE_LIMIT = 2;
+
+/**
+ * A sentence ends at `.`, `!`, or `?` followed by a space or the end of the text, which leaves
+ * `e.g.`, `1.5`, and `./script` alone — none of them are followed by whitespace.
+ */
+const SENTENCE_END = /[.!?](?=\s|$)/g;
+
+function firstSentences(text: string, limit: number): string {
+	SENTENCE_END.lastIndex = 0;
+	for (let found = 1; found <= limit; found++) {
+		const match = SENTENCE_END.exec(text);
+		if (!match) return text;
+		if (found === limit) return text.slice(0, match.index + 1);
+	}
+	return text;
+}
+
+/**
+ * The character limit is a ceiling on an already sentence-bounded string, so it drops whole
+ * sentences before it cuts into one: a dangling "It does not use" is worse than a shorter answer.
+ * Only a single sentence longer than the limit is cut mid-sentence, at a word boundary and marked.
+ */
+function clamp(text: string, limit: number): string {
+	if (text.length <= limit) return text;
+	// Matched against the whole text, so a terminator is judged by the character that really follows
+	// it rather than by the slice boundary; matches ascend, so the last one under the limit wins.
+	SENTENCE_END.lastIndex = 0;
+	let lastEnd = -1;
+	for (let match = SENTENCE_END.exec(text); match && match.index < limit; match = SENTENCE_END.exec(text)) lastEnd = match.index;
+	if (lastEnd >= 0) return text.slice(0, lastEnd + 1);
+	const head = text.slice(0, limit);
+	const lastSpace = head.lastIndexOf(" ");
+	return `${(lastSpace > 0 ? head.slice(0, lastSpace) : head).trimEnd()}…`;
+}
 
 /**
  * Model text goes straight into the TUI and into a dialog that splits on newlines, so control
  * characters (escape sequences included) are dropped and the whitespace is collapsed to one line.
+ * A model that ignores the length instruction is cut after the second sentence, and then to the last
+ * whole sentence that fits the character limit.
  */
 function sanitize(value: unknown): string {
 	if (typeof value !== "string") return "";
-	return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim().slice(0, EXPLANATION_LIMIT);
+	const normalized = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+	return clamp(firstSentences(normalized, SENTENCE_LIMIT), EXPLANATION_LIMIT);
 }
 
 function parseVerdict(value: unknown): ClassifierVerdict {
@@ -128,16 +170,12 @@ const EXPLANATION_SCHEMA = {
 	},
 };
 
-/** Consecutive background failures after which explanations stop being requested for the session. */
-const EXPLANATION_FAILURE_LIMIT = 3;
-
 export class ResidualClassifier {
 	private readonly bashCache = new Map<string, ClassifierVerdict>();
 	private readonly toolCache = new Map<string, ClassifierVerdict>();
 	private readonly explanationCache = new Map<string, string>();
 	/** One request per distinct command, even when sibling tool calls ask at the same time. */
 	private readonly explanationsInFlight = new Map<string, Promise<ClassifierExplanation | undefined>>();
-	private explanationFailures = 0;
 	private readonly config: ClassifierConfig;
 	private readonly fetchFn: FetchLike;
 
@@ -151,7 +189,6 @@ export class ResidualClassifier {
 		this.toolCache.clear();
 		this.explanationCache.clear();
 		this.explanationsInFlight.clear();
-		this.explanationFailures = 0;
 	}
 
 	/** Returns the parsed JSON object the model produced, or an error string; never throws. */
@@ -198,14 +235,15 @@ export class ResidualClassifier {
 
 	/**
 	 * Describe a command whose verdict is already settled, so the user can read what ran without
-	 * reverse-engineering it. Never a decision: every failure resolves to `undefined` and the caller
-	 * simply shows nothing. Runs off the critical path, so it gets its own, longer timeout, and after
-	 * `EXPLANATION_FAILURE_LIMIT` consecutive failures it stops asking for the rest of the session
-	 * rather than paying a doomed request per command against an endpoint that is not answering.
+	 * reverse-engineering it. Never a decision: it runs off the critical path and gets its own,
+	 * longer timeout. A request that fails resolves to the reason it failed, marked `failed`, so the
+	 * empty slot under a command is explained rather than silent; only a call that was never going to
+	 * be described — explanations off, nothing to describe, or a command arguing about its own
+	 * description — resolves to `undefined`. Failures are not cached, so the next identical command
+	 * asks again.
 	 */
 	async explainBash(command: string): Promise<ClassifierExplanation | undefined> {
 		if (!this.config.enabled || !this.config.explainBash) return undefined;
-		if (this.explanationFailures >= EXPLANATION_FAILURE_LIMIT) return undefined;
 		const normalized = command.trim().replace(/\s+/g, " ");
 		if (!normalized) return undefined;
 		// A command that argues about how it should be described is left undescribed: a wrong
@@ -213,7 +251,7 @@ export class ResidualClassifier {
 		if (containsInjectionClaim(normalized)) return undefined;
 
 		const cached = this.explanationCache.get(normalized);
-		if (cached) return { explanation: cached, cached: true };
+		if (cached) return { explanation: cached, cached: true, failed: false };
 		const inFlight = this.explanationsInFlight.get(normalized);
 		if (inFlight) return inFlight;
 
@@ -228,21 +266,14 @@ export class ResidualClassifier {
 				? ""
 				: sanitize((content as Record<string, unknown>).explanation);
 			if (!explanation) {
-				this.explanationFailures += 1;
-				return undefined;
+				return { explanation: `no explanation: ${error ?? "classifier returned malformed output"}`, cached: false, failed: true };
 			}
-			this.explanationFailures = 0;
 			this.explanationCache.set(normalized, explanation);
-			return { explanation, cached: false };
+			return { explanation, cached: false, failed: false };
 		})().finally(() => this.explanationsInFlight.delete(normalized));
 
 		this.explanationsInFlight.set(normalized, pending);
 		return pending;
-	}
-
-	/** True once background explanations have been given up on for this session. */
-	get explanationsDisabled(): boolean {
-		return this.explanationFailures >= EXPLANATION_FAILURE_LIMIT;
 	}
 
 	/** The whole call is classified, so the arguments are part of both the prompt and the cache identity. */

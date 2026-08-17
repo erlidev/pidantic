@@ -62,6 +62,20 @@ async function canonicalPath(cwd: string, requested: string): Promise<string> {
 	try { return resolve(await realpath(dirname(absolute)), basename(absolute)); } catch { return absolute; }
 }
 
+/**
+ * Identity for the audit trail and the approval notice: every distinct binary the command invokes,
+ * in chain order. A path-shaped binary is canonicalized, so `./bin/tool` and its absolute form are
+ * one identity rather than two.
+ */
+async function commandIdentity(cwd: string, binaries: readonly string[], fallback: string): Promise<string> {
+	const resolved: string[] = [];
+	for (const binary of binaries) {
+		const name = binary.includes("/") ? await canonicalPath(cwd, binary) : binary;
+		if (!resolved.includes(name)) resolved.push(name);
+	}
+	return resolved.join(", ") || fallback;
+}
+
 function inside(cwd: string, path: string): boolean {
 	let root: string;
 	try { root = realpathSync(cwd); } catch { root = resolve(cwd); }
@@ -82,6 +96,41 @@ function writeExcerpt(input: unknown): string {
 }
 
 /**
+ * What held a call: the deterministic rules, or the classifier judging the call itself. A residual
+ * the classifier never answered is still a deterministic hold, but the reason it went unanswered is
+ * part of the label — "the model said no" and "the model was never asked" are different facts about
+ * the same dialog.
+ */
+type GateSource =
+	| { kind: "rule" }
+	| { kind: "classifier" }
+	| { kind: "unconsulted"; reason: string }
+	| { kind: "unavailable"; reason: string };
+
+const CLASSIFIER_ALLOWED = "classifier: safe";
+/** Prefixes an explanation that only describes the call, so it is never read as the reason for the hold. */
+const DESCRIPTION = "what this does";
+
+/** Reasons carry their own "classifier" prefix for standalone use; the label already supplies one. */
+function trimSubject(reason: string): string {
+	return reason.replace(/^classifier /, "");
+}
+
+function sourceLabel(source: GateSource): string {
+	switch (source.kind) {
+		case "classifier": return "classifier: unsafe";
+		case "unconsulted": return `deterministic rule · classifier not consulted: ${trimSubject(source.reason)}`;
+		case "unavailable": return `deterministic rule · classifier unavailable: ${trimSubject(source.reason)}`;
+		default: return "deterministic rule";
+	}
+}
+
+/** Only a model verdict is coloured; a deterministic hold is already spelled out by the findings above it. */
+function sourceColor(source: GateSource): string {
+	return source.kind === "classifier" ? "warning" : "muted";
+}
+
+/**
  * Show a classifier auto-approval where the user is already looking: as a note under the finished
  * tool call when that tool's renderer draws notes, otherwise as a notification. The classifier's
  * explanation of the call is the note's body. Either way the decision is also in `/safety log`.
@@ -94,17 +143,28 @@ function reportAutoApproval(
 	explanation: string,
 ): void {
 	if (toolCallId && rendersToolNotes(toolName)) {
-		recordToolNote(toolCallId, `auto-approved · ${explanation}`);
+		recordToolNote(toolCallId, `${CLASSIFIER_ALLOWED} · ${explanation}`);
 		return;
 	}
 	ctx.ui.notify(`Safety classifier allowed ${identity} (${explanation})`, "info");
 }
 
-/** Body for a Bash confirmation: the highlighted command, then the explanation once it has arrived. */
-function bashConfirmationBody(command: string, findings: CommandFinding[], explanation: () => string | undefined): BodyRenderer {
+/**
+ * Body for a Bash confirmation: the highlighted command, what held it, and the explanation once it
+ * has arrived. The source line is drawn even before the explanation lands, so the dialog never
+ * leaves it ambiguous whether a model judged this command or a rule matched it.
+ */
+function bashConfirmationBody(
+	command: string,
+	findings: CommandFinding[],
+	source: GateSource,
+	explanation: () => string | undefined,
+): BodyRenderer {
 	return (theme: FindingTheme) => {
+		const lines = [renderCommandFindings(command, findings, theme), "", theme.fg(sourceColor(source), `▲ ${sourceLabel(source)}`)];
 		const line = explanation();
-		return line ? `${renderCommandFindings(command, findings, theme)}\n\n${theme.fg("muted", line)}` : renderCommandFindings(command, findings, theme);
+		if (line) lines.push(theme.fg("muted", line));
+		return lines.join("\n");
 	};
 }
 
@@ -175,23 +235,35 @@ export default function safety(pi: ExtensionAPI): void {
 
 	/** Explanations are cosmetic: they are only worth requesting when a UI will actually draw them. */
 	function explanationsWanted(ctx: ExtensionContext): boolean {
-		return !isHeadless(ctx) && config.classifier.enabled && config.classifier.explainBash && !classifier.explanationsDisabled;
+		return !isHeadless(ctx) && config.classifier.enabled && config.classifier.explainBash;
 	}
 
 	/**
 	 * Describe a command the deterministic policy allowed on its own, without delaying it. The call
 	 * runs after the gate has already returned, and the note repaints the finished row when it lands.
+	 * A request that fails reports that instead, so an empty slot is never left unexplained.
+	 *
+	 * `explainRuleAllowed` turns off only this path: a rule-allowed command is the safest and most
+	 * frequent kind, so its explanation is the one worth dropping first. Classifier auto-approvals and
+	 * gated commands keep theirs.
 	 */
 	function explainInBackground(ctx: ExtensionContext, toolCallId: string | undefined, command: string): void {
+		if (!config.classifier.explainRuleAllowed) return;
 		if (!toolCallId || !rendersToolNotes("bash") || !explanationsWanted(ctx)) return;
 		void classifier.explainBash(command).then((explained) => {
-			if (explained) noteExplanation(toolCallId, explained.explanation);
+			if (explained) recordToolNote(toolCallId, describeLine(explained.explanation, explained.failed));
 		});
 	}
 
-	/** Keeps a confirmed command's explanation in the transcript too, not only in the dialog. */
-	function noteExplanation(toolCallId: string | undefined, explanation: string): void {
-		if (toolCallId && rendersToolNotes("bash")) recordToolNote(toolCallId, explanation);
+	/** A description is labelled; a failure message already says what it is. */
+	function describeLine(explanation: string, failed: boolean): string {
+		return failed ? explanation : `${DESCRIPTION} · ${explanation}`;
+	}
+
+	/** Keeps a gated command's provenance and explanation in the transcript too, not only in the dialog. */
+	function noteGate(toolCallId: string | undefined, source: GateSource, explanation: string | undefined): void {
+		if (!toolCallId || !rendersToolNotes("bash")) return;
+		recordToolNote(toolCallId, explanation ? `${sourceLabel(source)} · ${explanation}` : sourceLabel(source), "warn");
 	}
 
 	pi.registerFlag("safety", { description: "Start in yolo, auto, or safe safety mode", type: "string" });
@@ -267,39 +339,50 @@ export default function safety(pi: ExtensionAPI): void {
 			// A read-only command whose only finding is an external path is a question about the path,
 			// not about the command, so `auto` asks the classifier that question instead of the user.
 			const externalRead = result.verdict === "ask" && result.findings.length > 0 && result.findings.every((finding) => finding.severity === "advisory");
-			if ((result.verdict === "residual" || externalRead) && state.mode === "auto" && config.classifier.classifyBash) {
-				const preGate = classifierPreGate(command, ctx.cwd, { allowExternalPaths: externalRead });
-				if (preGate.eligible) {
-					const rawIdentity = preGate.tokens?.[0] ?? result.binary ?? command;
-					const identity = rawIdentity.includes("/") ? await canonicalPath(ctx.cwd, rawIdentity) : rawIdentity;
-					const verdict = await classifier.classifyBash(command, identity, externalRead);
-					audit.record({ kind: "bash", identity, verdict: verdict.verdict, explanation: verdict.explanation });
-					if (verdict.verdict === "allow") {
-						reportAutoApproval(ctx, event.toolCallId, "bash", `Bash: ${identity}`, verdict.explanation);
-						return undefined;
+			// A behavior violation is never delegated, so it is a rule hold with nothing to explain away.
+			let source: GateSource = { kind: "rule" };
+			if (result.verdict === "residual" || externalRead) {
+				if (state.mode !== "auto") source = { kind: "unconsulted", reason: `${state.mode} mode does not delegate` };
+				else if (!config.classifier.classifyBash) source = { kind: "unconsulted", reason: "Bash classification is off" };
+				else {
+					const preGate = classifierPreGate(command, ctx.cwd, { allowExternalPaths: externalRead });
+					if (!preGate.eligible) {
+						source = { kind: "unconsulted", reason: preGate.reason ?? "command is not eligible" };
+					} else {
+						const identity = await commandIdentity(ctx.cwd, preGate.binaries ?? [], result.binary ?? command);
+						const verdict = await classifier.classifyBash(command, identity, externalRead);
+						audit.record({ kind: "bash", identity, verdict: verdict.verdict, explanation: verdict.explanation });
+						if (verdict.verdict === "allow") {
+							reportAutoApproval(ctx, event.toolCallId, "bash", `Bash: ${identity}`, verdict.explanation);
+							return undefined;
+						}
+						// The verdict call already described the command; asking again would duplicate it.
+						// A fail-closed verdict describes the failure instead, so it is reported as one.
+						if (verdict.failed) source = { kind: "unavailable", reason: verdict.explanation };
+						else { source = { kind: "classifier" }; explanation = verdict.explanation; }
 					}
-					// The verdict call already described the command; asking again would duplicate it.
-					// A fail-closed verdict describes the failure instead, so it is not reused here.
-					if (!verdict.failed) explanation = verdict.explanation;
 				}
 			}
 			// Nothing has described this command yet, so the dialog asks in the background and redraws
 			// itself when the sentence lands. The user is never made to wait on the classifier.
 			let refreshDialog: (() => void) | undefined;
-			if (explanation) {
-				noteExplanation(event.toolCallId, explanation);
-			} else if (explanationsWanted(ctx)) {
+			// Provenance is known now, so the transcript carries it whether or not a sentence follows.
+			noteGate(event.toolCallId, source, explanation);
+			if (!explanation && explanationsWanted(ctx)) {
 				void classifier.explainBash(command).then((explained) => {
 					if (!explained) return;
-					explanation = explained.explanation;
+					// The source line already reports the endpoint failing; repeating it as the explanation
+					// says nothing new. Still worth asking, since explanations get the longer timeout.
+					if (explained.failed && source.kind === "unavailable") return;
+					explanation = describeLine(explained.explanation, explained.failed);
 					refreshDialog?.();
-					noteExplanation(event.toolCallId, explained.explanation);
+					noteGate(event.toolCallId, source, explanation);
 				});
 			}
 			const reason = await confirm(
 				ctx,
 				"Confirm Bash command",
-				bashConfirmationBody(command, result.findings, () => explanation),
+				bashConfirmationBody(command, result.findings, source, () => explanation),
 				summarizeFindings(result.findings, result.reason ?? "Command requires confirmation."),
 				(refresh) => { refreshDialog = refresh; },
 			);

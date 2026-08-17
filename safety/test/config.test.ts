@@ -41,6 +41,15 @@ test("explanation settings load independently of the verdict timeout", async (t)
 
 	await writeFile(path, JSON.stringify({ classifier: { explainTimeoutMs: 0 } }));
 	assert.equal((await loadConfig({ SAFETY_CONFIG: path })).classifier.explainTimeoutMs, DEFAULTS.classifier.explainTimeoutMs);
+
+	// The rule-allowed switch is independent of the master switch and defaults to on.
+	await writeFile(path, JSON.stringify({ classifier: { explainRuleAllowed: false } }));
+	const narrowed = await loadConfig({ SAFETY_CONFIG: path });
+	assert.equal(narrowed.classifier.explainRuleAllowed, false);
+	assert.equal(narrowed.classifier.explainBash, DEFAULTS.classifier.explainBash);
+
+	await writeFile(path, JSON.stringify({ classifier: { explainRuleAllowed: "no" } }));
+	assert.equal((await loadConfig({ SAFETY_CONFIG: path })).classifier.explainRuleAllowed, true);
 });
 
 test("malformed files and invalid fields use defaults", async (t) => {

@@ -80,8 +80,8 @@ otherwise-allowed command to residual. `ls $PWD` is therefore a question rather 
 prompt: `safe` confirms it as usual, and `auto` may ask the classifier. It never works in the other
 direction, so `rm $TARGET` and `git push $REMOTE` still confirm on their own rules.
 
-An unknown or unexpanded command reaches the classifier only when it is one simple binary invocation
-with no chain, privilege prefix, or apparent path outside the workspace, and:
+An unknown or unexpanded command reaches the classifier only when **every** segment of it is a simple
+binary invocation with no privilege prefix and no apparent path outside the workspace, and:
 
 - its only unexpanded construct is a plain variable — substitutions hide a command that is never
   parsed, so the question would be unbounded;
@@ -89,6 +89,12 @@ with no chain, privilege prefix, or apparent path outside the workspace, and:
   expansion (`cat $HOME/.ssh/id_rsa` confirms); and
 - its redirections only discard or duplicate output, or read a file inside the workspace. A file
   write is never delegated: Bash output is not covered by checkpoints.
+
+Every rule above is applied per segment, so an ordinary chain or pipeline is eligible when each of
+its segments is: `ps -ef | grep -F earendil | grep -v grep; echo ---` is one classifier question
+rather than an automatic dialog. Chaining adds no capability the segments do not already have, and
+restricting eligibility to a single segment meant no pipeline was ever classified. One ineligible
+segment disqualifies the whole command, and the dialog quotes the rule that segment broke.
 
 Binary allow and deny entries are checked before built-in rules. They are deliberate user overrides;
 an allowed binary can therefore bypass a built-in prompt. Deny entries always prompt.
@@ -108,9 +114,33 @@ entry — is an `advisory` and is drawn unbolded in the theme's `warning` colour
 the list alike. An advisory still confirms; the calmer colour only distinguishes an external read
 from something destructive or outward-facing.
 
+### What held the command
+
+Under the findings, every Bash dialog names what produced the hold, so a rule match is never mistaken
+for a model's judgement:
+
+| Line | Meaning |
+| --- | --- |
+| `▲ deterministic rule` | A behavior or path rule matched. The classifier is not consulted for these and never was. |
+| `▲ classifier: unsafe` | The command was eligible, the model saw it, and it answered `unsafe`. The explanation below is its rationale. |
+| `▲ deterministic rule · classifier not consulted: <reason>` | A residual the classifier was never asked about: `safe` mode, `classifyBash` off, or a structural pre-gate rejection, whose reason is quoted. |
+| `▲ deterministic rule · classifier unavailable: <reason>` | The classifier was asked and could not answer — timeout, HTTP error, or malformed output. |
+
+The quoted reason is trimmed of its own `classifier` prefix, since the label already names the
+subject: an endpoint failure reads `classifier unavailable: request failed or timed out`, not
+`classifier unavailable: classifier request failed or timed out`.
+
+Only `classifier: unsafe` is coloured (`warning`); the rest are muted, because the findings above
+them already carry the emphasis. The same line is recorded as the transcript note for the call, as
+`<line> · <explanation>`, marked with a `▲` in `warning` rather than the `◆` an allowed call gets.
+
 When command explanations are enabled, the classifier's sentence about the command is drawn under
-the highlighted body in muted text. It appears as soon as it arrives — the dialog is never delayed
-waiting for it — and is simply absent when the classifier is off, unreachable, or too slow.
+that line in muted text. It appears as soon as it arrives — the dialog is never delayed waiting for
+it — and a sentence that only describes the command, rather than justifying the hold, is prefixed
+`what this does ·` so a description is never read as a reason. The explanation request is still made
+when the verdict request failed — explanations get the longer `explainTimeoutMs` and may succeed
+where the verdict timed out — but if it fails too, its diagnostic is dropped rather than repeating
+the failure the `classifier unavailable:` line already reports.
 
 Behavior rules outrank the path check, so `rm /tmp/x`, `cp file /tmp/x`, and `sudo cat /etc/hosts`
 stay violations. An unrecognized binary with an external path is reported as a violation of the path
@@ -181,8 +211,8 @@ schema. It can inspect only:
 
 The third case is the advisory finding above, delegated instead of confirmed. It applies only when
 every finding on the command is an advisory, so a command that also breaks a behavior rule is never
-sent. The structural pre-gate is otherwise unchanged: still one segment, no substitution, no chain,
-no privilege prefix, and only the redirections listed under [Unexpanded
+sent. The structural pre-gate is otherwise unchanged: no substitution, no privilege prefix, and only
+the redirections listed under [Unexpanded
 constructs](#unexpanded-constructs) — only the path rule is waived, because the path is precisely
 what the classifier is being asked about. The request says so explicitly, in a line the caller adds
 and the command cannot forge, and that line is part of the cache identity so a workspace-local
@@ -205,15 +235,20 @@ Because the arguments are part of the identity, the same tool called with differ
 separate decision rather than a cache hit.
 
 The response schema is `{"verdict": "safe" | "unsafe", "explanation": string}` with `explanation`
-capped at 240 characters and clamped again locally. Only `safe` silently allows a call. Timeouts,
+capped at 350 characters. Only `safe` silently allows a call. Timeouts,
 HTTP errors, malformed responses, invalid enums, and `unsafe` all confirm. Obvious text attempting
 to influence the verdict is rejected before the request. Verdicts are cached only for the session.
 
 `explanation` is one or two sentences saying what the call actually does, written for someone
 deciding whether to let it run; when the verdict is `unsafe` it must name the effect that makes it
-so. It carries the decision's rationale and the description shown to the user in one field, so a
+so. Every explanation, from a verdict or from a background request, is normalized to one line and
+then cut after its second sentence. A sentence ends at a terminator followed by a space or the end
+of the text, so `e.g.`, `1.5`, and `./script` do not end one. The 350-character cap is applied after
+that and drops whole sentences rather than cutting into one, since a dangling half-sentence is worse
+than a shorter answer; only a single sentence longer than the cap is cut mid-sentence, at a word
+boundary and marked with an ellipsis. It carries the decision's rationale and the description shown to the user in one field, so a
 verdict never costs a second request. Every allowed call reports it. For Bash it is drawn under the
-finished tool call, after pi's `Took 1.2s` line, as `◆ auto-approved · <explanation>`; a tool whose
+finished tool call, after pi's `Took 1.2s` line, as `◆ classifier: safe · <explanation>`; a tool whose
 renderer cannot carry a note — every tool other than Bash, and Bash itself on a pi build where
 confirm-bash's override did not load — falls back to an informational notification. When the verdict
 is `unsafe`, the same sentence appears in the confirmation dialog under the highlighted command.
@@ -223,20 +258,36 @@ the durable record of all classifier decisions and explanations for the session.
 The note travels from safety to the renderer through `shared/tool-notes.ts`, keyed by pi's
 `toolCallId`, because the extension that makes the decision is not the one that owns the Bash
 renderers. A renderer declares the tools it can annotate, which is what lets safety choose between
-the note and the notification instead of risking a silently dropped explanation. The same module
+the note and the notification instead of risking a silently dropped explanation. Each note also
+carries a tone, so the renderer marks an approval with `◆` and a hold with a `warning`-coloured `▲`
+without parsing its text. The same module
 carries the row's repaint callback back the other way, so a note that arrives after the row was
 drawn — every background explanation below — redraws exactly that row.
+
+That channel, and the mode registry that arbitrates between plan mode and safety, are held in
+process-wide slots rather than in module scope (`shared/process-registry.ts`). Pi loads every
+extension entry point through its own jiti instance with module caching disabled, so a module two
+extensions import is evaluated once per extension: module-level state would give safety and
+confirm-bash a private copy each and silently drop every note between them.
 
 ## Command explanations
 
 Most commands never reach the classifier: deterministic policy allows them outright, and that is
 exactly the traffic that scrolls past unread. When the classifier is enabled and `explainBash` is on,
 each such command gets a separate explanation-only request, using the same prompt wording without a
-verdict, and the sentence is drawn under the finished call as `◆ <explanation>`.
+verdict, and the sentence is drawn under the finished call as `◆ what this does · <explanation>`.
 
 The request is fire-and-forget. The tool call is never held for it, and the row repaints when the
 sentence lands. It is therefore given its own budget, `explainTimeoutMs` (15000 ms by default),
-rather than the 2000 ms verdict timeout that is paid inline.
+rather than the 4000 ms verdict timeout that is paid inline.
+
+These rule-allowed explanations are also the ones most easily done without: the deterministic rules
+already judged the command safe, and they are by far the highest-volume case. Setting
+`explainRuleAllowed` to `false` turns off this path alone. Nothing else changes: a classifier
+auto-approval still shows the description that came with its verdict, and a gated command is still
+explained in its dialog. Use it to keep explanations where a decision is actually being made without
+paying a request for every `git status`. `explainBash: false` remains the switch that turns off all
+three.
 
 Explanations are also requested for a command headed to a confirmation dialog when no verdict
 already described it — every gated command in `safe` mode. The dialog opens immediately and redraws
@@ -246,10 +297,12 @@ deciding. `auto`-mode gates reuse the verdict's own explanation instead of askin
 Requests are made only when the session is interactive and something is registered to draw the
 result: a headless run explains nothing. Explanations are cached per session by normalized command
 text, and concurrent requests for the same command share one round-trip. A command containing text
-that argues about how it should be described is left undescribed rather than misdescribed. After
-three consecutive failures — an endpoint that is down, timing out, or answering unusably —
-explanations stop being requested for the rest of the session, so a dead endpoint costs one doomed
-request per command only until it is noticed.
+that argues about how it should be described is left undescribed rather than misdescribed.
+
+A request that fails — endpoint down, timed out, or answering unusably — puts the reason in the same
+slot instead of leaving it blank: `no explanation: classifier request failed or timed out`. Failures
+are not cached and nothing latches, so the next command is attempted normally; the cost of a dead
+endpoint is one doomed request per command and one visible line per call saying so.
 
 An explanation is generated by the same small model that classifies, from the command text alone. It
 decides nothing, is never a security boundary, and can be wrong: read it as an orientation aid, and
@@ -269,7 +322,8 @@ controls the request's `chat_template_kwargs.enable_thinking`: `null` (the defau
 entirely and defers to the serving configuration, `false` disables reasoning, and `true` forces it
 on. When the endpoint has no reasoning parser and returns the thinking block inline, the leading
 `<think>…</think>` prefix is stripped before the JSON is parsed. `timeoutMs` bounds the whole
-request, including reasoning, and defaults to 2000 ms. It is paid inline before the tool call
+request, including reasoning, and defaults to 4000 ms — under a local model's real latency a tighter
+budget only turns classifiable commands into fail-closed dialogs. It is paid inline before the tool call
 proceeds, so raising it further trades responsiveness for fewer timeout-driven confirmations.
 `explainTimeoutMs` bounds a background explanation instead; nothing waits on it, so its default is
 15000 ms.
@@ -304,7 +358,7 @@ malformed, and individually invalid values fall back to defaults.
     "enabled": false,
     "url": "http://localhost:8989/v1",
     "model": "inclusionAI/Ling-3.0-tiny-int4",
-    "timeoutMs": 2000,
+    "timeoutMs": 4000,
     "explainTimeoutMs": 15000,
     "maxTokens": 1024,
     "thinking": null,
@@ -312,7 +366,8 @@ malformed, and individually invalid values fall back to defaults.
     "sampler": {},
     "classifyBash": true,
     "classifyUnknownTools": true,
-    "explainBash": true
+    "explainBash": true,
+    "explainRuleAllowed": true
   },
   "allowBinaries": [],
   "denyBinaries": [],

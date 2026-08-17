@@ -8,6 +8,10 @@
  * notification when nothing will draw the note — for example on a Pi build where confirm-bash's Bash
  * override did not load.
  *
+ * The channel lives in a process-wide slot rather than in module scope: pi evaluates this module
+ * once per extension, so module-level maps would leave each side writing to its own copy. See
+ * `process-registry.ts`.
+ *
  * A note can also arrive after its row has already been drawn — safety's background command
  * explanations do — so a renderer registers the row's `invalidate` callback with `watchToolNote`
  * while it renders. `recordToolNote` then repaints exactly that row.
@@ -16,19 +20,40 @@
  * transcript is reloaded; the durable record of a classifier decision is `/safety log`.
  */
 
+import { sharedState } from "./process-registry.ts";
+
 const NOTE_LIMIT = 200;
 
-const notes = new Map<string, string>();
-const renderers = new Set<string>();
-const watchers = new Map<string, () => void>();
+/**
+ * `info` is a description or an approval; `warn` marks a note whose subject was held or refused, so
+ * a renderer can mark it without parsing the text.
+ */
+export type NoteTone = "info" | "warn";
+
+export interface ToolNote {
+	text: string;
+	tone: NoteTone;
+}
+
+type NoteRegistry = {
+	notes: Map<string, ToolNote>;
+	renderers: Set<string>;
+	watchers: Map<string, () => void>;
+};
+
+const registry = sharedState<NoteRegistry>("tool-notes.v2", () => ({
+	notes: new Map(),
+	renderers: new Set(),
+	watchers: new Map(),
+}));
 
 /** Declares that this process renders notes for `toolName`. */
 export function markToolNoteRenderer(toolName: string): void {
-	renderers.add(toolName);
+	registry.renderers.add(toolName);
 }
 
 export function rendersToolNotes(toolName: string): boolean {
-	return renderers.has(toolName);
+	return registry.renderers.has(toolName);
 }
 
 /**
@@ -37,45 +62,45 @@ export function rendersToolNotes(toolName: string): boolean {
  */
 export function watchToolNote(toolCallId: string, invalidate: () => void): void {
 	if (!toolCallId) return;
-	watchers.delete(toolCallId);
-	watchers.set(toolCallId, invalidate);
-	while (watchers.size > NOTE_LIMIT) {
-		const oldest = watchers.keys().next();
+	registry.watchers.delete(toolCallId);
+	registry.watchers.set(toolCallId, invalidate);
+	while (registry.watchers.size > NOTE_LIMIT) {
+		const oldest = registry.watchers.keys().next();
 		if (oldest.done) break;
-		watchers.delete(oldest.value);
+		registry.watchers.delete(oldest.value);
 	}
 }
 
 /** Oldest notes are evicted first: a long session must not accumulate them without bound. */
-export function recordToolNote(toolCallId: string, note: string): void {
+export function recordToolNote(toolCallId: string, note: string, tone: NoteTone = "info"): void {
 	if (!toolCallId || !note) return;
-	notes.delete(toolCallId);
-	notes.set(toolCallId, note);
-	while (notes.size > NOTE_LIMIT) {
-		const oldest = notes.keys().next();
+	registry.notes.delete(toolCallId);
+	registry.notes.set(toolCallId, { text: note, tone });
+	while (registry.notes.size > NOTE_LIMIT) {
+		const oldest = registry.notes.keys().next();
 		if (oldest.done) break;
-		notes.delete(oldest.value);
+		registry.notes.delete(oldest.value);
 	}
 	// A note recorded before its row was drawn needs no repaint; the renderer reads it on first pass.
 	try {
-		watchers.get(toolCallId)?.();
+		registry.watchers.get(toolCallId)?.();
 	} catch {
 		// A renderer that has since been torn down must not break the decision that produced the note.
 	}
 }
 
-export function toolNote(toolCallId: string | undefined): string | undefined {
-	return toolCallId ? notes.get(toolCallId) : undefined;
+export function toolNote(toolCallId: string | undefined): ToolNote | undefined {
+	return toolCallId ? registry.notes.get(toolCallId) : undefined;
 }
 
 export function clearToolNotes(): void {
-	notes.clear();
-	watchers.clear();
+	registry.notes.clear();
+	registry.watchers.clear();
 }
 
 /** Drops the renderer declarations too. Production registers once at load; tests need a clean slate. */
 export function resetToolNotes(): void {
-	notes.clear();
-	watchers.clear();
-	renderers.clear();
+	registry.notes.clear();
+	registry.watchers.clear();
+	registry.renderers.clear();
 }
