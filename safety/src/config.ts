@@ -8,6 +8,14 @@ export interface ClassifierConfig {
 	url: string;
 	model: string;
 	timeoutMs: number;
+	/** Total completion budget, including any reasoning tokens the server emits. */
+	maxTokens: number;
+	/** null defers to the server's own chat-template default; a boolean forces it. */
+	thinking: boolean | null;
+	/** null omits the field so the serving configuration's own temperature applies. */
+	temperature: number | null;
+	/** Extra sampler fields merged into the request body; empty by default. */
+	sampler: Record<string, unknown>;
 	classifyBash: boolean;
 	classifyUnknownTools: boolean;
 }
@@ -28,7 +36,11 @@ export const DEFAULTS: SafetyConfig = {
 		enabled: false,
 		url: "http://localhost:8989/v1",
 		model: "inclusionAI/Ling-3.0-tiny-int4",
-		timeoutMs: 400,
+		timeoutMs: 2000,
+		maxTokens: 1024,
+		thinking: null,
+		temperature: null,
+		sampler: {},
 		classifyBash: true,
 		classifyUnknownTools: true,
 	},
@@ -47,6 +59,13 @@ function record(value: unknown): Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+/** Request fields the classifier controls itself; a sampler entry must never silently replace one. */
+const RESERVED_SAMPLER_KEYS = new Set(["model", "messages", "max_tokens", "temperature", "response_format", "chat_template_kwargs", "stream", "n"]);
+
+function sampler(value: unknown): Record<string, unknown> {
+	return Object.fromEntries(Object.entries(record(value)).filter(([key]) => !RESERVED_SAMPLER_KEYS.has(key)));
+}
+
 /** Load and validate the optional config. Invalid fields fall back independently to defaults. */
 export async function loadConfig(env: Record<string, string | undefined> = process.env): Promise<SafetyConfig> {
 	let raw: Record<string, unknown> = {};
@@ -61,6 +80,12 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	const timeoutMs = typeof classifier.timeoutMs === "number" && Number.isFinite(classifier.timeoutMs) && classifier.timeoutMs > 0
 		? Math.floor(classifier.timeoutMs)
 		: DEFAULTS.classifier.timeoutMs;
+	const maxTokens = typeof classifier.maxTokens === "number" && Number.isFinite(classifier.maxTokens) && classifier.maxTokens > 0
+		? Math.floor(classifier.maxTokens)
+		: DEFAULTS.classifier.maxTokens;
+	const temperature = typeof classifier.temperature === "number" && Number.isFinite(classifier.temperature) && classifier.temperature >= 0
+		? classifier.temperature
+		: DEFAULTS.classifier.temperature;
 	const checkpointRetain = typeof raw.checkpointRetain === "number" && Number.isInteger(raw.checkpointRetain) && raw.checkpointRetain > 0
 		? raw.checkpointRetain
 		: DEFAULTS.checkpointRetain;
@@ -72,6 +97,10 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 			url: typeof classifier.url === "string" && classifier.url.trim() ? classifier.url.replace(/\/+$/, "") : DEFAULTS.classifier.url,
 			model: typeof classifier.model === "string" && classifier.model.trim() ? classifier.model : DEFAULTS.classifier.model,
 			timeoutMs,
+			maxTokens,
+			thinking: typeof classifier.thinking === "boolean" ? classifier.thinking : DEFAULTS.classifier.thinking,
+			temperature,
+			sampler: sampler(classifier.sampler),
 			classifyBash: typeof classifier.classifyBash === "boolean" ? classifier.classifyBash : DEFAULTS.classifier.classifyBash,
 			classifyUnknownTools: typeof classifier.classifyUnknownTools === "boolean" ? classifier.classifyUnknownTools : DEFAULTS.classifier.classifyUnknownTools,
 		},

@@ -91,12 +91,13 @@ export default function safety(pi: ExtensionAPI): void {
 	let classifier: ResidualClassifier;
 	let checkpoints: CheckpointStore;
 	let checkpointTakenThisTurn = false;
+	let checkpointProtectedThisTurn = false;
 	let checkpointWarningShown = false;
-	const approvedFiles = new Set<string>();
 	const audit = new SafetyAudit();
 
-	async function ensureCheckpoint(ctx: ExtensionContext): Promise<void> {
-		if (checkpointTakenThisTurn) return;
+	/** Snapshots once per agent turn; the return value reports whether /safety undo can recover this write. */
+	async function ensureCheckpoint(ctx: ExtensionContext): Promise<boolean> {
+		if (checkpointTakenThisTurn) return checkpointProtectedThisTurn;
 		checkpointTakenThisTurn = true;
 		let checkpoint;
 		try {
@@ -104,10 +105,12 @@ export default function safety(pi: ExtensionAPI): void {
 		} catch {
 			checkpoint = undefined;
 		}
+		checkpointProtectedThisTurn = Boolean(checkpoint);
 		if (!checkpoint && !checkpointWarningShown) {
 			checkpointWarningShown = true;
 			ctx.ui.notify("Safety checkpoint unavailable: writes in this session are not protected by /safety undo.", "warning");
 		}
+		return checkpointProtectedThisTurn;
 	}
 
 	async function enter(mode: SafetyMode, ctx: ExtensionContext, persist = true): Promise<boolean> {
@@ -204,8 +207,7 @@ export default function safety(pi: ExtensionAPI): void {
 				if (preGate.eligible) {
 					const rawIdentity = preGate.tokens?.[0] ?? result.binary ?? command;
 					const identity = rawIdentity.includes("/") ? await canonicalPath(ctx.cwd, rawIdentity) : rawIdentity;
-					const classifierCommand = JSON.stringify(preGate.tokens ?? [command]);
-					const verdict = await classifier.classifyBash(classifierCommand, identity);
+					const verdict = await classifier.classifyBash(command, identity);
 					audit.record({ kind: "bash", identity, verdict: verdict.verdict, reason: verdict.reason });
 					if (verdict.verdict === "allow") {
 						ctx.ui.notify(`Safety classifier allowed Bash: ${identity} (${verdict.reason})`, "info");
@@ -222,14 +224,14 @@ export default function safety(pi: ExtensionAPI): void {
 			if (!requested) return denied("Safety could not determine the write target path.");
 			const path = await canonicalPath(ctx.cwd, requested);
 			const external = !inside(ctx.cwd, path);
-			if (!external) await ensureCheckpoint(ctx);
-			if (!external && approvedFiles.has(path)) return undefined;
+			const protectedWrite = external ? false : await ensureCheckpoint(ctx);
+			// auto trusts the checkpoint instead of a dialog: a recoverable in-workspace write is undoable via /safety undo.
+			if (state.mode === "auto" && protectedWrite) return undefined;
 			const display = isAbsolute(requested) ? relative(ctx.cwd, path) || "." : requested;
 			const excerpt = writeExcerpt(event.input);
 			const body = `${display}${excerpt ? `\n\n${excerpt}` : ""}`;
-			const reason = await confirm(ctx, "Confirm file write", body, external ? "This path is outside the workspace and is not protected by a checkpoint." : "First write to this file in this session. A checkpoint was taken before this turn's write batch.");
+			const reason = await confirm(ctx, "Confirm file write", body, external ? "This path is outside the workspace and is not protected by a checkpoint." : "A checkpoint was taken before this turn's write batch.");
 			if (reason) return denied(reason);
-			if (!external) approvedFiles.add(path);
 			return undefined;
 		}
 
@@ -237,7 +239,7 @@ export default function safety(pi: ExtensionAPI): void {
 		if (state.mode === "auto" && config.classifier.classifyUnknownTools) {
 			const tool = findTool(event.toolName, pi.getAllTools());
 			const description = toolDescription(tool);
-			const verdict = await classifier.classifyTool(event.toolName, description);
+			const verdict = await classifier.classifyTool(event.toolName, description, event.input);
 			audit.record({ kind: "tool", identity: event.toolName, verdict: verdict.verdict, reason: verdict.reason });
 			if (verdict.verdict === "allow") {
 				ctx.ui.notify(`Safety classifier allowed tool: ${event.toolName} (${verdict.reason})`, "info");
@@ -250,6 +252,7 @@ export default function safety(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async () => {
 		checkpointTakenThisTurn = false;
+		checkpointProtectedThisTurn = false;
 		return undefined;
 	});
 
@@ -257,9 +260,9 @@ export default function safety(pi: ExtensionAPI): void {
 		config = await loadConfig();
 		classifier = new ResidualClassifier(config.classifier);
 		checkpoints = new CheckpointStore({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), retain: config.checkpointRetain });
-		approvedFiles.clear();
 		audit.clear();
 		checkpointTakenThisTurn = false;
+		checkpointProtectedThisTurn = false;
 		checkpointWarningShown = false;
 		state = restoreSafetyState(ctx.sessionManager.getBranch(), config.mode);
 		const flag = pi.getFlag("safety");

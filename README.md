@@ -278,11 +278,14 @@ Alt+S                   # cycle available modes
 pi --safety safe        # select the starting mode
 ```
 
-`safe` confirms irreversible or outward-facing Bash commands, the first write to each file per
-session, and every unknown tool call. `auto` applies the same deterministic rules but may silently
-allow a structurally restricted unknown binary or a tool classified wholly read-only. It is
-selectable only while the configured OpenAI-compatible endpoint is available. `yolo` is the default
-and has no safety hook effects or status indicator.
+`safe` confirms irreversible or outward-facing Bash commands, every `write` and `edit` call, and
+every unknown tool call. `auto` applies the same deterministic rules but may silently
+allow a structurally restricted unknown binary or an unknown tool call classified safe, judging the
+call's own arguments rather than the tool in the abstract. It also allows
+checkpointed in-workspace writes without a dialog, relying on `/safety undo` for recovery; writes
+outside the workspace or without a usable checkpoint still confirm. `auto` is selectable only while
+the configured OpenAI-compatible endpoint is available. `yolo` is the default and has no safety hook
+effects or status indicator.
 
 Gated in-workspace `write` and `edit` calls create one temporary-index Git checkpoint per agent turn.
 The snapshot includes non-ignored untracked files without changing the user's index or `HEAD`.
@@ -299,7 +302,11 @@ invalid configuration uses these defaults:
     "enabled": false,
     "url": "http://localhost:8989/v1",
     "model": "inclusionAI/Ling-3.0-tiny-int4",
-    "timeoutMs": 400,
+    "timeoutMs": 2000,
+    "maxTokens": 1024,
+    "thinking": null,
+    "temperature": null,
+    "sampler": {},
     "classifyBash": true,
     "classifyUnknownTools": true
   },

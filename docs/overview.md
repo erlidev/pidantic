@@ -68,6 +68,7 @@ pidantic/
 │   │   ├── config.ts
 │   │   ├── index.ts
 │   │   ├── pre-gate.ts
+│   │   ├── prompt.ts
 │   │   ├── risk-policy.ts
 │   │   ├── state.ts
 │   │   └── tiers.ts
@@ -161,6 +162,8 @@ not expressible in a schema remain in `promptGuidelines`.
 - `safety/` provides `yolo`, `safe`, and classifier-backed `auto` session modes. Its modules isolate
   irreversible-action policy, tool tiers, configuration, mode persistence, temporary-index Git
   checkpoints, structural classifier gating, runtime caches, and the classifier audit trail.
+  `prompt.ts` holds the classifier's system prompts and untrusted-payload framing, following the same
+  convention as `localsearch/src/prompt.ts`: model-facing text stays in one budgetable, testable file.
 - `smart-compaction/` currently exposes a valid no-op entry point while its implementation is
   developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
@@ -182,7 +185,7 @@ it is not part of the default isolated test glob.
 ## Safety tests
 
 The `safety/test/` suites cover deterministic risk rules, conservative tool tiers, configuration
-validation, session-state restoration, classifier structural pre-gating, response validation,
-timeouts and runtime caches. Checkpoint tests create isolated temporary Git repositories and verify
+validation, session-state restoration, classifier structural pre-gating, prompt construction,
+response validation, timeouts and runtime caches. Checkpoint tests create isolated temporary Git repositories and verify
 untracked-file capture, index preservation, restoration, ref pruning, and non-repository fallback.
 The shared plan-mode Bash policy keeps its unchanged regression suite in `shared/test/`.

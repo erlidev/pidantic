@@ -9,8 +9,8 @@ separate path and bypass the extension.
 | Mode | Bash | `write` / `edit` | Unknown tools |
 | --- | --- | --- | --- |
 | `yolo` | Unchanged Pi behavior | Unchanged Pi behavior | Allowed |
-| `safe` | Deterministic irreversible-action rules; unknown binaries confirm | Checkpoint, then first-touch-per-file confirmation | Every call confirms |
-| `auto` | Safe-mode rules; eligible unknown binaries may use the classifier | Same as `safe` | Classifier may allow a tool rated wholly read-only |
+| `safe` | Deterministic irreversible-action rules; unknown binaries confirm | Checkpoint, then confirmation on every call | Every call confirms |
+| `auto` | Safe-mode rules; eligible unknown binaries may use the classifier | Checkpoint, then allowed without a dialog when the checkpoint succeeded; otherwise as `safe` | Classifier may allow a call it rates safe |
 
 Sessions start in `yolo` unless configuration or `--safety` selects another mode. Controls are:
 
@@ -59,11 +59,17 @@ an allowed binary can therefore bypass a built-in prompt. Deny entries always pr
 
 ## File writes and checkpoints
 
-The first `write` or `edit` of each canonical file path in a session confirms. Approval is remembered
-for that file across safety-mode changes, including a temporary switch through `yolo`. It is cleared
-on restart or session resume and is never persisted in the transcript. Symlinked and relative routes
-to the same existing file share an approval. Paths outside the working directory confirm on every
-call and are not checkpoint-protected.
+In `safe` mode every `write` and `edit` call confirms. No approval is remembered: a second write to a
+file already approved earlier in the session prompts again, so each dialog reflects that specific
+call's target and excerpt. Paths outside the working directory confirm the same way but are not
+checkpoint-protected.
+
+In `auto` mode an in-workspace write runs without a dialog once the turn's checkpoint exists, because
+`/safety undo` can restore it. The dialog still appears when the write is outside the working
+directory, or when the checkpoint could not be created (no Git worktree, or a failed snapshot) — an
+unrecoverable write is never silently allowed. This is a fatigue trade, not a security property: the
+classifier is not consulted for writes, and `auto` writes are reviewed after the fact rather than
+before.
 
 Before the first in-workspace write call in each agent turn, safety snapshots the complete Git
 worktree through a temporary index. Tracked changes and non-ignored untracked files are included;
@@ -77,19 +83,60 @@ writes continue and one warning per session states that `/safety undo` protectio
 
 ## Residual classifier
 
-The optional classifier calls an OpenAI-compatible `/chat/completions` endpoint at temperature zero
-with a strict JSON schema. It can inspect only:
+The optional classifier calls an OpenAI-compatible `/chat/completions` endpoint with a strict JSON
+schema. It can inspect only:
 
 - structurally eligible commands whose binaries are unknown to deterministic policy; and
-- unknown tools, keyed by tool name plus a hash of the registered description.
+- calls to unknown tools, keyed by tool name plus a hash of the registered description and the
+  call's own arguments.
 
-Tool classification asks whether every possible call is read-only; live call arguments are not sent.
-Command and tool metadata are delimited and labeled as untrusted. Obvious text attempting to influence
-its own verdict is rejected before the request. Only a `read_only` verdict with self-reported `high`
-confidence silently allows a call. Timeouts, HTTP errors, malformed responses, invalid enums, low
-confidence, and explicit denials all confirm. Command and tool verdicts are cached only for the
-session. Every allowed call emits an informational note, and `/safety log` shows all classifier
-decisions and reasons.
+Each request is two messages. The system message carries the policy: a short safe/unsafe rubric,
+one for shell commands and one for tool calls, both instructing the model to answer `unsafe` when
+unsure and to treat the user message as data. The user message carries only the untrusted payload,
+delimited and labeled. Both prompts live in [`safety/src/prompt.ts`](../../safety/src/prompt.ts).
+
+A command is sent as its whitespace-normalized text. A tool call is sent as its name, registered
+description, and pretty-printed JSON arguments; arguments longer than 2000 characters are truncated
+with a visible marker, which the rubric's indeterminable-effect rule turns into a confirmation.
+Because the arguments are part of the identity, the same tool called with different arguments is a
+separate decision rather than a cache hit.
+
+The response schema is `{"verdict": "safe" | "unsafe", "short_reason": string}` with `short_reason`
+capped at 100 characters and clamped again locally. Only `safe` silently allows a call. Timeouts,
+HTTP errors, malformed responses, invalid enums, and `unsafe` all confirm. Obvious text attempting
+to influence the verdict is rejected before the request. Verdicts are cached only for the session.
+Every allowed call emits an informational note, and `/safety log` shows all classifier decisions and
+reasons.
+
+The rubric is deliberately wider than "read-only" for commands, matching the deterministic layer
+around it, which already allows reversible in-workspace mutation such as `make` and `cargo`. There
+is no self-reported confidence field: a small classifier's confidence estimate is close to noise, so
+the uncertainty instruction in the system prompt carries that role instead.
+
+`maxTokens` is the total completion budget for one verdict, including any reasoning tokens the
+server emits before the JSON object. It defaults to 1024 so a reasoning model can finish its thinking
+block; truncation produces unparsable output, which fails closed into a confirmation. `thinking`
+controls the request's `chat_template_kwargs.enable_thinking`: `null` (the default) omits the field
+entirely and defers to the serving configuration, `false` disables reasoning, and `true` forces it
+on. When the endpoint has no reasoning parser and returns the thinking block inline, the leading
+`<think>…</think>` prefix is stripped before the JSON is parsed. `timeoutMs` bounds the whole
+request, including reasoning, and defaults to 2000 ms. It is paid inline before the tool call
+proceeds, so raising it further trades responsiveness for fewer timeout-driven confirmations.
+
+Sampling is unset by default. `temperature` is sent only when it is a number at least zero;
+`null` omits the field so the serving configuration's own value applies. `sampler` is an object of
+additional request fields merged into the body verbatim — `top_p`, `top_k`, `min_p`,
+`repetition_penalty`, `seed`, and anything else the endpoint accepts:
+
+```json
+{"classifier": {"temperature": 0.6, "sampler": {"top_p": 0.95, "top_k": 20}}}
+```
+
+Fields the classifier controls itself — `model`, `messages`, `max_tokens`, `temperature`,
+`response_format`, `chat_template_kwargs`, `stream`, and `n` — are dropped from `sampler` at load
+time, so a sampler entry cannot weaken the structured-output contract. Unknown fields are passed
+through as written; an endpoint that rejects them fails the request, which fails closed into a
+confirmation.
 
 The classifier reduces confirmation fatigue; it is not a security boundary. It is disabled by
 default because a model's false-allow rate is deployment-specific and must be evaluated before use.
@@ -106,7 +153,11 @@ malformed, and individually invalid values fall back to defaults.
     "enabled": false,
     "url": "http://localhost:8989/v1",
     "model": "inclusionAI/Ling-3.0-tiny-int4",
-    "timeoutMs": 400,
+    "timeoutMs": 2000,
+    "maxTokens": 1024,
+    "thinking": null,
+    "temperature": null,
+    "sampler": {},
     "classifyBash": true,
     "classifyUnknownTools": true
   },
@@ -119,7 +170,7 @@ malformed, and individually invalid values fall back to defaults.
 ```
 
 `allowTools` and `denyTools` apply to unknown tools; a deny also overrides a built-in read-only tier.
-Tool overrides do not disable the checkpoint and first-touch behavior of recognized `write` and
+Tool overrides do not disable the checkpoint and per-mode gating behavior of recognized `write` and
 `edit` tools. A configured default of `auto` falls back to `yolo` with a notice when the classifier
 is unavailable, and a later `/safety auto` retries the endpoint.
 
