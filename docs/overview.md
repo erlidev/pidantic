@@ -236,9 +236,13 @@ still cross between the two copies.
 
 `harness.ts` and `gate.test.ts` cover the registration wiring the unit suites cannot reach. The
 harness loads the real extension against a fake `ExtensionAPI`, captures the registered hooks, and
-drives `tool_call` end to end: mode arbitration, deny/allow lists, tool tiers, checkpointed writes,
-`/safety undo` against a real repository, checkpoint teardown on `session_shutdown`, and which calls
-reach the classifier. Two details make that possible without changing the source.
+drives `tool_call` end to end: mode arbitration, deny/allow lists, tool tiers, checkpointed writes
+and checkpointed Bash commands, `/undo` against a real repository, checkpoint teardown on
+`session_shutdown`, and which calls reach the classifier. Checkpoint coverage is pinned from both
+ends — a gated command, a classifier-approved one, and a rule-allowed one that writes each take a
+snapshot, a read-only command takes none, and a turn mixing Bash and writes still produces exactly
+one, and `"checkpoints": false` produces none while restoring `auto`'s write dialog.
+`risk-policy.test.ts` pins the `mutates` flag that decides this separately from the verdict. Two details make that possible without changing the source.
 Confirmation is observed through the headless path, so each case runs twice — once with
 `PI_SAFETY_HEADLESS` unset and once set to `allow` — and the pair of results separates a silently
 allowed call from a gated one from a hard denial. The classifier is observed by replacing

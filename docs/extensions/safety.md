@@ -9,16 +9,16 @@ separate path and bypass the extension.
 | Mode | Bash | `write` / `edit` | Unknown tools |
 | --- | --- | --- | --- |
 | `yolo` | Unchanged Pi behavior | Unchanged Pi behavior | Allowed |
-| `safe` | Deterministic irreversible-action rules; unknown binaries confirm | Checkpoint, then confirmation on every call | Every call confirms |
-| `auto` | Safe-mode rules; eligible unknown binaries may use the classifier | Checkpoint, then allowed without a dialog when the checkpoint succeeded; otherwise as `safe` | Classifier may allow a call it rates safe |
+| `safe` | Deterministic irreversible-action rules; unknown binaries confirm. Checkpoint before any command that is held or can write | Checkpoint, then confirmation on every call | Every call confirms |
+| `auto` | Safe-mode rules and the same checkpoint; eligible unknown binaries may use the classifier | Checkpoint, then allowed without a dialog when the checkpoint succeeded; otherwise as `safe` | Classifier may allow a call it rates safe |
 
 Sessions start in `yolo` unless configuration or `--safety` selects another mode. Controls are:
 
 ```text
 /safety                 # report current mode
 /safety yolo|auto|safe  # switch mode
-/safety undo            # confirm and restore the newest checkpoint
 /safety log             # list classifier decisions in this session
+/undo                   # confirm and restore the newest checkpoint
 Alt+S                   # cycle yolo → auto → safe; unavailable auto is skipped
 pi --safety safe        # select the starting mode
 ```
@@ -88,7 +88,8 @@ binary invocation with no privilege prefix and no apparent path outside the work
 - no path-shaped argument contains `$` or a backtick, since where it points is decided by the
   expansion (`cat $HOME/.ssh/id_rsa` confirms); and
 - its redirections only discard or duplicate output, or read a file inside the workspace. A file
-  write is never delegated: Bash output is not covered by checkpoints.
+  write is never delegated: where the output lands is a path decision, and the pre-gate's purpose is
+  to keep the classifier's question bounded rather than to rely on the checkpoint that now backs it.
 
 Every rule above is applied per segment, so an ordinary chain or pipeline is eligible when each of
 its segments is: `ps -ef | grep -F earendil | grep -v grep; echo ---` is one classifier question
@@ -155,7 +156,7 @@ is reported as one unhighlighted finding.
 Residual (unrecognized-binary) findings are reported only when no segment asks, so the dialog for a
 rule violation never mixes in unrelated unknown binaries.
 
-## File writes and checkpoints
+## Writes, commands, and checkpoints
 
 In `safe` mode every `write` and `edit` call confirms. No approval is remembered: a second write to a
 file already approved earlier in the session prompts again, so each dialog reflects that specific
@@ -163,22 +164,60 @@ call's target and excerpt. Paths outside the working directory confirm the same 
 checkpoint-protected.
 
 In `auto` mode an in-workspace write runs without a dialog once the turn's checkpoint exists, because
-`/safety undo` can restore it. The dialog still appears when the write is outside the working
+`/undo` can restore it. The dialog still appears when the write is outside the working
 directory, or when the checkpoint could not be created (no Git worktree, or a failed snapshot) — an
 unrecoverable write is never silently allowed. This is a fatigue trade, not a security property: the
 classifier is not consulted for writes, and `auto` writes are reviewed after the fact rather than
 before.
 
-Before the first in-workspace write call in each agent turn, safety snapshots the complete Git
-worktree through a temporary index. Tracked changes and non-ignored untracked files are included;
+The same checkpoint covers Bash, and it follows what a command can write rather than whether policy
+held it. `classifyRisk` reports a `mutates` flag alongside its verdict: true when any segment is not
+deterministically read-only, or carries a redirection that lands on the filesystem. `/dev/null`,
+descriptor duplication such as `2>&1`, and input redirections do not count. An untrustworthy parse
+counts as mutating.
+
+A command is snapshotted when it is held **or** when it mutates. The second half is the one that
+matters in practice: `echo x > note.txt`, `sed -i`, `mkdir`, and `npm install` are all allowed
+without a dialog precisely because a worktree makes them recoverable, and the checkpoint is what
+makes that claim true. The first half covers a held command before either the dialog or the
+classifier decides it — a command `auto` lets through on a safe verdict is exactly the case that
+needs to be recoverable, so the snapshot precedes the verdict rather than following it. Read-only
+commands take no snapshot, which keeps the most frequent path free.
+
+The cost is one `git add -A` against a temporary index per turn, on the first mutating call.
+A turn that runs a build or test command pays it even when nothing else happens.
+
+Because a command's effects cannot be predicted from its text the way a write path can, the
+confirmation's detail line states which case applies: a checkpoint was taken and `/undo` restores it,
+or none is available and `/undo` cannot recover the command. A held command that writes nothing —
+a read of a path outside the workspace, for instance — is told neither thing.
+
+Before the first checkpointed call in each agent turn — write or Bash, whichever comes first — safety
+snapshots the complete Git worktree through a temporary index. Tracked changes and non-ignored untracked files are included;
 the user's index, `HEAD`, and normal reflogs are not modified. Snapshots live below
-`refs/pidantic/safety/<session>/<run>/` and are pruned to `checkpointRetain`. `/safety undo` restores
+`refs/pidantic/safety/<session>/<run>/` and are pruned to `checkpointRetain`. `/undo` restores
 and removes the newest snapshot after a separate confirmation. It restores the worktree but
 deliberately leaves the user's index unchanged. Ignored files are neither captured nor removed.
 
+### Turning checkpoints off
+
+`"checkpoints": false` disables the whole mechanism: no snapshot is taken, `/undo` reports that
+configuration disabled it rather than that none exists, and safety runs no Git command at all —
+including the start-up sweep for refs abandoned by earlier runs. Only a boolean turns it off; any
+other value falls back to the default of `true`. `checkpointRetain` is unrelated and is not
+reinterpreted.
+
+The setting is not free of consequences elsewhere. `auto` skips the write dialog because the write is
+recoverable, so with checkpoints off it confirms every `write` and `edit` exactly as `safe` does, and
+every Bash confirmation reports that `/undo` cannot recover the command. Nothing about the
+deterministic rules changes: the same commands are held, and the same ones run without a dialog —
+they are simply no longer recoverable afterwards. Turn it off when snapshotting the worktree is
+unwanted (a very large repository, or a workflow with its own recovery), and expect more write
+dialogs in `auto` in exchange.
+
 Checkpoints last only as long as the Pi run that created them:
 
-- The run's refs are tracked in memory. `/safety undo` considers only those refs, so a checkpoint is
+- The run's refs are tracked in memory. `/undo` considers only those refs, so a checkpoint is
   never resolved by scanning the repository.
 - `session_shutdown` — quit, `/reload`, or switching to a new, resumed, or forked session — deletes
   every ref the run created.
@@ -188,14 +227,14 @@ Checkpoints last only as long as the Pi run that created them:
 - At session start, refs under `refs/pidantic/safety` that belong to another run and are older than
   24 hours are deleted. This clears refs leaked by a killed process without touching a concurrently
   running session's checkpoints. Refs whose names do not carry a parsable timestamp are left alone.
-- A ref that disappears between snapshot and restore is dropped, and `/safety undo` moves to the
+- A ref that disappears between snapshot and restore is dropped, and `/undo` moves to the
   next checkpoint from that run.
 
-The consequence is deliberate: `/safety undo` is an in-session escape hatch, not a history of past
+The consequence is deliberate: `/undo` is an in-session escape hatch, not a history of past
 sessions. Anything that must survive a restart belongs in a real commit.
 
 If Git is unavailable, the working directory is not a Git worktree, or snapshot creation fails,
-writes continue and one warning per session states that `/safety undo` protection is unavailable.
+writes continue and one warning per session states that `/undo` protection is unavailable.
 In `auto` mode that same condition also restores the write confirmation dialog.
 
 ## Residual classifier
@@ -374,6 +413,7 @@ malformed, and individually invalid values fall back to defaults.
   "allowReadPaths": [],
   "allowTools": [],
   "denyTools": [],
+  "checkpoints": true,
   "checkpointRetain": 20
 }
 ```

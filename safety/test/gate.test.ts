@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -377,7 +377,7 @@ test("checkpoints end with the run: shutdown clears them and a resumed session h
 	process.env.PI_SAFETY_HEADLESS = "allow";
 	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
 	const resumed = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: models });
-	await resumed.command("undo");
+	await resumed.undo();
 	assert.ok(resumed.notices.some((notice) => notice.message.includes("No safety checkpoint is available")));
 	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "written by the agent\n");
 });
@@ -390,9 +390,75 @@ test("undo restores the checkpoint taken before this turn's writes", async (t) =
 	await gate.startTurn();
 	await gate.toolCall("write", { path: "new.txt", content: "hello" });
 	await writeFile(join(cwd, "tracked.txt"), "agent edit\n");
-	await gate.command("undo");
+	await gate.undo();
 	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "base\n");
 	assert.equal((await checkpointRefs(cwd)).length, 0);
+});
+
+test("a gated bash command is checkpointed before it runs, so undo recovers it", async (t) => {
+	const cwd = await repository(t);
+	process.env.PI_SAFETY_HEADLESS = "allow";
+	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
+	const gate = await harness(t, { cwd, config: { mode: "safe" } });
+	await gate.startTurn();
+	await gate.toolCall("bash", { command: "rm tracked.txt" });
+	assert.equal((await checkpointRefs(cwd)).length, 1);
+
+	// The harness gates the call but never runs it; the deletion stands in for the approved command.
+	await rm(join(cwd, "tracked.txt"));
+	await gate.undo();
+	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "base\n");
+});
+
+test("checkpoints follow what a command can write, not whether it was held", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe") });
+	await gate.startTurn();
+	// Read-only: nothing to recover, so no snapshot is paid for.
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "git status" })), "allowed");
+	assert.equal((await checkpointRefs(cwd)).length, 0);
+
+	// Auto-approved by the model, which is exactly the case a checkpoint has to cover.
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "frobnicate --check" })), "allowed");
+	assert.equal((await checkpointRefs(cwd)).length, 1);
+
+	// One snapshot per turn, shared with the write path.
+	await gate.toolCall("write", { path: "new.txt", content: "hello" });
+	assert.equal((await checkpointRefs(cwd)).length, 1);
+});
+
+test("a rule-allowed command that writes is checkpointed even though no dialog appears", async (t) => {
+	const cwd = await repository(t);
+	process.env.PI_SAFETY_HEADLESS = "allow";
+	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
+	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: models });
+	await gate.startTurn();
+	// Allowed without a dialog because it is recoverable — which is only true if it is checkpointed.
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "echo hi > note.txt" })), "allowed");
+	assert.equal(gate.classifierCalls, 0);
+
+	await writeFile(join(cwd, "note.txt"), "hi\n");
+	await gate.undo();
+	assert.equal(await stat(join(cwd, "note.txt")).then(() => true, () => false), false);
+});
+
+test("checkpoints: false takes no snapshot, warns about nothing, and reports why undo is unavailable", async (t) => {
+	const cwd = await repository(t);
+	process.env.PI_SAFETY_HEADLESS = "allow";
+	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
+	const gate = await harness(t, { cwd, config: { mode: "auto", checkpoints: false, classifier: CLASSIFIER }, fetch: models });
+	await gate.startTurn();
+	await gate.toolCall("bash", { command: "echo hi > note.txt" });
+	await gate.toolCall("bash", { command: "rm tracked.txt" });
+	assert.equal((await checkpointRefs(cwd)).length, 0);
+	// A deliberate configuration choice is not the snapshot failure that warning describes.
+	assert.equal(gate.notices.filter((notice) => notice.message.includes("Safety checkpoint unavailable")).length, 0);
+
+	await gate.undo();
+	assert.ok(gate.notices.some((notice) => notice.message.includes("Checkpoints are disabled by safety configuration")));
+
+	// auto traded the write dialog for recoverability, so without checkpoints the dialog comes back.
+	assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "gated");
 });
 
 test("outside a git worktree an auto write falls back to confirmation with one warning", async (t) => {

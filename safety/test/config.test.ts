@@ -52,6 +52,20 @@ test("explanation settings load independently of the verdict timeout", async (t)
 	assert.equal((await loadConfig({ SAFETY_CONFIG: path })).classifier.explainRuleAllowed, true);
 });
 
+test("checkpoints default to on and only a boolean turns them off", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "safety-config-"));
+	t.after(() => rm(directory, { force: true, recursive: true }));
+	const path = join(directory, "config.json");
+	await writeFile(path, JSON.stringify({ checkpoints: false }));
+	const disabled = await loadConfig({ SAFETY_CONFIG: path });
+	assert.equal(disabled.checkpoints, false);
+	// Retention is a separate field: turning checkpoints off does not reinterpret it.
+	assert.equal(disabled.checkpointRetain, DEFAULTS.checkpointRetain);
+
+	await writeFile(path, JSON.stringify({ checkpoints: "off" }));
+	assert.equal((await loadConfig({ SAFETY_CONFIG: path })).checkpoints, true);
+});
+
 test("malformed files and invalid fields use defaults", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "safety-config-"));
 	t.after(() => rm(directory, { force: true, recursive: true }));

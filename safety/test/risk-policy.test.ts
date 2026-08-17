@@ -152,3 +152,27 @@ test("an uncertain finding is anchored to the segment that contains it", () => {
 		[[2, "ls $PWD"]],
 	);
 });
+
+test("mutation is reported independently of the verdict", () => {
+	const mutates = (command: string) => classifyRisk(command, { cwd }).mutates;
+
+	// Allowed because they are recoverable, which is only true if something captures the prior state.
+	for (const command of ["echo result > build/out.txt", "mkdir src/new", "npm install", "prettier --write src/a.ts", "git commit -m test"]) {
+		assert.equal(mutates(command), true, command);
+	}
+
+	// Nothing to recover: reads, discarded output, descriptor duplication, and an input redirection.
+	for (const command of ["git status", "ls -la", "grep -r x src", "cat tracked.txt > /dev/null 2>&1", "wc -l < tracked.txt"]) {
+		assert.equal(mutates(command), false, command);
+	}
+
+	// A test or build run is a write: it is only a question of which files, which is not knowable here.
+	assert.equal(mutates("npm test"), true);
+
+	// A held command is mutating too, and an untrustworthy parse is assumed to be.
+	assert.equal(mutates("rm src/a.ts"), true);
+	assert.equal(mutates("echo hi >"), true);
+
+	// One writing segment in a chain is enough.
+	assert.equal(mutates("git status && echo x > note.txt"), true);
+});

@@ -45,7 +45,10 @@ export interface HarnessOptions {
 export interface Harness {
 	/** Drives the real tool_call hook. Returns undefined when the call is allowed through. */
 	toolCall(toolName: string, input?: unknown, toolCallId?: string): Promise<HookResult | undefined>;
+	/** Drives /safety. */
 	command(args: string): Promise<void>;
+	/** Drives /undo, which restores the newest checkpoint. */
+	undo(): Promise<void>;
 	startTurn(): Promise<void>;
 	/** Drives session_shutdown, which ends this run's checkpoints. */
 	shutdown(): Promise<void>;
@@ -160,6 +163,7 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 	return {
 		toolCall: async (toolName, input = {}, toolCallId = "harness-call") => hooks.get("tool_call")?.({ toolName, input, toolCallId }, ctx),
 		command: async (args) => { await commands.get("safety")?.(args, ctx); },
+		undo: async () => { await commands.get("undo")?.("", ctx); },
 		startTurn: async () => { await hooks.get("before_agent_start")?.({ toolName: "", input: undefined }, ctx); },
 		shutdown: async () => { await hooks.get("session_shutdown")?.({ toolName: "", input: undefined }, ctx); },
 		notices,

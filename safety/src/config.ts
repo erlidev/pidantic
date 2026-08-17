@@ -38,6 +38,11 @@ export interface SafetyConfig {
 	allowReadPaths: string[];
 	allowTools: string[];
 	denyTools: string[];
+	/**
+	 * Master switch for Git checkpoints and `/undo`. Turning it off stops every snapshot, so `auto`
+	 * loses the recoverability it trades a write dialog for and confirms writes like `safe` does.
+	 */
+	checkpoints: boolean;
 	checkpointRetain: number;
 }
 
@@ -65,6 +70,7 @@ export const DEFAULTS: SafetyConfig = {
 	allowReadPaths: [],
 	allowTools: [],
 	denyTools: [],
+	checkpoints: true,
 	checkpointRetain: 20,
 };
 
@@ -137,6 +143,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 		allowReadPaths: absolutePaths(raw.allowReadPaths) ?? DEFAULTS.allowReadPaths,
 		allowTools: strings(raw.allowTools) ?? DEFAULTS.allowTools,
 		denyTools: strings(raw.denyTools) ?? DEFAULTS.denyTools,
+		checkpoints: typeof raw.checkpoints === "boolean" ? raw.checkpoints : DEFAULTS.checkpoints,
 		checkpointRetain,
 	};
 }

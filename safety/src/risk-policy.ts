@@ -10,6 +10,12 @@ export interface RiskResult {
 	binary?: string;
 	/** Every segment carrying the reported verdict, with its span in the original command. */
 	findings: CommandFinding[];
+	/**
+	 * Whether any segment can put bytes on disk. This is independent of the verdict: `echo x > file`
+	 * is allowed because it is recoverable inside a worktree, and it is exactly the case a checkpoint
+	 * has to cover for that to be true. An untrustworthy parse counts as mutating.
+	 */
+	mutates: boolean;
 }
 
 export interface RiskOptions {
@@ -38,7 +44,13 @@ function ask(reason: string, binary?: string): SegmentVerdict {
 
 /** A command-level result with no segment to point at. */
 function whole(verdict: RiskVerdict, reason: string): RiskResult {
-	return { verdict, reason, findings: [{ reason }] };
+	return { verdict, reason, findings: [{ reason }], mutates: true };
+}
+
+/** Whether a redirection lands on the filesystem; a read, a descriptor duplication, and `/dev/null` do not. */
+function redirectionWrites(redirection: Redirection): boolean {
+	if (redirection.operator.endsWith("<")) return false;
+	return !redirection.target.startsWith("&") && redirection.target !== "/dev/null";
 }
 
 function inside(cwd: string, path: string): boolean {
@@ -195,17 +207,21 @@ function classifyKnown(tokens: string[], options: RiskOptions): SegmentVerdict {
 export function classifyRisk(command: string, options: RiskOptions): RiskResult {
 	const parsed = tokenizeCommand(command);
 	if (parsed.fatal) return whole("ask", parsed.reason ?? "command could not be parsed");
-	if (parsed.segments.length === 0) return { verdict: "allow", findings: [] };
+	if (parsed.segments.length === 0) return { verdict: "allow", findings: [], mutates: false };
 
 	const asks: CommandFinding[] = [];
 	const residuals: CommandFinding[] = [];
+	let mutates = false;
 	for (const [index, segment] of parsed.segments.entries()) {
 		for (const redirection of segment.redirections) {
+			if (redirectionWrites(redirection)) mutates = true;
 			const finding = redirectionFinding(redirection, options, index + 1);
 			if (finding) asks.push(finding);
 		}
 		// A redirection-only segment (`> out`) has no binary to classify; its redirections carry it.
 		if (segment.tokens.length === 0) continue;
+		// Same normalization as classifyKnown: basename, so an absolute path reaches the same tables.
+		if (classifyTokens([binaryName(segment.tokens[0]!), ...segment.tokens.slice(1)]).verdict !== "allow") mutates = true;
 		const result = classifyKnown(segment.tokens, options);
 		if (result.verdict === "allow") continue;
 		const finding: CommandFinding = {
@@ -221,8 +237,8 @@ export function classifyRisk(command: string, options: RiskOptions): RiskResult 
 	for (const issue of parsed.issues) residuals.push(uncertainFinding(issue, parsed.segments));
 
 	const findings = asks.length > 0 ? asks : residuals;
-	if (findings.length === 0) return { verdict: "allow", findings: [] };
+	if (findings.length === 0) return { verdict: "allow", findings: [], mutates };
 	const first = findings[0]!;
 	const reason = parsed.segments.length === 1 ? first.reason : `chain segment ${first.segment}: ${first.reason}`;
-	return { verdict: asks.length > 0 ? "ask" : "residual", reason, binary: first.binary, findings };
+	return { verdict: asks.length > 0 ? "ask" : "residual", reason, binary: first.binary, findings, mutates };
 }

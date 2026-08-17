@@ -168,6 +168,18 @@ function bashConfirmationBody(
 	};
 }
 
+/**
+ * Detail line for a Bash confirmation: what the findings were, and whether approving the command is
+ * recoverable. A command is not path-analyzable the way a write is, so the checkpoint is the only
+ * thing that can answer the second half, and its absence is worth stating before approval.
+ * `undefined` is a command with nothing to recover, which is told neither thing.
+ */
+function bashConfirmationReason(findings: CommandFinding[], reason: string, checkpointed: boolean | undefined): string {
+	const summary = summarizeFindings(findings, reason);
+	if (checkpointed === undefined) return summary;
+	return `${summary} ${checkpointed ? "A checkpoint was taken before this turn; /undo restores it." : "No checkpoint is available, so /undo cannot recover this command."}`;
+}
+
 function toolDescription(tool: unknown): string {
 	if (typeof tool !== "object" || tool === null) return "";
 	const description = (tool as Record<string, unknown>).description;
@@ -184,8 +196,10 @@ export default function safety(pi: ExtensionAPI): void {
 	let checkpointWarningShown = false;
 	const audit = new SafetyAudit();
 
-	/** Snapshots once per agent turn; the return value reports whether /safety undo can recover this write. */
+	/** Snapshots once per agent turn; the return value reports whether /undo can recover this call. */
 	async function ensureCheckpoint(ctx: ExtensionContext): Promise<boolean> {
+		// Disabled by configuration is a deliberate choice, not a failure, so it warns about nothing.
+		if (!config.checkpoints) return false;
 		if (checkpointTakenThisTurn) return checkpointProtectedThisTurn;
 		checkpointTakenThisTurn = true;
 		let checkpoint;
@@ -197,7 +211,7 @@ export default function safety(pi: ExtensionAPI): void {
 		checkpointProtectedThisTurn = Boolean(checkpoint);
 		if (!checkpoint && !checkpointWarningShown) {
 			checkpointWarningShown = true;
-			ctx.ui.notify("Safety checkpoint unavailable: writes in this session are not protected by /safety undo.", "warning");
+			ctx.ui.notify("Safety checkpoint unavailable: changes in this session are not protected by /undo.", "warning");
 		}
 		return checkpointProtectedThisTurn;
 	}
@@ -268,8 +282,26 @@ export default function safety(pi: ExtensionAPI): void {
 
 	pi.registerFlag("safety", { description: "Start in yolo, auto, or safe safety mode", type: "string" });
 
+	pi.registerCommand("undo", {
+		description: "Restore the most recent safety checkpoint",
+		handler: async (_args, ctx) => {
+			if (!config.checkpoints) {
+				ctx.ui.notify("Checkpoints are disabled by safety configuration: set \"checkpoints\": true to use /undo.", "warning");
+				return;
+			}
+			const reason = await confirm(ctx, "Restore safety checkpoint", "Restore the most recent safety checkpoint?", "This discards worktree changes made since that checkpoint. The Git index is left unchanged.");
+			if (reason) { ctx.ui.notify(reason, "error"); return; }
+			try {
+				const restored = await checkpoints.restoreLatest();
+				ctx.ui.notify(restored ? "Restored the most recent safety checkpoint." : "No safety checkpoint is available.", restored ? "info" : "warning");
+			} catch (error) {
+				ctx.ui.notify(`Checkpoint restore failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			}
+		},
+	});
+
 	pi.registerCommand("safety", {
-		description: "Report or change safety mode; undo a checkpoint; show classifier log",
+		description: "Report or change safety mode; show classifier log",
 		handler: async (args, ctx) => {
 			const action = args.trim();
 			if (!action) {
@@ -283,18 +315,11 @@ export default function safety(pi: ExtensionAPI): void {
 				return;
 			}
 			if (action === "undo") {
-				const reason = await confirm(ctx, "Restore safety checkpoint", "Restore the most recent safety checkpoint?", "This discards worktree changes made since that checkpoint. The Git index is left unchanged.");
-				if (reason) { ctx.ui.notify(reason, "error"); return; }
-				try {
-					const restored = await checkpoints.restoreLatest();
-					ctx.ui.notify(restored ? "Restored the most recent safety checkpoint." : "No safety checkpoint is available.", restored ? "info" : "warning");
-				} catch (error) {
-					ctx.ui.notify(`Checkpoint restore failed: ${error instanceof Error ? error.message : String(error)}`, "error");
-				}
+				ctx.ui.notify("Checkpoint restore is now its own command: run /undo.", "info");
 				return;
 			}
 			if (action !== "yolo" && action !== "auto" && action !== "safe") {
-				ctx.ui.notify("Usage: /safety [yolo|auto|safe|undo|log]", "error");
+				ctx.ui.notify("Usage: /safety [yolo|auto|safe|log]", "error");
 				return;
 			}
 			await enter(action, ctx);
@@ -330,6 +355,11 @@ export default function safety(pi: ExtensionAPI): void {
 				denyBinaries: config.denyBinaries,
 				allowReadPaths: config.allowReadPaths,
 			});
+			// Checkpointing follows recoverability, not the verdict. A held command is snapshotted before
+			// either the dialog or the classifier decides it, and a rule-allowed command that still writes
+			// (`echo x > file`, `sed -i`) is snapshotted too — being recoverable is the reason policy lets
+			// it through, so nothing else is what makes that true. Read-only commands pay nothing.
+			const protectedRun = result.verdict !== "allow" || result.mutates ? await ensureCheckpoint(ctx) : undefined;
 			if (result.verdict === "allow") {
 				explainInBackground(ctx, event.toolCallId, command);
 				return undefined;
@@ -383,7 +413,7 @@ export default function safety(pi: ExtensionAPI): void {
 				ctx,
 				"Confirm Bash command",
 				bashConfirmationBody(command, result.findings, source, () => explanation),
-				summarizeFindings(result.findings, result.reason ?? "Command requires confirmation."),
+				bashConfirmationReason(result.findings, result.reason ?? "Command requires confirmation.", protectedRun),
 				(refresh) => { refreshDialog = refresh; },
 			);
 			return reason ? denied(reason) : undefined;
@@ -395,12 +425,18 @@ export default function safety(pi: ExtensionAPI): void {
 			const path = await canonicalPath(ctx.cwd, requested);
 			const external = !inside(ctx.cwd, path);
 			const protectedWrite = external ? false : await ensureCheckpoint(ctx);
-			// auto trusts the checkpoint instead of a dialog: a recoverable in-workspace write is undoable via /safety undo.
+			// auto trusts the checkpoint instead of a dialog: a recoverable in-workspace write is undoable via /undo.
 			if (state.mode === "auto" && protectedWrite) return undefined;
 			const display = isAbsolute(requested) ? relative(ctx.cwd, path) || "." : requested;
 			const excerpt = writeExcerpt(event.input);
 			const body = `${display}${excerpt ? `\n\n${excerpt}` : ""}`;
-			const reason = await confirm(ctx, "Confirm file write", body, external ? "This path is outside the workspace and is not protected by a checkpoint." : "A checkpoint was taken before this turn's write batch.");
+			// The path explains an external write; otherwise the missing checkpoint is what reached this dialog.
+			const detail = external
+				? "This path is outside the workspace and is not protected by a checkpoint."
+				: protectedWrite
+					? "A checkpoint was taken before this turn's write batch; /undo restores it."
+					: "No checkpoint is available, so /undo cannot recover this write.";
+			const reason = await confirm(ctx, "Confirm file write", body, detail);
 			if (reason) return denied(reason);
 			return undefined;
 		}
@@ -421,7 +457,7 @@ export default function safety(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
-		// Quit, reload, or session replacement all end this run's checkpoints; /safety undo does not span runs.
+		// Quit, reload, or session replacement all end this run's checkpoints; /undo does not span runs.
 		await checkpoints?.dispose().catch(() => undefined);
 	});
 
@@ -438,7 +474,8 @@ export default function safety(pi: ExtensionAPI): void {
 		// clear refs abandoned by runs that exited without shutting down.
 		await checkpoints?.dispose().catch(() => undefined);
 		checkpoints = new CheckpointStore({ cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(), retain: config.checkpointRetain });
-		void checkpoints.sweepStale().catch(() => undefined);
+		// With checkpoints off, safety runs no Git command at all — not even the sweep for foreign refs.
+		if (config.checkpoints) void checkpoints.sweepStale().catch(() => undefined);
 		audit.clear();
 		clearToolNotes();
 		checkpointTakenThisTurn = false;
