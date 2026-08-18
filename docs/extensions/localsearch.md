@@ -402,6 +402,16 @@ cleared by the next success. A `retry-after` or `x-ratelimit-reset` header repla
 it asks for a longer wait, so a rate-limited provider stays out of the order until it is actually
 ready — a 429 costs one wasted request per limit window, not one per search.
 
+That file is shared by every Pi session on the machine, so it is not written from the copy a search
+read before its request. A search holds its snapshot across a request that takes seconds; saving it
+back would discard whatever another session recorded in the meantime, losing quota counts and
+resurrecting cooldowns another session had already cleared. Counter changes are instead collected
+during the failover loop and replayed onto the file as it is at the moment of the write, and the file
+is written to a temporary name and renamed into place, so a concurrent reader sees the old state or
+the new one but never a half-written one. Commits are serialized within a process; across processes
+the remaining window is the read and the rename, and a lost increment there costs one extra provider
+request. Quota accounting is advisory, so it stops short of a lock file.
+
 Because SearXNG leads and is unmetered, the keyed providers' quotas are normally spent only during a
 SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/month, brave
 2000/month, marginalia 100/day.

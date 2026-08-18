@@ -158,17 +158,19 @@ rule violation never mixes in unrelated unknown binaries.
 
 ## Writes, commands, and checkpoints
 
-In `safe` mode every `write` and `edit` call confirms. No approval is remembered: a second write to a
-file already approved earlier in the session prompts again, so each dialog reflects that specific
-call's target and excerpt. Paths outside the working directory confirm the same way but are not
-checkpoint-protected.
+In both `safe` and `auto` an in-workspace `write` or `edit` runs without a dialog once the turn's
+checkpoint exists, because `/undo` can restore it. The dialog still appears when the write is outside
+the working directory, or when the checkpoint could not be created (no Git worktree, or a failed
+snapshot) — an unrecoverable write is never silently allowed. Paths outside the working directory are
+never checkpoint-protected, so they always confirm; the snapshot is still taken before such a write,
+because it fixes the baseline for everything the rest of the turn does.
 
-In `auto` mode an in-workspace write runs without a dialog once the turn's checkpoint exists, because
-`/undo` can restore it. The dialog still appears when the write is outside the working
-directory, or when the checkpoint could not be created (no Git worktree, or a failed snapshot) — an
-unrecoverable write is never silently allowed. This is a fatigue trade, not a security property: the
-classifier is not consulted for writes, and `auto` writes are reviewed after the fact rather than
-before.
+No approval is remembered: when a write does reach a dialog, a second write to a file already
+approved earlier in the session prompts again, so each dialog reflects that specific call's target
+and excerpt.
+
+Allowing recoverable writes is a fatigue trade, not a security property: the classifier is not
+consulted for writes, and they are reviewed after the fact rather than before.
 
 The same checkpoint covers Bash, and it follows what a command can write rather than whether policy
 held it. `classifyRisk` reports a `mutates` flag alongside its verdict: true when any segment is not
@@ -184,20 +186,61 @@ classifier decides it — a command `auto` lets through on a safe verdict is exa
 needs to be recoverable, so the snapshot precedes the verdict rather than following it. Read-only
 commands take no snapshot, which keeps the most frequent path free.
 
-The cost is one `git add -A` against a temporary index per turn, on the first mutating call.
+An unknown tool is snapshotted before any of the decisions that apply to it, including the allow-list
+and classifier paths that let it run without a dialog. Nothing is known about what such a tool writes,
+so it counts as mutating by default. This is what keeps `/undo` a turn-level operation rather than a
+call-level one: the snapshot belongs to the first call in the turn that could change anything, so
+every later change in that turn — by any call, whether or not policy recognized it as mutating —
+falls inside the restored range.
+
+The cost is one `git add -A` against a temporary index per turn, on the first such call.
 A turn that runs a build or test command pays it even when nothing else happens.
+
+The gap this leaves is a change made earlier in the same turn by a call policy classified read-only.
+A read-only classification is conservative — an allowlisted binary with no filesystem redirection —
+but a command that both passes it and writes anyway would end up inside the baseline rather than
+inside the restored range.
+
+A snapshot happens before the call it protects and leaves nothing in the transcript by itself, so the
+call that caused it reports it. Under a Bash row it is `checkpoint taken · /undo restores this turn`,
+appended to whatever else that call had to say — the note channel carries one line per call, so the
+snapshot shares it with the classifier verdict or the command description rather than displacing
+one. When the snapshot comes from a `write` or `edit`, whose renderer carries no note, it is an
+informational notification instead. Either way it appears once per turn: later calls reuse that
+snapshot and say nothing about it, so a long turn does not repeat the line.
 
 Because a command's effects cannot be predicted from its text the way a write path can, the
 confirmation's detail line states which case applies: a checkpoint was taken and `/undo` restores it,
 or none is available and `/undo` cannot recover the command. A held command that writes nothing —
 a read of a path outside the workspace, for instance — is told neither thing.
 
-Before the first checkpointed call in each agent turn — write or Bash, whichever comes first — safety
+Before the first checkpointed call in each agent turn — write, Bash, or unknown tool, whichever comes
+first — safety
 snapshots the complete Git worktree through a temporary index. Tracked changes and non-ignored untracked files are included;
 the user's index, `HEAD`, and normal reflogs are not modified. Snapshots live below
 `refs/pidantic/safety/<session>/<run>/` and are pruned to `checkpointRetain`. `/undo` restores
-and removes the newest snapshot after a separate confirmation. It restores the worktree but
-deliberately leaves the user's index unchanged. Ignored files are neither captured nor removed.
+and removes the newest snapshot after a separate confirmation. Ignored files are neither captured nor
+removed.
+
+Restoring means every path the snapshot does not contain goes away, so `/undo` sweeps the index as
+well as the untracked files: a file the turn created and then `git add`ed is absent from the snapshot
+tree, so `git restore` does not reach it, and staging it made it no longer untracked. Those paths are
+deleted and their index entries dropped. Nothing else in the index is touched — anything that existed
+when the snapshot was taken is in its tree, staged or not, so the user's own staged work survives
+`/undo` exactly as before.
+
+### What `/undo` reverts
+
+A restore covers the whole worktree, not the paths one session touched, so the confirmation lists
+what it is about to rewrite: every path that differs from the checkpoint, plus the untracked files it
+would remove, up to twelve with a count for the rest. Nothing changed since the checkpoint is stated
+as such, and a repository the paths cannot be listed in still offers the restore.
+
+That list is also the only warning available for a second Pi session working in the same repository:
+its edits are worktree changes made since this session's checkpoint, so `/undo` reverts them too. The
+dialog adds a line when checkpoint refs under another run's prefix exist, which means either a live
+concurrent session or a run that exited without disposing — the two cannot be told apart from a ref
+name, so it reports the possibility rather than asserting a fact.
 
 ### Turning checkpoints off
 
@@ -207,13 +250,13 @@ including the start-up sweep for refs abandoned by earlier runs. Only a boolean 
 other value falls back to the default of `true`. `checkpointRetain` is unrelated and is not
 reinterpreted.
 
-The setting is not free of consequences elsewhere. `auto` skips the write dialog because the write is
-recoverable, so with checkpoints off it confirms every `write` and `edit` exactly as `safe` does, and
-every Bash confirmation reports that `/undo` cannot recover the command. Nothing about the
+The setting is not free of consequences elsewhere. `safe` and `auto` skip the write dialog because the
+write is recoverable, so with checkpoints off they confirm every `write` and `edit`, and every Bash
+confirmation reports that `/undo` cannot recover the command. Nothing about the
 deterministic rules changes: the same commands are held, and the same ones run without a dialog —
 they are simply no longer recoverable afterwards. Turn it off when snapshotting the worktree is
-unwanted (a very large repository, or a workflow with its own recovery), and expect more write
-dialogs in `auto` in exchange.
+unwanted (a very large repository, or a workflow with its own recovery), and expect a dialog on every
+write in exchange.
 
 Checkpoints last only as long as the Pi run that created them:
 
@@ -308,6 +351,16 @@ process-wide slots rather than in module scope (`shared/process-registry.ts`). P
 extension entry point through its own jiti instance with module caching disabled, so a module two
 extensions import is evaluated once per extension: module-level state would give safety and
 confirm-bash a private copy each and silently drop every note between them.
+
+Because that state is process-wide, it outlives the session that wrote it. The mode registry is
+therefore owned: safety claims it at `session_start` and releases it at `session_shutdown`, and any
+write from an instance that no longer holds the claim is dropped. This matters at a session switch —
+`/new`, `/resume`, or a fork — where pi tears the old copy of the extension down and loads a fresh
+one. A mode change that was waiting on the classifier availability probe when the switch happened
+belongs to a session that no longer exists: it is discarded rather than applied to the new one, and
+it is not written to the old session's transcript or status line either. Releasing on shutdown also
+means a session that loads without safety does not leave `confirm-bash` reading the previous
+session's mode.
 
 ## Command explanations
 

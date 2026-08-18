@@ -17,12 +17,12 @@ import {
 } from "./config.ts";
 import {
 	blockedReason,
+	commitState,
 	loadState,
 	readCache,
 	recordFailure,
 	recordUse,
 	retryDeadline,
-	saveState,
 	sidecarPath,
 	writeCache,
 	writeSidecar,
@@ -259,13 +259,13 @@ async function withQuota<T>(cfg: Config, deps: Deps, run: () => Promise<T>): Pro
 
 	try {
 		const out = await run();
-		recordUse(state, "github", deps.now());
-		await saveState(state, deps);
+		await commitState(deps, (fresh) => recordUse(fresh, "github", deps.now()));
 		return out;
 	} catch (err) {
 		if (err instanceof HttpError && (err.status === 403 || err.status === 429)) {
-			recordFailure(state, "github", deps.now(), retryDeadline(err, deps.now()));
-			await saveState(state, deps);
+			const failed = deps.now();
+			const deadline = retryDeadline(err, failed);
+			await commitState(deps, (fresh) => recordFailure(fresh, "github", failed, deadline));
 		}
 		throw err;
 	}

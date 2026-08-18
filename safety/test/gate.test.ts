@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { setPlanModeActive } from "../../shared/mode-registry.ts";
+import { claimPlanMode, createModeOwner, getSafetyMode, setPlanModeActive } from "../../shared/mode-registry.ts";
 import { markToolNoteRenderer, toolNote } from "../../shared/tool-notes.ts";
 import { CHECKPOINT_NAMESPACE } from "../src/checkpoint.ts";
 import { DEFAULT_TOOLS, harness, outcome, repository } from "./harness.ts";
@@ -58,12 +58,11 @@ test("safe mode allows deterministic Bash reads from configured external directo
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: `cp ${join(docs, "extensions.md")} .` })), "gated");
 });
 
-test("safe mode gates irreversible commands, writes, and unknown tools", async (t) => {
+test("safe mode gates irreversible commands and unknown tools", async (t) => {
 	const cwd = await repository(t);
 	const gate = await harness(t, { cwd, config: { mode: "safe" } });
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "gated");
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "git push origin main" })), "gated");
-	assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "gated");
 	assert.equal(await outcome(() => gate.toolCall("mystery")), "gated");
 });
 
@@ -157,7 +156,7 @@ test("redirection is judged by its target, not by its presence", async (t) => {
 
 test("an auto-approved call is annotated under the call when its renderer draws notes", async (t) => {
 	const cwd = await repository(t);
-	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe") });
+	const gate = await harness(t, { cwd, config: { mode: "auto", checkpoints: false, classifier: CLASSIFIER }, fetch: endpoint("safe") });
 	// confirm-bash declares this at load; the harness loads safety alone and resets the registry.
 	markToolNoteRenderer("bash");
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "frobnicate --check" }, "call-7")), "allowed");
@@ -237,7 +236,7 @@ test("explainRuleAllowed drops explanations for rule-allowed commands only", asy
 	const cwd = await repository(t);
 	const gate = await harness(t, {
 		cwd,
-		config: { mode: "auto", classifier: { ...CLASSIFIER, explainRuleAllowed: false } },
+		config: { mode: "auto", checkpoints: false, classifier: { ...CLASSIFIER, explainRuleAllowed: false } },
 		fetch: endpoint("safe"),
 		interactive: true,
 	});
@@ -258,7 +257,7 @@ test("explainRuleAllowed drops explanations for rule-allowed commands only", asy
 
 test("an auto-approved command reuses its verdict's explanation instead of asking again", async (t) => {
 	const cwd = await repository(t);
-	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe"), interactive: true });
+	const gate = await harness(t, { cwd, config: { mode: "auto", checkpoints: false, classifier: CLASSIFIER }, fetch: endpoint("safe"), interactive: true });
 	markToolNoteRenderer("bash");
 	assert.equal(await gate.toolCall("bash", { command: "frobnicate --check" }, "call-1"), undefined);
 	await gate.idle();
@@ -269,7 +268,7 @@ test("an auto-approved command reuses its verdict's explanation instead of askin
 
 test("a gated command keeps its verdict's explanation in the transcript as well as the dialog", async (t) => {
 	const cwd = await repository(t);
-	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
+	const gate = await harness(t, { cwd, config: { mode: "auto", checkpoints: false, classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
 	markToolNoteRenderer("bash");
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "frobnicate --check" }, "call-1")), "gated");
 	assert.equal(toolNote("call-1")?.text, "classifier: unsafe · harness verdict");
@@ -283,7 +282,7 @@ test("a hold names what produced it: a rule, the model, or a question never aske
 	markToolNoteRenderer("bash");
 
 	// A behavior violation is deterministic and is never delegated.
-	const rule = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
+	const rule = await harness(t, { cwd, config: { mode: "auto", checkpoints: false, classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
 	markToolNoteRenderer("bash");
 	assert.equal(await outcome(() => rule.toolCall("bash", { command: "rm tracked.txt" }, "call-1")), "gated");
 	assert.equal(toolNote("call-1")?.text, "deterministic rule");
@@ -293,7 +292,7 @@ test("a hold names what produced it: a rule, the model, or a question never aske
 	assert.match(toolNote("call-2")?.text ?? "", /^deterministic rule · classifier not consulted: command substitution$/);
 
 	// safe mode never delegates, and says so rather than implying the model saw the command.
-	const strict = await harness(t, { cwd, config: { mode: "safe", classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
+	const strict = await harness(t, { cwd, config: { mode: "safe", checkpoints: false, classifier: CLASSIFIER }, fetch: endpoint("unsafe") });
 	markToolNoteRenderer("bash");
 	assert.equal(await outcome(() => strict.toolCall("bash", { command: "frobnicate --check" }, "call-3")), "gated");
 	assert.match(toolNote("call-3")?.text ?? "", /^deterministic rule · classifier not consulted: safe mode does not delegate$/);
@@ -304,7 +303,7 @@ test("a hold names what produced it: a rule, the model, or a question never aske
 		String(url).includes("/models")
 			? new Response(JSON.stringify({ data: [] }), { status: 200 })
 			: new Response("", { status: 500 })) as typeof globalThis.fetch;
-	const down = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: broken });
+	const down = await harness(t, { cwd, config: { mode: "auto", checkpoints: false, classifier: CLASSIFIER }, fetch: broken });
 	markToolNoteRenderer("bash");
 	assert.equal(await outcome(() => down.toolCall("bash", { command: "frobnicate --check" }, "call-4")), "gated");
 	assert.equal(toolNote("call-4")?.text, "deterministic rule · classifier unavailable: endpoint returned HTTP 500");
@@ -312,7 +311,7 @@ test("a hold names what produced it: a rule, the model, or a question never aske
 
 test("auto classifies a pipeline whose every segment is structurally eligible", async (t) => {
 	const cwd = await repository(t);
-	const allowing = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe") });
+	const allowing = await harness(t, { cwd, config: { mode: "auto", checkpoints: false, classifier: CLASSIFIER }, fetch: endpoint("safe") });
 	markToolNoteRenderer("bash");
 	const command = 'ps -ef | grep -F "earendil" | grep -v grep; echo ---';
 	assert.equal(await outcome(() => allowing.toolCall("bash", { command }, "call-1")), "allowed");
@@ -351,16 +350,18 @@ test("auto classifies an unknown tool call including its arguments", async (t) =
 	assert.match(sent[1] ?? "", /"symbol": "loadConfig"/);
 });
 
-test("auto allows a checkpointed in-workspace write but gates one outside it", async (t) => {
-	const cwd = await repository(t);
-	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: models });
-	await gate.startTurn();
-	assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "allowed");
-	assert.equal(await outcome(() => gate.toolCall("edit", { path: "tracked.txt", newText: "changed" })), "allowed");
-	assert.equal(await outcome(() => gate.toolCall("write", { path: join(cwd, "..", "escape.txt"), content: "hello" })), "gated");
-	// Writes are never classified; the checkpoint is what makes them recoverable.
-	assert.equal(gate.classifierCalls, 0);
-});
+for (const mode of ["safe", "auto"] as const) {
+	test(`${mode} allows a checkpointed in-workspace write but gates one outside it`, async (t) => {
+		const cwd = await repository(t);
+		const gate = await harness(t, { cwd, config: { mode, classifier: CLASSIFIER }, fetch: models });
+		await gate.startTurn();
+		assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "allowed");
+		assert.equal(await outcome(() => gate.toolCall("edit", { path: "tracked.txt", newText: "changed" })), "allowed");
+		assert.equal(await outcome(() => gate.toolCall("write", { path: join(cwd, "..", "escape.txt"), content: "hello" })), "gated");
+		// Writes are never classified; the checkpoint is what makes them recoverable.
+		assert.equal(gate.classifierCalls, 0);
+	});
+}
 
 test("checkpoints end with the run: shutdown clears them and a resumed session has none", async (t) => {
 	const cwd = await repository(t);
@@ -442,6 +443,35 @@ test("a rule-allowed command that writes is checkpointed even though no dialog a
 	assert.equal(await stat(join(cwd, "note.txt")).then(() => true, () => false), false);
 });
 
+test("the call that caused a snapshot says so, once per turn", async (t) => {
+	const cwd = await repository(t);
+	process.env.PI_SAFETY_HEADLESS = "allow";
+	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
+	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe"), interactive: true });
+	markToolNoteRenderer("bash");
+	await gate.startTurn();
+
+	// Rule-allowed but mutating: the note exists only because the snapshot does.
+	await gate.toolCall("bash", { command: "echo hi > note.txt" }, "call-1");
+	await gate.idle();
+	assert.match(toolNote("call-1")?.text ?? "", /checkpoint taken · \/undo restores this turn$/);
+	// The channel carries one line per call, so the explanation and the snapshot share it.
+	assert.match(toolNote("call-1")?.text ?? "", /^what this does · harness explanation/);
+
+	// Later calls in the same turn reuse that snapshot and must not claim to have taken one.
+	await gate.toolCall("bash", { command: "frobnicate --check" }, "call-2");
+	await gate.idle();
+	assert.equal(toolNote("call-2")?.text, "classifier: safe · harness verdict");
+
+	// A turn whose snapshot comes from a write has no Bash row to annotate, so it notifies instead.
+	const writes = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: models });
+	await writes.startTurn();
+	await writes.toolCall("write", { path: "new.txt", content: "hello" });
+	assert.equal(writes.notices.filter((notice) => notice.message.includes("Safety checkpoint taken")).length, 1);
+	await writes.toolCall("write", { path: "other.txt", content: "hello" });
+	assert.equal(writes.notices.filter((notice) => notice.message.includes("Safety checkpoint taken")).length, 1);
+});
+
 test("checkpoints: false takes no snapshot, warns about nothing, and reports why undo is unavailable", async (t) => {
 	const cwd = await repository(t);
 	process.env.PI_SAFETY_HEADLESS = "allow";
@@ -457,11 +487,11 @@ test("checkpoints: false takes no snapshot, warns about nothing, and reports why
 	await gate.undo();
 	assert.ok(gate.notices.some((notice) => notice.message.includes("Checkpoints are disabled by safety configuration")));
 
-	// auto traded the write dialog for recoverability, so without checkpoints the dialog comes back.
+	// Both gated modes traded the write dialog for recoverability, so without checkpoints the dialog comes back.
 	assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "gated");
 });
 
-test("outside a git worktree an auto write falls back to confirmation with one warning", async (t) => {
+test("outside a git worktree a gated write falls back to confirmation with one warning", async (t) => {
 	const cwd = await mkdtemp(join(tmpdir(), "safety-bare-"));
 	t.after(() => rm(cwd, { force: true, recursive: true }));
 	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: models });
@@ -485,9 +515,50 @@ test("configuration lists take precedence over policy in both directions", async
 test("plan mode takes precedence and leaves every call to plan mode's own gate", async (t) => {
 	const cwd = await repository(t);
 	const gate = await harness(t, { cwd, config: { mode: "safe" } });
-	setPlanModeActive(true);
+	// Plan mode's own instance owns the flag; safety only reads it.
+	const planOwner = createModeOwner("test-plan");
+	claimPlanMode(planOwner);
+	setPlanModeActive(planOwner, true);
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "allowed");
 	assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "allowed");
+});
+
+/**
+ * Pi tears the outgoing extension copy down and loads a fresh one for the incoming session, so both
+ * exist at once while the outgoing copy is still inside the classifier probe. The mode it was asked
+ * for belongs to a session that no longer exists.
+ */
+test("a mode change stranded by a session switch does not reach the next session", async (t) => {
+	const cwd = await repository(t);
+	let release: (() => void) | undefined;
+	const probe = new Promise<void>((resolve) => { release = resolve; });
+	// The availability probe answers only when the test lets it, so the switch lands mid-await.
+	const held: typeof globalThis.fetch = (async () => {
+		await probe;
+		return new Response(JSON.stringify({ data: [] }), { status: 200 });
+	}) as typeof globalThis.fetch;
+
+	const outgoing = await harness(t, {
+		cwd,
+		config: { mode: "safe", classifier: { enabled: true, url: "http://classifier.test/v1" }, checkpoints: false },
+		fetch: held,
+	});
+	const pending = outgoing.command("auto");
+	await outgoing.shutdown();
+
+	const incoming = await harness(t, { cwd, keepRegistry: true, config: { mode: "safe", checkpoints: false } });
+	assert.equal(getSafetyMode(), "safe");
+
+	release?.();
+	await pending;
+
+	// The registry, the status line, and the transcript all still belong to the incoming session.
+	assert.equal(getSafetyMode(), "safe");
+	assert.equal(outgoing.status(), "Safety: safe");
+	assert.deepEqual(outgoing.entries, []);
+	assert.equal(incoming.entries.length, 0);
+	// And the incoming session still gates, rather than running under a mode it never selected.
+	assert.equal(await outcome(() => incoming.toolCall("bash", { command: "rm tracked.txt" })), "gated");
 });
 
 test("a gated bash call is marked resolved so confirm-bash does not ask again", async (t) => {
@@ -520,4 +591,36 @@ test("the safety command reports mode, records transitions, and rejects bad inpu
 	assert.equal(gate.notices.at(-1)?.level, "error");
 	await gate.command("log");
 	assert.ok(gate.notices.at(-1)?.message.includes("No classifier decisions"));
+});
+
+test("a non-read-only call fixes the turn's baseline even when it is not itself recoverable", async (t) => {
+	const cwd = await repository(t);
+	process.env.PI_SAFETY_HEADLESS = "allow";
+	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
+	const gate = await harness(t, { cwd, config: { mode: "safe", allowTools: ["mystery"] } });
+	await gate.startTurn();
+
+	// Allow-listed, so no dialog decides anything about it — but it can still write anywhere, and what
+	// it writes has to be inside the turn /undo restores.
+	assert.equal(await gate.toolCall("mystery", { path: "anything" }), undefined);
+	assert.equal((await checkpointRefs(cwd)).length, 1);
+
+	// Everything the rest of the turn does is after that snapshot, whichever call made the change.
+	await writeFile(join(cwd, "tracked.txt"), "unknown tool edit\n");
+	await gate.toolCall("write", { path: "new.txt", content: "hello" });
+	await writeFile(join(cwd, "new.txt"), "hello");
+	assert.equal((await checkpointRefs(cwd)).length, 1);
+
+	await gate.undo();
+	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "base\n");
+	await assert.rejects(readFile(join(cwd, "new.txt"), "utf8"));
+});
+
+test("a write outside the workspace still confirms, but the turn's baseline is taken before it", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, { cwd, config: { mode: "safe" } });
+	await gate.startTurn();
+	assert.equal(await outcome(() => gate.toolCall("write", { path: join(cwd, "..", "escape.txt"), content: "hello" })), "gated");
+	// The checkpoint cannot recover that path, but it fixes the baseline for the rest of the turn.
+	assert.equal((await checkpointRefs(cwd)).length, 1);
 });

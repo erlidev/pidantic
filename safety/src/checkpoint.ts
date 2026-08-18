@@ -103,6 +103,47 @@ export class CheckpointStore {
 		}
 	}
 
+	/**
+	 * The paths `restoreLatest` would rewrite or delete: everything that differs from the checkpoint,
+	 * plus untracked files it would remove. A restore covers the whole worktree, so this is the only
+	 * way to see beforehand that it also reverts work another Pi session did in this repository.
+	 */
+	async changedSince(commit: string): Promise<string[]> {
+		const tracked = (await this.git(["diff", "--name-only", commit, "--"])).split("\n").filter(Boolean);
+		const checkpointPaths = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", commit])).split("\0").filter(Boolean));
+		// `:/` for the same reason `restoreLatest` uses it: Pi may have been started in a subdirectory.
+		const untracked = (await this.git(["ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", ":/"]))
+			.split("\0")
+			.filter((path) => path && !checkpointPaths.has(path));
+		return [...new Set([...tracked, ...untracked])].sort();
+	}
+
+	/**
+	 * Checkpoint refs under another run's prefix. Either a session is running against this worktree
+	 * right now — a restore would revert its edits too — or a previous run exited without disposing.
+	 * The two are indistinguishable from here, so callers report the possibility rather than a fact.
+	 */
+	async foreignRuns(): Promise<number> {
+		if (!await this.available()) return 0;
+		try {
+			const output = await this.git(["for-each-ref", "--format=%(refname)", CHECKPOINT_NAMESPACE]);
+			const runs = output.split("\n").filter(Boolean).filter((ref) => !ref.startsWith(`${this.refPrefix}/`));
+			return new Set(runs.map((ref) => ref.slice(0, ref.lastIndexOf("/")))).size;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** The newest checkpoint this run can still restore, or undefined once none is left. */
+	async latest(): Promise<Checkpoint | undefined> {
+		while (this.checkpoints.length > 0) {
+			const checkpoint = this.checkpoints[this.checkpoints.length - 1]!;
+			if (await this.exists(checkpoint.ref)) return checkpoint;
+			this.checkpoints.pop();
+		}
+		return undefined;
+	}
+
 	/** Checkpoints taken by this run, newest first. */
 	list(): Checkpoint[] {
 		return [...this.checkpoints].reverse();
@@ -116,31 +157,41 @@ export class CheckpointStore {
 	}
 
 	async restoreLatest(): Promise<Checkpoint | undefined> {
-		while (this.checkpoints.length > 0) {
-			const checkpoint = this.checkpoints[this.checkpoints.length - 1]!;
-			// A ref removed behind our back (manual deletion, another tool) is dropped rather than restored.
-			if (!await this.exists(checkpoint.ref)) {
-				this.checkpoints.pop();
-				continue;
+		// A ref removed behind our back (manual deletion, another tool) is dropped rather than restored.
+		const checkpoint = await this.latest();
+		if (!checkpoint) return undefined;
+		const root = await this.git(["rev-parse", "--show-toplevel"]);
+		const checkpointPaths = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", checkpoint.commit])).split("\0").filter(Boolean));
+		await this.git(["restore", "--source", checkpoint.commit, "--worktree", "--", ":/"]);
+		// Undoing the turn means every path the checkpoint does not contain goes away, so the index is
+		// listed alongside the untracked files: a file the agent created and staged is in neither set
+		// `git restore` covers — it is absent from the checkpoint tree and no longer untracked.
+		// `:/` because `ls-files` otherwise lists only the directory Pi was started in, not the worktree.
+		const untracked = await this.git(["ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", ":/"]);
+		const staged = await this.git(["ls-files", "--cached", "--full-name", "-z", "--", ":/"]);
+		const added: string[] = [];
+		for (const [relativePath, tracked] of [
+			...untracked.split("\0").filter(Boolean).map((path) => [path, false] as const),
+			...staged.split("\0").filter(Boolean).map((path) => [path, true] as const),
+		]) {
+			if (checkpointPaths.has(relativePath)) continue;
+			if (tracked) added.push(relativePath);
+			try {
+				await unlink(join(root, relativePath));
+			} catch {
+				// Directories are removed only when empty; ignored contents remain protected.
+				try { await rm(join(root, relativePath), { recursive: false }); } catch { /* keep it */ }
 			}
-			const root = await this.git(["rev-parse", "--show-toplevel"]);
-			const checkpointPaths = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", checkpoint.commit])).split("\0").filter(Boolean));
-			await this.git(["restore", "--source", checkpoint.commit, "--worktree", "--", ":/"]);
-			const untracked = await this.git(["ls-files", "--others", "--exclude-standard", "--full-name", "-z"]);
-			for (const relativePath of untracked.split("\0").filter(Boolean)) {
-				if (checkpointPaths.has(relativePath)) continue;
-				try {
-					await unlink(join(root, relativePath));
-				} catch {
-					// Directories are removed only when empty; ignored contents remain protected.
-					try { await rm(join(root, relativePath), { recursive: false }); } catch { /* keep it */ }
-				}
-			}
-			this.checkpoints.pop();
-			await this.deleteRef(checkpoint.ref);
-			return checkpoint;
 		}
-		return undefined;
+		// Only these entries are dropped from the index, and only because the turn being undone is what
+		// created them: everything that existed when the snapshot was taken is in its tree and is kept.
+		if (added.length > 0) {
+			// Root-relative paths, so the command runs at the root rather than at Pi's working directory.
+			try { await this.git(["-C", root, "update-index", "--force-remove", "--", ...added]); } catch { /* leave the entry */ }
+		}
+		this.checkpoints.pop();
+		await this.deleteRef(checkpoint.ref);
+		return checkpoint;
 	}
 
 	/** Removes every ref this run created. Called when the extension runtime is torn down. */

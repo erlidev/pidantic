@@ -15,7 +15,7 @@ import {
 	httpJson,
 } from "./config.ts";
 import { clean } from "./format.ts";
-import { blockedReason, loadState, recordFailure, recordUse, saveState } from "./chain.ts";
+import { blockedReason, commitState, loadState, recordFailure, recordUse } from "./chain.ts";
 
 export type GitHubKind = "code" | "repos" | "issues";
 
@@ -144,16 +144,15 @@ export async function searchGitHub(
 			deps,
 			signal,
 		);
-		recordUse(state, "github", deps.now());
-		await saveState(state, deps);
+		await commitState(deps, (fresh) => recordUse(fresh, "github", deps.now()));
 		return parseGitHub(kind, body.items ?? []);
 	} catch (err) {
 		if (signal?.aborted) throw err;
 		if (err instanceof HttpError && (err.status === 403 || err.status === 429)) {
 			// Honour the server's own reset time rather than guessing a backoff.
 			const reset = Number(err.headers?.get("x-ratelimit-reset"));
-			recordFailure(state, "github", deps.now(), Number.isFinite(reset) ? reset * 1000 : undefined);
-			await saveState(state, deps);
+			const until = Number.isFinite(reset) ? reset * 1000 : undefined;
+			await commitState(deps, (fresh) => recordFailure(fresh, "github", deps.now(), until));
 		}
 		throw err;
 	}

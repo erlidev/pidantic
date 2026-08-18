@@ -186,7 +186,16 @@ not expressible in a schema remain in `promptGuidelines`.
   loads every extension entry point through its own jiti instance with module caching disabled, so a
   module two extensions import is evaluated once per extension. A module-level map would give each
   extension a private copy, which silently breaks note delivery and mode arbitration alike;
-  `sharedState` puts the value in a `Symbol.for` slot on `globalThis`, which every copy reaches. `confirm-bash/index.ts` registers the Bash override
+  `sharedState` puts the value in a `Symbol.for` slot on `globalThis`, which every copy reaches.
+  Process-wide state outlives the session that wrote it, so `mode-registry.ts` makes its writes
+  owned: each extension instance claims its field at `session_start` and releases it at
+  `session_shutdown`, and a write from any instance that no longer holds the claim is dropped. Pi
+  builds a fresh copy of every extension per session and tears the previous one down first, so at a
+  session switch the outgoing copy can still be inside an `await` — safety's classifier probe is the
+  slow one — and would otherwise set a mode for a session that never asked for it. Releasing on
+  shutdown also means a session that loads without safety or plan-mode does not inherit the previous
+  session's mode, and safety no longer depends on plan-mode being registered ahead of it to see a
+  correct plan flag. `confirm-bash/index.ts` registers the Bash override
   and gate.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
 - `plan-mode/` provides a read-only investigation mode with policy-guarded Bash and an approval
@@ -212,7 +221,9 @@ not expressible in a schema remain in `promptGuidelines`.
 ## Localsearch tests
 
 The `localsearch/test/` files mirror the source modules and use `helpers.ts` for shared fakes and
-fixtures. `fixtures/` contains representative output from major documentation generators so HTML
+fixtures. `chain.test.ts` also pins quota bookkeeping against a shared state file: a commit applies to
+the file rather than to the stale snapshot its caller read, concurrent commits in one process each
+land, and a mutation that throws neither surfaces to the search nor stalls the queue behind it. `fixtures/` contains representative output from major documentation generators so HTML
 extraction can be tested without network access. `smoke.ts` is the explicit live integration check;
 it is not part of the default isolated test glob.
 
@@ -221,9 +232,13 @@ it is not part of the default isolated test glob.
 The `safety/test/` suites cover deterministic risk rules, conservative tool tiers, configuration
 validation, session-state restoration, classifier structural pre-gating, prompt construction,
 response validation, timeouts and runtime caches. Checkpoint tests create isolated temporary Git repositories and verify
-untracked-file capture, index preservation, restoration, ref pruning, non-repository fallback, and
+untracked-file capture, index preservation, restoration, removal of paths the snapshot does not
+contain — including a staged file the turn created, whose index entry goes with it — ref pruning,
+non-repository fallback, and
 the run-scoped ref lifecycle: disposal on shutdown, isolation from an earlier run of the same session
-id, recovery from an externally deleted ref, and the aged-only stale sweep.
+id, recovery from an externally deleted ref, and the aged-only stale sweep. The `/undo` preview has
+its own cases: the paths a restore would rewrite and remove, an unchanged worktree listing none, and
+the count of other runs' ref prefixes that decides the concurrent-session warning.
 Classifier tests also cover explanation-only requests: their separate prompt, schema, and timeout,
 per-session caching, single-flight sharing of concurrent requests for one command, and the give-up
 threshold that stops asking a failing endpoint.
@@ -232,17 +247,29 @@ The shared Bash policy, the finding renderer, and the tool-note channel keep the
 commands, and the tool-note suite pins the repaint callback a late note fires.
 `process-registry.test.ts` reproduces pi's per-extension loading by importing the same module twice
 under different query strings, which re-evaluates it, and asserts that notes and mode arbitration
-still cross between the two copies.
+still cross between the two copies — including that an owner minted by one copy is honoured by the
+other. Its ownership cases pin the session-switch rules: a claim resets the field, a write or a
+release from the superseded instance changes nothing, and a release clears the mode outright.
 
 `harness.ts` and `gate.test.ts` cover the registration wiring the unit suites cannot reach. The
 harness loads the real extension against a fake `ExtensionAPI`, captures the registered hooks, and
 drives `tool_call` end to end: mode arbitration, deny/allow lists, tool tiers, checkpointed writes
 and checkpointed Bash commands, `/undo` against a real repository, checkpoint teardown on
 `session_shutdown`, and which calls reach the classifier. Checkpoint coverage is pinned from both
-ends — a gated command, a classifier-approved one, and a rule-allowed one that writes each take a
-snapshot, a read-only command takes none, and a turn mixing Bash and writes still produces exactly
-one, and `"checkpoints": false` produces none while restoring `auto`'s write dialog.
-`risk-policy.test.ts` pins the `mutates` flag that decides this separately from the verdict. Two details make that possible without changing the source.
+ends — a gated command, a classifier-approved one, a rule-allowed one that writes, an allow-listed
+unknown tool, and a write outside the workspace each take a snapshot, a read-only command takes none,
+and a turn mixing Bash, writes, and unknown tools still produces exactly one, whose note reports it
+exactly once while later calls in the turn stay silent, and
+`"checkpoints": false` produces none while restoring the write dialog in both gated modes. Suites that pin note text
+for other reasons set `checkpoints: false` so the assertions stay about one thing.
+`risk-policy.test.ts` pins the `mutates` flag that decides this separately from the verdict.
+A session switch is covered by building two harness instances in one case: the outgoing one is held
+inside a classifier probe the test releases by hand, shut down, and then superseded by an incoming
+instance, which pins that the stranded mode change reaches neither the registry, nor the status line,
+nor either session's transcript. That case is why the harness can be told to keep the mode registry
+rather than reset it, and why it restores `globalThis.fetch` to the value that predates every
+instance instead of to whatever the previous one installed. Two further details make the rest
+possible without changing the source.
 Confirmation is observed through the headless path, so each case runs twice — once with
 `PI_SAFETY_HEADLESS` unset and once set to `allow` — and the pair of results separates a silently
 allowed call from a gated one from a hard denial. The classifier is observed by replacing

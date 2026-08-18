@@ -11,7 +11,7 @@ import { Type, type Static } from "typebox";
 import { askConfirmation } from "../../shared/confirm-dialog.ts";
 import { classify } from "../../shared/bash-policy.ts";
 import { renderCommandFindings, summarizeFindings } from "../../shared/command-findings.ts";
-import { setPlanModeActive } from "../../shared/mode-registry.ts";
+import { claimPlanMode, createModeOwner, releasePlanMode, setPlanModeActive } from "../../shared/mode-registry.ts";
 import { planFileExists, resolvePlanPath, writePlanFile } from "./plan-file.ts";
 import { denyReason, planToolSet } from "./policy.ts";
 import { BRIEF } from "./prompt.ts";
@@ -151,6 +151,11 @@ function buildWritePlanCall(
 }
 
 export default function planMode(pi: ExtensionAPI): void {
+	/**
+	 * This instance's claim on the shared mode registry. Pi builds a fresh copy of the extension per
+	 * session, so the outgoing copy must not write the incoming session's arbitration flag.
+	 */
+	const owner = createModeOwner("plan-mode");
 	let state = createPlanModeState();
 
 	function persist(): void {
@@ -171,7 +176,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		persist();
 		applyPlanTools();
 		setPlanStatus(ctx, true);
-		setPlanModeActive(true);
+		setPlanModeActive(owner, true);
 	}
 
 	function leave(ctx: ExtensionContext, message = "Plan mode disabled. No plan file was written; full tool access returns next turn."): void {
@@ -182,7 +187,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		persist();
 		pi.setActiveTools(restoredTools);
 		setPlanStatus(ctx, false);
-		setPlanModeActive(false);
+		setPlanModeActive(owner, false);
 		ctx.ui.notify(message, "info");
 	}
 
@@ -286,7 +291,9 @@ export default function planMode(pi: ExtensionAPI): void {
 			state = exitPlanMode();
 			persist();
 			setPlanStatus(ctx, false);
-			setPlanModeActive(false);
+			// The approval dialog above yields; a session switch during it hands the flag to the next
+			// instance, and this write is dropped rather than reapplied to a session that never planned.
+			setPlanModeActive(owner, false);
 
 			return {
 				...textResult(
@@ -358,7 +365,15 @@ export default function planMode(pi: ExtensionAPI): void {
 		return undefined;
 	});
 
+	pi.on("session_shutdown", async () => {
+		// Cleared before the next session starts, so safety never arbitrates against a dead session's
+		// plan mode — and never depends on this extension loading first to correct it.
+		releasePlanMode(owner);
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
+		// Claimed before any await: from here on this instance is the one allowed to write.
+		claimPlanMode(owner);
 		state = restorePlanModeState(ctx.sessionManager.getBranch());
 		if (!state.active && pi.getFlag("plan") === true) {
 			state = enterPlanMode(state, pi.getActiveTools());
@@ -366,7 +381,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		}
 		applySessionStartTools(pi, state);
 		setPlanStatus(ctx, state.active);
-		setPlanModeActive(state.active);
+		setPlanModeActive(owner, state.active);
 	});
 
 	pi.on("before_agent_start", async (event) => {

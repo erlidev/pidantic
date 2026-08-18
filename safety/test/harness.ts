@@ -5,11 +5,29 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { TestContext } from "node:test";
 import type { ExtensionAPI, SessionEntry, ToolInfo } from "@earendil-works/pi-coding-agent";
-import { setPlanModeActive, setSafetyMode } from "../../shared/mode-registry.ts";
+import { resetModeRegistry } from "../../shared/mode-registry.ts";
 import { resetToolNotes } from "../../shared/tool-notes.ts";
 import safety from "../src/index.ts";
 
 const exec = promisify(execFile);
+
+/**
+ * `globalThis.fetch` is restored to the value that predates every harness, not to whatever the
+ * previous one installed: node runs `after` hooks in registration order, so a case with two
+ * instances would otherwise leave the first instance's stub behind.
+ */
+let fetchDepth = 0;
+let pristineFetch: typeof globalThis.fetch;
+
+function installFetch(): void {
+	if (fetchDepth === 0) pristineFetch = globalThis.fetch;
+	fetchDepth += 1;
+}
+
+function restoreFetch(): void {
+	fetchDepth -= 1;
+	if (fetchDepth === 0) globalThis.fetch = pristineFetch;
+}
 
 export interface Notice {
 	message: string;
@@ -35,6 +53,11 @@ export interface HarnessOptions {
 	config?: Record<string, unknown>;
 	/** Replaces globalThis.fetch for the duration of the harness, and counts classifier requests. */
 	fetch?: typeof globalThis.fetch;
+	/**
+	 * Keep the process-global mode registry as it is instead of resetting it. Set on the second
+	 * instance of a case that models a session switch, where the first instance still owns the mode.
+	 */
+	keepRegistry?: boolean;
 	/**
 	 * Report an interactive TUI session. Confirmation then goes to a dialog this fake UI cannot draw,
 	 * so only use it for calls that are allowed through — background explanations, for example.
@@ -107,7 +130,7 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 		});
 	}
 
-	const realFetch = globalThis.fetch;
+	installFetch();
 	globalThis.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
 		// Availability probes hit /models; the response schema separates a verdict from an explanation.
 		if (String(args[0]).includes("/chat/completions")) {
@@ -120,14 +143,15 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 	}) as typeof globalThis.fetch;
 
 	// The registries are process-global and shared with plan-mode and confirm-bash, so every case
-	// must start clean.
-	setPlanModeActive(false);
-	setSafetyMode("yolo");
-	resetToolNotes();
+	// must start clean. A second instance in the same case is the outgoing/incoming session pair, which
+	// needs the first instance's claim left standing until this one's session_start takes it.
+	if (!options.keepRegistry) {
+		resetModeRegistry();
+		resetToolNotes();
+	}
 	t.after(() => {
-		globalThis.fetch = realFetch;
-		setPlanModeActive(false);
-		setSafetyMode("yolo");
+		restoreFetch();
+		resetModeRegistry();
 		resetToolNotes();
 	});
 

@@ -11,8 +11,12 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { type CommandFinding, type FindingTheme, renderCommandFindings, summarizeFindings } from "../../shared/command-findings.ts";
 import { askConfirmation, type BodyRenderer } from "../../shared/confirm-dialog.ts";
 import {
+	claimSafetyMode,
+	createModeOwner,
 	isPlanModeActive,
 	markSafetyResolved,
+	ownsSafetyMode,
+	releaseSafetyMode,
 	setSafetyMode,
 	type SafetyMode,
 } from "../../shared/mode-registry.ts";
@@ -108,6 +112,8 @@ type GateSource =
 	| { kind: "unavailable"; reason: string };
 
 const CLASSIFIER_ALLOWED = "classifier: safe";
+/** Says the snapshot exists and how to use it, short enough to sit at the end of another note. */
+const CHECKPOINT_NOTE = "checkpoint taken · /undo restores this turn";
 /** Prefixes an explanation that only describes the call, so it is never read as the reason for the hold. */
 const DESCRIPTION = "what this does";
 
@@ -141,11 +147,13 @@ function reportAutoApproval(
 	toolName: string,
 	identity: string,
 	explanation: string,
+	extra?: string,
 ): void {
 	if (toolCallId && rendersToolNotes(toolName)) {
-		recordToolNote(toolCallId, `${CLASSIFIER_ALLOWED} · ${explanation}`);
+		recordToolNote(toolCallId, `${CLASSIFIER_ALLOWED} · ${explanation}${extra ? ` · ${extra}` : ""}`);
 		return;
 	}
+	// The notification path has already reported anything `extra` carries in its own notification.
 	ctx.ui.notify(`Safety classifier allowed ${identity} (${explanation})`, "info");
 }
 
@@ -187,6 +195,13 @@ function toolDescription(tool: unknown): string {
 }
 
 export default function safety(pi: ExtensionAPI): void {
+	/**
+	 * This instance's claim on the shared mode registry. Pi builds a fresh copy of the extension for
+	 * every session, so an outgoing copy can resolve an `await` — the classifier probe below — after
+	 * the next session has already started. Ownership makes every such write a no-op instead of a
+	 * mode the live session never asked for.
+	 */
+	const owner = createModeOwner("safety");
 	let config: SafetyConfig;
 	let state = createSafetyState();
 	let classifier: ResidualClassifier;
@@ -194,10 +209,33 @@ export default function safety(pi: ExtensionAPI): void {
 	let checkpointTakenThisTurn = false;
 	let checkpointProtectedThisTurn = false;
 	let checkpointWarningShown = false;
+	/** The call whose gate created this turn's snapshot; its note carries the fact. */
+	let checkpointNoteCallId: string | undefined;
 	const audit = new SafetyAudit();
 
+	/**
+	 * The note channel carries one line per call, so the snapshot is appended to whatever that call
+	 * ends up saying rather than competing with it.
+	 */
+	function checkpointSuffix(toolCallId: string | undefined): string | undefined {
+		return toolCallId && toolCallId === checkpointNoteCallId ? CHECKPOINT_NOTE : undefined;
+	}
+
+	/**
+	 * A snapshot is otherwise invisible: it happens before the call runs and leaves nothing behind that
+	 * the transcript shows. The call that caused it reports it, on its own row where one draws notes.
+	 */
+	function reportCheckpoint(ctx: ExtensionContext, event: { toolName: string; toolCallId?: string }): void {
+		if (event.toolCallId && rendersToolNotes(event.toolName)) {
+			checkpointNoteCallId = event.toolCallId;
+			recordToolNote(event.toolCallId, CHECKPOINT_NOTE);
+			return;
+		}
+		ctx.ui.notify("Safety checkpoint taken: /undo restores the worktree to its state before this turn.", "info");
+	}
+
 	/** Snapshots once per agent turn; the return value reports whether /undo can recover this call. */
-	async function ensureCheckpoint(ctx: ExtensionContext): Promise<boolean> {
+	async function ensureCheckpoint(ctx: ExtensionContext, event: { toolName: string; toolCallId?: string }): Promise<boolean> {
 		// Disabled by configuration is a deliberate choice, not a failure, so it warns about nothing.
 		if (!config.checkpoints) return false;
 		if (checkpointTakenThisTurn) return checkpointProtectedThisTurn;
@@ -209,6 +247,7 @@ export default function safety(pi: ExtensionAPI): void {
 			checkpoint = undefined;
 		}
 		checkpointProtectedThisTurn = Boolean(checkpoint);
+		if (checkpoint) reportCheckpoint(ctx, event);
 		if (!checkpoint && !checkpointWarningShown) {
 			checkpointWarningShown = true;
 			ctx.ui.notify("Safety checkpoint unavailable: changes in this session are not protected by /undo.", "warning");
@@ -228,8 +267,11 @@ export default function safety(pi: ExtensionAPI): void {
 				return false;
 			}
 		}
+		// The probe above yields, so this session may have been torn down while it ran. Its mode, its
+		// status line, and its transcript all belong to the session that replaced it.
+		if (!ownsSafetyMode(owner)) return false;
 		state = transitionSafetyMode(state, mode);
-		setSafetyMode(mode);
+		setSafetyMode(owner, mode);
 		setStatus(ctx, mode);
 		if (persist) persistSafetyState(pi, state);
 		return true;
@@ -265,7 +307,10 @@ export default function safety(pi: ExtensionAPI): void {
 		if (!config.classifier.explainRuleAllowed) return;
 		if (!toolCallId || !rendersToolNotes("bash") || !explanationsWanted(ctx)) return;
 		void classifier.explainBash(command).then((explained) => {
-			if (explained) recordToolNote(toolCallId, describeLine(explained.explanation, explained.failed));
+			if (!explained || !ownsSafetyMode(owner)) return;
+			const line = describeLine(explained.explanation, explained.failed);
+			const suffix = checkpointSuffix(toolCallId);
+			recordToolNote(toolCallId, suffix ? `${line} · ${suffix}` : line);
 		});
 	}
 
@@ -277,7 +322,41 @@ export default function safety(pi: ExtensionAPI): void {
 	/** Keeps a gated command's provenance and explanation in the transcript too, not only in the dialog. */
 	function noteGate(toolCallId: string | undefined, source: GateSource, explanation: string | undefined): void {
 		if (!toolCallId || !rendersToolNotes("bash")) return;
-		recordToolNote(toolCallId, explanation ? `${sourceLabel(source)} · ${explanation}` : sourceLabel(source), "warn");
+		const parts = [sourceLabel(source), explanation, checkpointSuffix(toolCallId)].filter(Boolean);
+		recordToolNote(toolCallId, parts.join(" · "), "warn");
+	}
+
+	/** Long enough to recognise the change, short enough that the dialog stays readable. */
+	const UNDO_PREVIEW_PATHS = 12;
+
+	/**
+	 * What `/undo` is about to rewrite. A restore covers the whole worktree, so anything edited since
+	 * the checkpoint goes back — including a file another Pi session running in this repository is
+	 * working on. Listing the paths is what turns that from a surprise into a decision.
+	 */
+	async function undoPreview(): Promise<string> {
+		const checkpoint = await checkpoints.latest();
+		if (!checkpoint) return "No safety checkpoint is available.";
+		let paths: string[];
+		try {
+			paths = await checkpoints.changedSince(checkpoint.commit);
+		} catch {
+			return "Restore the most recent safety checkpoint?\nThe affected paths could not be listed.";
+		}
+		const shown = paths.slice(0, UNDO_PREVIEW_PATHS);
+		const body = paths.length === 0
+			? "Nothing has changed since the most recent safety checkpoint."
+			: [
+				`Restoring the most recent safety checkpoint rewrites ${paths.length} ${paths.length === 1 ? "path" : "paths"}:`,
+				...shown.map((path) => `  ${path}`),
+				...(paths.length > shown.length ? [`  … and ${paths.length - shown.length} more`] : []),
+			].join("\n");
+		const foreign = await checkpoints.foreignRuns().catch(() => 0);
+		// Refs under another prefix are either a live session or a run that exited without disposing,
+		// and the two cannot be told apart from here.
+		return foreign > 0
+			? `${body}\n\nAnother Pi run has checkpoints in this repository. If a session is working here now, this reverts its changes too.`
+			: body;
 	}
 
 	pi.registerFlag("safety", { description: "Start in yolo, auto, or safe safety mode", type: "string" });
@@ -289,7 +368,7 @@ export default function safety(pi: ExtensionAPI): void {
 				ctx.ui.notify("Checkpoints are disabled by safety configuration: set \"checkpoints\": true to use /undo.", "warning");
 				return;
 			}
-			const reason = await confirm(ctx, "Restore safety checkpoint", "Restore the most recent safety checkpoint?", "This discards worktree changes made since that checkpoint. The Git index is left unchanged.");
+			const reason = await confirm(ctx, "Restore safety checkpoint", await undoPreview(), "This discards worktree changes made since that checkpoint. Tracked files the turn did not create keep their index entries.");
 			if (reason) { ctx.ui.notify(reason, "error"); return; }
 			try {
 				const restored = await checkpoints.restoreLatest();
@@ -359,7 +438,7 @@ export default function safety(pi: ExtensionAPI): void {
 			// either the dialog or the classifier decides it, and a rule-allowed command that still writes
 			// (`echo x > file`, `sed -i`) is snapshotted too — being recoverable is the reason policy lets
 			// it through, so nothing else is what makes that true. Read-only commands pay nothing.
-			const protectedRun = result.verdict !== "allow" || result.mutates ? await ensureCheckpoint(ctx) : undefined;
+			const protectedRun = result.verdict !== "allow" || result.mutates ? await ensureCheckpoint(ctx, event) : undefined;
 			if (result.verdict === "allow") {
 				explainInBackground(ctx, event.toolCallId, command);
 				return undefined;
@@ -383,7 +462,7 @@ export default function safety(pi: ExtensionAPI): void {
 						const verdict = await classifier.classifyBash(command, identity, externalRead);
 						audit.record({ kind: "bash", identity, verdict: verdict.verdict, explanation: verdict.explanation });
 						if (verdict.verdict === "allow") {
-							reportAutoApproval(ctx, event.toolCallId, "bash", `Bash: ${identity}`, verdict.explanation);
+							reportAutoApproval(ctx, event.toolCallId, "bash", `Bash: ${identity}`, verdict.explanation, checkpointSuffix(event.toolCallId));
 							return undefined;
 						}
 						// The verdict call already described the command; asking again would duplicate it.
@@ -424,9 +503,12 @@ export default function safety(pi: ExtensionAPI): void {
 			if (!requested) return denied("Safety could not determine the write target path.");
 			const path = await canonicalPath(ctx.cwd, requested);
 			const external = !inside(ctx.cwd, path);
-			const protectedWrite = external ? false : await ensureCheckpoint(ctx);
-			// auto trusts the checkpoint instead of a dialog: a recoverable in-workspace write is undoable via /undo.
-			if (state.mode === "auto" && protectedWrite) return undefined;
+			// The snapshot is taken even for an external write, which it cannot recover: fixing the turn's
+			// baseline before anything else in the turn moves is what makes /undo cover the whole turn.
+			const checkpointed = await ensureCheckpoint(ctx, event);
+			const protectedWrite = external ? false : checkpointed;
+			// Both gated modes trust the checkpoint instead of a dialog: a recoverable in-workspace write is undoable via /undo.
+			if (protectedWrite) return undefined;
 			const display = isAbsolute(requested) ? relative(ctx.cwd, path) || "." : requested;
 			const excerpt = writeExcerpt(event.input);
 			const body = `${display}${excerpt ? `\n\n${excerpt}` : ""}`;
@@ -441,6 +523,9 @@ export default function safety(pi: ExtensionAPI): void {
 			return undefined;
 		}
 
+		// An unknown tool is unconstrained: it may write anywhere, so it fixes the turn's baseline before
+		// any of the decisions below, including the ones that let it run without a dialog.
+		await ensureCheckpoint(ctx, event);
 		if (config.allowTools.includes(event.toolName)) return undefined;
 		if (state.mode === "auto" && config.classifier.classifyUnknownTools) {
 			const tool = findTool(event.toolName, pi.getAllTools());
@@ -457,6 +542,9 @@ export default function safety(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
+		// Released before the next session starts, so a session that loads without safety does not
+		// leave confirm-bash reading this one's mode.
+		releaseSafetyMode(owner);
 		// Quit, reload, or session replacement all end this run's checkpoints; /undo does not span runs.
 		await checkpoints?.dispose().catch(() => undefined);
 	});
@@ -464,10 +552,13 @@ export default function safety(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", async () => {
 		checkpointTakenThisTurn = false;
 		checkpointProtectedThisTurn = false;
+		checkpointNoteCallId = undefined;
 		return undefined;
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Claimed before the first await: from here on this instance is the one allowed to write.
+		claimSafetyMode(owner);
 		config = await loadConfig();
 		classifier = new ResidualClassifier(config.classifier);
 		// Checkpoints never outlive the run that took them: drop this runtime's previous store and
@@ -480,6 +571,7 @@ export default function safety(pi: ExtensionAPI): void {
 		clearToolNotes();
 		checkpointTakenThisTurn = false;
 		checkpointProtectedThisTurn = false;
+		checkpointNoteCallId = undefined;
 		checkpointWarningShown = false;
 		state = restoreSafetyState(ctx.sessionManager.getBranch(), config.mode);
 		const flag = pi.getFlag("safety");
@@ -494,11 +586,11 @@ export default function safety(pi: ExtensionAPI): void {
 		if (state.mode === "auto") {
 			const requested = state.mode;
 			state = createSafetyState();
-			setSafetyMode("yolo");
+			setSafetyMode(owner, "yolo");
 			setStatus(ctx, "yolo");
 			if (!await enter(requested, ctx, flagSelected)) ctx.ui.notify("Starting in yolo mode; /safety auto will retry availability.", "warning");
 		} else {
-			setSafetyMode(state.mode);
+			setSafetyMode(owner, state.mode);
 			setStatus(ctx, state.mode);
 			if (flagSelected) persistSafetyState(pi, state);
 		}

@@ -120,3 +120,84 @@ test("sweepStale removes only aged refs from other runs", async (t) => {
 	assert.ok(remaining.includes(unparsable));
 	assert.ok(!remaining.includes(aged));
 });
+
+test("restore removes a file the turn created and staged, and drops only that index entry", async (t) => {
+	const cwd = await repository(t);
+	await writeFile(join(cwd, "staged-before.txt"), "user work\n");
+	await exec("git", ["add", "staged-before.txt"], { cwd });
+	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 2 });
+	await store.snapshot();
+
+	// A file created after the snapshot and staged is in neither set `git restore` reaches: it is
+	// absent from the checkpoint tree, and staging it made it no longer untracked.
+	await writeFile(join(cwd, "generated.txt"), "agent output\n");
+	await exec("git", ["add", "generated.txt"], { cwd });
+	assert.ok(await store.restoreLatest());
+
+	await assert.rejects(readFile(join(cwd, "generated.txt"), "utf8"));
+	const cached = (await exec("git", ["ls-files", "--cached"], { cwd })).stdout.trim().split("\n");
+	assert.ok(!cached.includes("generated.txt"));
+	// Work the user staged before the turn was in the snapshot, so neither it nor its entry is touched.
+	assert.equal(await readFile(join(cwd, "staged-before.txt"), "utf8"), "user work\n");
+	assert.ok(cached.includes("staged-before.txt"));
+});
+
+test("changedSince lists what a restore would rewrite and remove", async (t) => {
+	const cwd = await repository(t);
+	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 5 });
+	await writeFile(join(cwd, "kept.txt"), "kept\n");
+	const checkpoint = await store.snapshot();
+
+	// Everything the turn did after the snapshot: an edit, a new file, a staged new file, and a
+	// deletion. An untouched file the snapshot already contained must not be listed.
+	await writeFile(join(cwd, "tracked.txt"), "changed\n");
+	await writeFile(join(cwd, "created.txt"), "new\n");
+	await writeFile(join(cwd, "staged.txt"), "new\n");
+	await exec("git", ["add", "staged.txt"], { cwd });
+	await rm(join(cwd, "kept.txt"));
+
+	assert.deepEqual(await store.changedSince(checkpoint!.commit), [
+		"created.txt",
+		"kept.txt",
+		"staged.txt",
+		"tracked.txt",
+	]);
+});
+
+test("changedSince is empty when the worktree still matches the checkpoint", async (t) => {
+	const cwd = await repository(t);
+	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 5 });
+	const checkpoint = await store.snapshot();
+	assert.deepEqual(await store.changedSince(checkpoint!.commit), []);
+});
+
+test("foreignRuns counts other runs' prefixes, not this run's refs", async (t) => {
+	const cwd = await repository(t);
+	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 5 });
+	const own = await store.snapshot();
+	await store.snapshot();
+	assert.equal(await store.foreignRuns(), 0, "this run's own refs are not foreign");
+
+	// Two refs from one concurrent run, and one from another, are two runs.
+	for (const ref of [
+		`${CHECKPOINT_NAMESPACE}/other/run-a/${Date.now()}-0000`,
+		`${CHECKPOINT_NAMESPACE}/other/run-a/${Date.now()}-0001`,
+		`${CHECKPOINT_NAMESPACE}/other/run-b/${Date.now()}-0000`,
+	]) {
+		await exec("git", ["update-ref", ref, own!.commit], { cwd });
+	}
+	assert.equal(await store.foreignRuns(), 2);
+});
+
+test("latest skips refs deleted behind the store's back without restoring anything", async (t) => {
+	const cwd = await repository(t);
+	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 5 });
+	const first = await store.snapshot();
+	await writeFile(join(cwd, "tracked.txt"), "changed\n");
+	const second = await store.snapshot();
+	await exec("git", ["update-ref", "-d", second!.ref], { cwd });
+
+	assert.equal((await store.latest())?.ref, first!.ref);
+	// The worktree is untouched by the check itself.
+	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "changed\n");
+});

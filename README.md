@@ -278,16 +278,16 @@ Alt+S                   # cycle available modes
 pi --safety safe        # select the starting mode
 ```
 
-`safe` confirms irreversible or outward-facing Bash commands, every `write` and `edit` call, and
-every unknown tool call. `auto` applies the same deterministic rules but may silently
+`safe` confirms irreversible or outward-facing Bash commands and every unknown tool call. A `write`
+or `edit` inside the workspace runs without a dialog once the turn's checkpoint exists, since `/undo`
+restores it; one outside the workspace, or one with no usable checkpoint, still confirms. `auto`
+applies the same deterministic rules but may silently
 allow a structurally restricted unknown binary or an unknown tool call classified safe, judging the
 call's own arguments rather than the tool in the abstract. It also sends a read-only command whose
 only problem is a path outside the workspace, or a command whose only problem is an unexpanded
 variable such as `ls $PWD`, to the classifier instead of confirming it. Eligibility is judged per
 segment, so an ordinary pipeline such as `ps -ef | grep -F x | head -5` is one classifier question
-rather than an automatic dialog. It also allows
-checkpointed in-workspace writes without a dialog, relying on `/undo` for recovery; writes
-outside the workspace or without a usable checkpoint still confirm. `auto` is selectable only while
+rather than an automatic dialog. `auto` is selectable only while
 the configured OpenAI-compatible endpoint is available. `yolo` is the default and has no safety hook
 effects or status indicator.
 
@@ -314,20 +314,30 @@ request that fails says so in that slot (`no explanation: …`) rather than leav
 Explanations are advisory text from a small local model, not a decision and not a security boundary;
 read the highlighted command itself before approving it.
 
-Gated in-workspace `write` and `edit` calls, and every Bash command that can write to disk, create
-one temporary-index Git checkpoint per agent turn. Checkpointing tracks what a command can do, not
-whether it was held: a rule-allowed `echo x > file`, `sed -i`, or `npm install` is snapshotted just
-like a command that reached a dialog, because being recoverable is the reason policy lets it through.
-Commands the classifier approves are covered too, since the snapshot precedes that decision.
-Read-only commands take no snapshot. The snapshot includes non-ignored untracked files without
-changing the user's index or `HEAD`, and a Bash confirmation states whether `/undo` can recover the
-command it is asking about. Set `"checkpoints": false` to disable snapshots and `/undo` entirely;
-safety then runs no Git command, and `auto` confirms every write, since the recoverability it trades
-that dialog for is gone.
+Every `write` and `edit` call, every Bash command that can write to disk, and every unknown tool
+create one temporary-index Git checkpoint per agent turn, taken before the first of them runs, so
+`/undo` restores everything that turn changed rather than the last change alone. Checkpointing tracks
+what a call can do, not whether it was held: a rule-allowed `echo x > file`, `sed -i`, or
+`npm install` is snapshotted just like a command that reached a dialog, because being recoverable is
+the reason policy lets it through. Commands the classifier approves are covered too, since the
+snapshot precedes that decision, as is a write outside the workspace, which the checkpoint cannot
+recover but which must not move the turn's baseline. Read-only commands and read-only tools take no
+snapshot. The snapshot includes non-ignored untracked files without changing the user's index or
+`HEAD`, and a Bash confirmation states whether `/undo` can recover the command it is asking about.
+Restoring removes any path the snapshot does not contain, including a file the turn created and
+staged, whose index entry is dropped with it; nothing that existed at snapshot time is touched. The call that caused a snapshot reports it once per turn —
+`checkpoint taken · /undo restores this turn` under a Bash call, appended to whatever else that call
+had to say, or a notification when a `write` triggered it. Set `"checkpoints": false` to disable snapshots and `/undo` entirely;
+safety then runs no Git command, and both gated modes confirm every write, since the recoverability
+they trade that dialog for is gone.
 Checkpoints are scoped to the current Pi run: their refs are deleted when the session shuts down,
 and a resumed session starts with none, so `/undo` never reverts to a snapshot from an earlier
-run. Outside a Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
-safety, and a Bash call resolved by safety does not produce a second `confirm-bash` dialog.
+run. A restore covers the whole worktree, so its confirmation lists the paths it is about to
+rewrite, and says so when another Pi run has checkpoints in the same repository and may be working
+there now. Outside a Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
+safety, and a Bash call resolved by safety does not produce a second `confirm-bash` dialog. Safety
+mode belongs to one session: switching sessions with `/new`, `/resume`, or a fork drops a mode change
+the outgoing session had not finished making, rather than applying it to the incoming one.
 
 Configuration is loaded from `~/.pi/agent/safety.json`, overridable with `SAFETY_CONFIG`. Missing or
 invalid configuration uses these defaults:

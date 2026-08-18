@@ -40,12 +40,18 @@ test("tool notes cross a second evaluation of the module that holds them", async
 test("mode arbitration crosses a second evaluation of the registry", async (t) => {
 	const a = await import(MODES_A);
 	const b = await import(MODES_B);
-	t.after(() => { a.setPlanModeActive(false); a.setSafetyMode("yolo"); });
+	t.after(() => { a.resetModeRegistry(); });
 
-	a.setPlanModeActive(true);
+	// An owner minted by one copy has to be honoured by the other, so ownership is identity, not
+	// module-local bookkeeping.
+	const plan = a.createModeOwner("plan-mode");
+	b.claimPlanMode(plan);
+	assert.equal(a.setPlanModeActive(plan, true), true);
 	assert.equal(b.isPlanModeActive(), true);
 
-	a.setSafetyMode("safe");
+	const safety = a.createModeOwner("safety");
+	a.claimSafetyMode(safety);
+	assert.equal(b.setSafetyMode(safety, "safe"), true);
 	assert.equal(b.getSafetyMode(), "safe");
 
 	// The resolved-call marker is identity-based, so it has to be the same WeakSet on both sides.
@@ -53,4 +59,41 @@ test("mode arbitration crosses a second evaluation of the registry", async (t) =
 	a.markSafetyResolved(input);
 	assert.equal(b.wasSafetyResolved(input), true);
 	assert.equal(b.wasSafetyResolved({ command: "ls" }), false);
+});
+
+test("only the current owner writes a mode", async (t) => {
+	const registry = await import(MODES_A);
+	t.after(() => { registry.resetModeRegistry(); });
+	registry.resetModeRegistry();
+
+	// The outgoing session's instance, mid-await when the incoming one claims the field.
+	const outgoing = registry.createModeOwner("safety-outgoing");
+	registry.claimSafetyMode(outgoing);
+	registry.setSafetyMode(outgoing, "auto");
+	const incoming = registry.createModeOwner("safety-incoming");
+	registry.claimSafetyMode(incoming);
+	assert.equal(registry.getSafetyMode(), "yolo");
+
+	registry.setSafetyMode(incoming, "safe");
+	assert.equal(registry.setSafetyMode(outgoing, "auto"), false);
+	assert.equal(registry.getSafetyMode(), "safe");
+	assert.equal(registry.ownsSafetyMode(outgoing), false);
+
+	// A late teardown from the outgoing instance must not clear the incoming one's mode either.
+	registry.releaseSafetyMode(outgoing);
+	assert.equal(registry.getSafetyMode(), "safe");
+	registry.releaseSafetyMode(incoming);
+	assert.equal(registry.getSafetyMode(), "yolo");
+});
+
+test("releasing plan mode clears it for a session that loads without the extension", async (t) => {
+	const registry = await import(MODES_A);
+	t.after(() => { registry.resetModeRegistry(); });
+	registry.resetModeRegistry();
+
+	const owner = registry.createModeOwner("plan-mode");
+	registry.claimPlanMode(owner);
+	registry.setPlanModeActive(owner, true);
+	registry.releasePlanMode(owner);
+	assert.equal(registry.isPlanModeActive(), false);
 });

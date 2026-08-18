@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { blockedReason, entryFor, loadState, recordFailure, recordUse, searchWeb } from "../src/chain.ts";
+import { blockedReason, commitState, entryFor, loadState, recordFailure, recordUse, saveState, searchWeb } from "../src/chain.ts";
 import type { State } from "../src/chain.ts";
 import { config, connectionRefused, makeDeps } from "./helpers.ts";
 
@@ -204,4 +204,36 @@ test("an explicit server reset time overrides the computed backoff", () => {
 	const reset = now + 4 * 3600_000;
 	recordFailure(state, "github", now, reset);
 	assert.equal(state.github.cooldownUntil, reset);
+});
+
+test("a commit applies to the state on disk, not to the snapshot its caller read", async () => {
+	const deps = makeDeps(() => ({ body: {} }));
+	const day = new Date(deps.clock.t).toISOString().slice(0, 10);
+	await saveState({ github: { day, dayUsed: 5, month: day.slice(0, 7), monthUsed: 5 } }, deps);
+
+	// Two Pi sessions share this directory. Each read the file before its request; the second one
+	// finishes first, and the first must not write its own stale count back over that.
+	const slow = await loadState(deps);
+	await commitState(deps, (fresh) => recordUse(fresh, "github", deps.clock.t));
+	await commitState(deps, (fresh) => recordUse(fresh, "github", deps.clock.t));
+	assert.equal(slow.github.dayUsed, 5, "the stale snapshot is untouched");
+
+	const state = await loadState(deps);
+	assert.equal(state.github.dayUsed, 7);
+	assert.equal(state.github.monthUsed, 7);
+});
+
+test("concurrent commits in one process each land", async () => {
+	const deps = makeDeps(() => ({ body: {} }));
+	await Promise.all(
+		Array.from({ length: 10 }, () => commitState(deps, (fresh) => recordUse(fresh, "github", deps.clock.t))),
+	);
+	assert.equal((await loadState(deps)).github.dayUsed, 10);
+});
+
+test("a commit that throws is absorbed and does not stall the ones behind it", async () => {
+	const deps = makeDeps(() => ({ body: {} }));
+	await commitState(deps, () => { throw new Error("mutation failed"); });
+	await commitState(deps, (fresh) => recordUse(fresh, "github", deps.clock.t));
+	assert.equal((await loadState(deps)).github.dayUsed, 1);
 });

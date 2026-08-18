@@ -5,8 +5,8 @@
  * start from zero rather than failing a search.
  */
 
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { type Config, type Deps, type Result, HttpError, describeNetworkError } from "./config.ts";
@@ -30,21 +30,56 @@ export type State = Record<string, ProviderState>;
 const utcDay = (now: number) => new Date(now).toISOString().slice(0, 10);
 const utcMonth = (now: number) => new Date(now).toISOString().slice(0, 7);
 
+const statePath = (deps: Deps) => join(deps.stateDir, "state.json");
+
 export async function loadState(deps: Deps): Promise<State> {
 	try {
-		return JSON.parse(await readFile(join(deps.stateDir, "state.json"), "utf8")) as State;
+		const parsed = JSON.parse(await readFile(statePath(deps), "utf8")) as unknown;
+		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as State) : {};
 	} catch {
 		return {};
 	}
 }
 
+/**
+ * Written to a unique temporary name and renamed into place, so a reader in another Pi process sees
+ * either the old file or the new one and never a half-written one.
+ */
 export async function saveState(state: State, deps: Deps): Promise<void> {
+	const temporary = `${statePath(deps)}.${process.pid}-${randomUUID().slice(0, 8)}`;
 	try {
 		await mkdir(deps.stateDir, { recursive: true });
-		await writeFile(join(deps.stateDir, "state.json"), JSON.stringify(state, null, 2));
+		await writeFile(temporary, JSON.stringify(state, null, 2));
+		await rename(temporary, statePath(deps));
 	} catch {
 		// Quota tracking is best-effort. An unwritable state directory must not fail a search.
+		await unlink(temporary).catch(() => undefined);
 	}
+}
+
+/** Serializes commits within this process; across processes the re-read below is the defence. */
+let commits: Promise<void> = Promise.resolve();
+
+/**
+ * Apply counter changes to the state as it is on disk now, rather than saving the copy the caller
+ * read before its network request.
+ *
+ * A search holds its snapshot across a request that takes seconds, and the same directory is shared
+ * by every Pi session on the machine. Writing that snapshot back discards whatever another session
+ * recorded in the meantime, which loses quota counts and can resurrect a cooldown another session
+ * has already cleared. Re-reading immediately before the write narrows that window to the read and
+ * the rename. Two processes can still interleave inside it; quota accounting is advisory, and the
+ * cost of a lost increment is one extra provider request, so this stops short of a lock file.
+ */
+export async function commitState(deps: Deps, apply: (state: State) => void): Promise<void> {
+	const commit = commits.then(async () => {
+		const fresh = await loadState(deps);
+		apply(fresh);
+		await saveState(fresh, deps);
+	});
+	// Quota bookkeeping never fails a search, and one bad commit must not stall the queue behind it.
+	commits = commit.catch(() => undefined);
+	await commits;
 }
 
 /** Read a provider's counters, rolling them over if the day or month has changed. */
@@ -219,6 +254,9 @@ export async function searchWeb(
 	}
 
 	const state = await loadState(deps);
+	// Applied to `state` as the loop runs, so a later provider sees the cooldown an earlier one just
+	// earned, and replayed onto the on-disk state at the end.
+	const recorded: Array<(fresh: State) => void> = [];
 	const attempts: Attempt[] = [];
 	const providers: string[] = [];
 	let collected: Result[] = [];
@@ -241,7 +279,9 @@ export async function searchWeb(
 
 		try {
 			const found = await provider.search(query, poolSize, cfg, deps, signal);
-			recordUse(state, name, deps.now());
+			const used = deps.now();
+			recordUse(state, name, used);
+			recorded.push((fresh) => recordUse(fresh, name, used));
 			if (found.length === 0) {
 				attempts.push({ provider: name, error: "no results" });
 				continue;
@@ -254,12 +294,15 @@ export async function searchWeb(
 			const status = err instanceof HttpError ? err.status : 0;
 			const reason =
 				status === 429 ? "rate limited" : status > 0 ? `HTTP ${status}` : describeNetworkError(err);
-			recordFailure(state, name, deps.now(), retryDeadline(err, deps.now()));
+			const failed = deps.now();
+			const deadline = retryDeadline(err, failed);
+			recordFailure(state, name, failed, deadline);
+			recorded.push((fresh) => recordFailure(fresh, name, failed, deadline));
 			attempts.push({ provider: name, error: reason });
 		}
 	}
 
-	await saveState(state, deps);
+	if (recorded.length > 0) await commitState(deps, (fresh) => { for (const apply of recorded) apply(fresh); });
 	if (collected.length > 0) {
 		await writeCache(cacheKey, { ts: deps.now(), provider: providers[0], results: collected }, deps);
 	}

@@ -39,6 +39,13 @@ options, compare tradeoffs, invite corrections, and revise the approach from the
 After the user confirms the approach, the model must submit the plan through `write_plan` and remain
 in plan mode until the file is written or the user explicitly exits.
 
+Plan mode's active flag is also published to safety through the process-wide mode registry, which
+is how safety knows to stand aside. That flag is owned by the extension instance the current session
+loaded: it is claimed at `session_start` and released at `session_shutdown`, so leaving a planning
+session for another one never carries the flag into it, and an exit that was waiting at the
+`write_plan` approval dialog when the session was switched does not clear a flag that now belongs to
+the next session.
+
 To exit without writing a plan, use `/plan` or `Alt+P` again. This writes no file and restores the
 tool set captured when plan mode was entered. A session can also start in plan mode with the
 `--plan` flag.
