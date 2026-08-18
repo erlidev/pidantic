@@ -624,3 +624,69 @@ test("a write outside the workspace still confirms, but the turn's baseline is t
 	// The checkpoint cannot recover that path, but it fixes the baseline for the rest of the turn.
 	assert.equal((await checkpointRefs(cwd)).length, 1);
 });
+
+test("read-only mode allows read tools and verifiably read-only commands", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, { cwd, config: { mode: "read-only" } });
+	assert.equal(gate.status(), "Safety: read-only");
+	assert.equal(await outcome(() => gate.toolCall("read", { path: "tracked.txt" })), "allowed");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "git status" })), "allowed");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "ls -la | head -5" })), "allowed");
+});
+
+test("read-only mode denies outright rather than gating, and says so to the model", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, { cwd, config: { mode: "read-only" } });
+	// Denied on both headless paths: the escape hatch approves dialogs, and this mode raises none.
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "denied");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "echo hi > out.txt" })), "denied");
+	assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "x" })), "denied");
+	assert.equal(await outcome(() => gate.toolCall("edit", { path: "tracked.txt", newText: "x" })), "denied");
+	assert.equal(await outcome(() => gate.toolCall("mystery")), "denied");
+
+	const write = await gate.toolCall("write", { path: "new.txt", content: "x" });
+	assert.match(String(write?.reason), /read-only mode/);
+	assert.match(String(write?.reason), /"write" tool is unavailable/);
+	const command = await gate.toolCall("bash", { command: "rm tracked.txt" });
+	assert.match(String(command?.reason), /read-only mode/);
+	assert.match(String(command?.reason), /leave read-only mode/);
+});
+
+test("read-only mode ignores allow lists that only reduce confirmations", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, { cwd, config: { mode: "read-only", allowBinaries: ["rm"], allowTools: ["mystery"] } });
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "denied");
+	assert.equal(await outcome(() => gate.toolCall("mystery")), "denied");
+	// Deny lists still apply: they are restrictive, so they compose with the mode.
+	const denying = await harness(t, { cwd, config: { mode: "read-only", denyBinaries: ["cat"], denyTools: ["read"] } });
+	assert.equal(await outcome(() => denying.toolCall("bash", { command: "cat tracked.txt" })), "denied");
+	assert.equal(await outcome(() => denying.toolCall("read", { path: "tracked.txt" })), "denied");
+});
+
+test("read-only mode takes no checkpoint and never consults the classifier", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, { cwd, config: { mode: "read-only", classifier: CLASSIFIER }, fetch: endpoint("safe") });
+	await gate.startTurn();
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "frobnicate --check" })), "denied");
+	assert.equal(await outcome(() => gate.toolCall("mystery")), "denied");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "ls" })), "allowed");
+	assert.equal(gate.classifierCalls, 0);
+	assert.equal(gate.explanationCalls, 0);
+	// Nothing in this mode can change the worktree, so no snapshot is worth its cost.
+	assert.deepEqual(await checkpointRefs(cwd), []);
+});
+
+test("read-only is reachable from the flag, the command, and the session log", async (t) => {
+	const cwd = await repository(t);
+	const flagged = await harness(t, { cwd, config: { mode: "yolo" }, flag: "read-only" });
+	assert.equal(flagged.status(), "Safety: read-only");
+
+	const gate = await harness(t, { cwd, config: { mode: "yolo" } });
+	await gate.command("read-only");
+	assert.equal(getSafetyMode(), "read-only");
+	assert.equal(gate.status(), "Safety: read-only");
+	assert.deepEqual(gate.entries.at(-1), { type: "safety-mode", data: { mode: "read-only" } });
+
+	const resumed = await harness(t, { cwd, config: { mode: "yolo" }, branch: [{ type: "custom", customType: "safety-mode", data: { mode: "read-only" } } as never] });
+	assert.equal(resumed.status(), "Safety: read-only");
+});

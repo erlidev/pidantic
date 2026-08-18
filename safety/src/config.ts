@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import type { SafetyMode } from "../../shared/mode-registry.ts";
+import { isSafetyMode, type SafetyMode } from "../../shared/mode-registry.ts";
 
 export interface ClassifierConfig {
 	enabled: boolean;
@@ -104,7 +104,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	}
 
 	const classifier = record(raw.classifier);
-	const mode = raw.mode === "safe" || raw.mode === "auto" || raw.mode === "yolo" ? raw.mode : DEFAULTS.mode;
+	const mode = isSafetyMode(raw.mode) ? raw.mode : DEFAULTS.mode;
 	const timeoutMs = typeof classifier.timeoutMs === "number" && Number.isFinite(classifier.timeoutMs) && classifier.timeoutMs > 0
 		? Math.floor(classifier.timeoutMs)
 		: DEFAULTS.classifier.timeoutMs;

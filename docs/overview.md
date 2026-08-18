@@ -30,12 +30,14 @@ pidantic/
 │   │   ├── plan-mode.md
 │   │   ├── safety.md
 │   │   ├── smart-compaction.md
-│   │   └── stop.md
+│   │   ├── stop.md
+│   │   └── ui-tweaks.md
 │   └── roadmaps/
 │       └── subagent.md
 ├── types/
 │   └── turndown-plugin-gfm.d.ts
 ├── shared/
+│   ├── attention.ts
 │   ├── bash-policy.ts
 │   ├── command-findings.ts
 │   ├── confirm-dialog.ts
@@ -44,6 +46,7 @@ pidantic/
 │   ├── read-only-tools.ts
 │   ├── tool-notes.ts
 │   └── test/
+│       ├── attention.test.ts
 │       ├── bash-policy.test.ts
 │       ├── command-findings.test.ts
 │       ├── process-registry.test.ts
@@ -75,6 +78,7 @@ pidantic/
 │   │   ├── index.ts
 │   │   ├── pre-gate.ts
 │   │   ├── prompt.ts
+│   │   ├── read-only.ts
 │   │   ├── risk-policy.ts
 │   │   ├── state.ts
 │   │   └── tiers.ts
@@ -85,9 +89,23 @@ pidantic/
 │       ├── config.test.ts
 │       ├── gate.test.ts
 │       ├── pre-gate.test.ts
+│       ├── read-only.test.ts
 │       ├── risk-policy.test.ts
 │       ├── state.test.ts
 │       └── tiers.test.ts
+├── ui-tweaks/
+│   ├── index.ts
+│   ├── src/
+│   │   ├── config.ts
+│   │   ├── excerpt.ts
+│   │   ├── index.ts
+│   │   ├── notify.ts
+│   │   └── scroll.ts
+│   └── test/
+│       ├── config.test.ts
+│       ├── excerpt.test.ts
+│       ├── notify.test.ts
+│       └── scroll.test.ts
 ├── smart-compaction/
 │   └── index.ts
 └── localsearch/
@@ -182,7 +200,13 @@ not expressible in a schema remain in `promptGuidelines`.
   result renderer this way, each with a tone the renderer turns into a marker. Because an
   explanation can land after the row has been drawn, a renderer also registers that row's repaint
   callback there, and recording a note fires it.
-  Both cross-extension channels keep their state in `process-registry.ts`, not in module scope: pi
+  `attention.ts` is the third such channel and the smallest: the extension that knows a run is
+  waiting on a person raises a request, and whatever wants to act on it — `ui-tweaks` turns it into a
+  desktop notification — listens. `askConfirmation` raises one as it opens, so every dialog in the
+  package is covered without any of them knowing who is listening, and with no listener the call does
+  nothing. A listener belongs to the session that registered it and is dropped at `session_shutdown`,
+  for the same reason mode writes are owned.
+  All cross-extension channels keep their state in `process-registry.ts`, not in module scope: pi
   loads every extension entry point through its own jiti instance with module caching disabled, so a
   module two extensions import is evaluated once per extension. A module-level map would give each
   extension a private copy, which silently breaks note delivery and mode arbitration alike;
@@ -200,11 +224,30 @@ not expressible in a schema remain in `promptGuidelines`.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
 - `plan-mode/` provides a read-only investigation mode with policy-guarded Bash and an approval
   workflow that writes the finished plan and restores the prior tool set.
-- `safety/` provides `yolo`, `safe`, and classifier-backed `auto` session modes. Its modules isolate
+- `safety/` provides `yolo`, `safe`, classifier-backed `auto`, and `read-only` session modes. Its
+  modules isolate
   irreversible-action policy, tool tiers, configuration, mode persistence, temporary-index Git
   checkpoints, structural classifier gating, runtime caches, and the classifier audit trail.
+  `read-only.ts` is the one mode that decides every call alone: it reuses the strict plan-mode
+  allowlist from `shared/bash-policy.ts` rather than the irreversible-action rules, and returns a
+  refusal instead of a verdict, so the gate needs no dialog, checkpoint, or classifier on that path.
+  The mode strings themselves live in `shared/mode-registry.ts` alongside the type, so the config
+  file, the `--safety` flag, `/safety`, the `alt+s` cycle, and the session log all validate against
+  one list.
   `prompt.ts` holds the classifier's system prompts and untrusted-payload framing, following the same
   convention as `localsearch/src/prompt.ts`: model-facing text stays in one budgetable, testable file.
+- `ui-tweaks/` adjusts pi's interactive TUI: the fullscreen mouse-wheel step, which pi fixes at one
+  line per notch and exposes no setting for, and optional desktop notifications for confirmations and
+  finished runs. `scroll.ts` isolates the one unsupported thing the package does — writing
+  `wheelScrollLines` onto pi's live renderer, reached through the widget factory that is the only
+  place `ExtensionUIContext` hands out the TUI — and describes just the two properties it touches, so
+  a pi build that changes them costs the tweak rather than the session. `notify.ts` holds backend
+  resolution and every escape, quoting, and sanitization rule, with the spawner, the stdout writer,
+  the platform, and the environment injected so no test needs a notification daemon. `excerpt.ts`
+  flattens the Markdown of a finished reply into the one plain-text line a notification can carry,
+  which no backend would render otherwise. A `/ui-tweaks` change is written to the configuration file
+  as it is made rather than at a save step, and `config.ts` merges that write into the existing file
+  so hand-edited fields survive it.
 - `smart-compaction/` currently exposes a valid no-op entry point while its implementation is
   developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
@@ -263,6 +306,12 @@ exactly once while later calls in the turn stay silent, and
 `"checkpoints": false` produces none while restoring the write dialog in both gated modes. Suites that pin note text
 for other reasons set `checkpoints: false` so the assertions stay about one thing.
 `risk-policy.test.ts` pins the `mutates` flag that decides this separately from the verdict.
+`read-only.test.ts` pins that mode's policy on its own — allowed reads, refused chains, every
+redirection, quoted metacharacters, and the deny list it still honours — and `gate.test.ts` pins the
+gate consequences the unit suite cannot see: refusals are hard denials rather than dialogs on both
+headless paths, no checkpoint ref is created, no classifier request is made, permissive allow lists
+do not reopen the mode, and the mode is reachable from the flag, the command, and a restored
+session log.
 A session switch is covered by building two harness instances in one case: the outgoing one is held
 inside a classifier probe the test releases by hand, shut down, and then superseded by an incoming
 instance, which pins that the stranded mode change reaches neither the registry, nor the status line,
@@ -278,3 +327,22 @@ tests can assert both that deterministic policy resolves a command without payin
 and that the command is still explained afterwards. Explanations need a UI to draw them, so those
 cases opt into an interactive context and let the fire-and-forget request settle before asserting. The harness resets the process-global
 mode registry around every case, since that state is shared with plan mode.
+
+## ui-tweaks tests
+
+`config.test.ts` pins the independent per-field fallbacks and the merging write behind every
+`/ui-tweaks` change: an unknown section and an untouched sibling both survive it, and a missing or
+unparseable file is replaced by one holding just the change. `excerpt.test.ts` pins the Markdown
+flattening in both directions — emphasis, code, fences, headings, bullets, quotes, and links become
+their contents, while `snake_case` and `2 * 3` are left alone.
+`notify.test.ts` drives every backend through injected dependencies: `auto` resolution per platform,
+the once-per-session binary probe, notify-send's urgency and timeout pairing, AppleScript quoting,
+the OSC 9 and OSC 777 dialects, the markup escaping the freedesktop body needs and the summary does
+not, placeholder substitution, and the failure paths — a non-zero exit, a
+spawner that throws, and a `command` backend with no argv. Control-character stripping and truncation
+are pinned directly on `compose`, since they are what keeps model- and user-supplied text from
+closing an escape early. `scroll.test.ts` covers the capture detour with a fake widget registry: the
+handle is borrowed and nothing is left mounted, a non-interactive context probes nothing, a registry
+that rejects the factory is survivable, and the wheel step is written only on a fullscreen renderer
+that actually has the field. `shared/test/attention.test.ts` pins the channel itself, including
+delivery across a second evaluation of the module.

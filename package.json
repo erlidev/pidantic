@@ -18,6 +18,7 @@
 			"./safety/index.ts",
 			"./confirm-bash/index.ts",
 			"./stop/index.ts",
+			"./ui-tweaks/index.ts",
 			"./smart-compaction/index.ts"
 		]
 	},

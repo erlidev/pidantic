@@ -14,9 +14,11 @@ import {
 	claimSafetyMode,
 	createModeOwner,
 	isPlanModeActive,
+	isSafetyMode,
 	markSafetyResolved,
 	ownsSafetyMode,
 	releaseSafetyMode,
+	SAFETY_MODES,
 	setSafetyMode,
 	type SafetyMode,
 } from "../../shared/mode-registry.ts";
@@ -26,6 +28,7 @@ import { CheckpointStore } from "./checkpoint.ts";
 import { probeClassifier, ResidualClassifier } from "./classifier.ts";
 import { loadConfig, type SafetyConfig } from "./config.ts";
 import { classifierPreGate } from "./pre-gate.ts";
+import { readOnlyBash, readOnlyDenial } from "./read-only.ts";
 import { classifyRisk } from "./risk-policy.ts";
 import {
 	createSafetyState,
@@ -55,9 +58,16 @@ function setStatus(ctx: Pick<ExtensionContext, "ui">, mode: SafetyMode): void {
 	ctx.ui.setStatus("safety", mode === "yolo" ? undefined : `Safety: ${mode}`);
 }
 
+const MODE_SUMMARY: Record<SafetyMode, string> = {
+	yolo: "  gates disabled",
+	auto: "  confirmation gates active",
+	safe: "  confirmation gates active",
+	"read-only": "  writes and unknown tools blocked",
+};
+
 function transitionContent(mode: SafetyMode, theme: Pick<Theme, "fg" | "bold">): string {
-	const color = mode === "yolo" ? "success" : "warning";
-	return `${theme.fg(color, theme.bold(`◆ Safety: ${mode}`))}${theme.fg("muted", mode === "yolo" ? "  gates disabled" : "  confirmation gates active")}`;
+	const color = mode === "yolo" ? "success" : mode === "read-only" ? "error" : "warning";
+	return `${theme.fg(color, theme.bold(`◆ Safety: ${mode}`))}${theme.fg("muted", MODE_SUMMARY[mode] ?? "")}`;
 }
 
 async function canonicalPath(cwd: string, requested: string): Promise<string> {
@@ -90,6 +100,11 @@ function writePath(input: unknown): string | undefined {
 	if (typeof input !== "object" || input === null) return undefined;
 	const value = (input as Record<string, unknown>).path;
 	return typeof value === "string" && value ? value : undefined;
+}
+
+function commandOf(input: unknown): string {
+	const value = (input as { command?: unknown } | null)?.command;
+	return typeof value === "string" ? value : "";
 }
 
 function writeExcerpt(input: unknown): string {
@@ -359,7 +374,7 @@ export default function safety(pi: ExtensionAPI): void {
 			: body;
 	}
 
-	pi.registerFlag("safety", { description: "Start in yolo, auto, or safe safety mode", type: "string" });
+	pi.registerFlag("safety", { description: `Start in one of ${SAFETY_MODES.join(", ")} safety mode`, type: "string" });
 
 	pi.registerCommand("undo", {
 		description: "Restore the most recent safety checkpoint",
@@ -385,7 +400,11 @@ export default function safety(pi: ExtensionAPI): void {
 			const action = args.trim();
 			if (!action) {
 				const arbitration = isPlanModeActive() ? " Plan mode is active and takes precedence." : "";
-				const classifierNote = state.mode === "safe" ? " The classifier is ignored in safe mode." : "";
+				const classifierNote = state.mode === "safe"
+					? " The classifier is ignored in safe mode."
+					: state.mode === "read-only"
+						? " Only verifiably read-only calls run; nothing is escalated to a dialog."
+						: "";
 				ctx.ui.notify(`Safety mode: ${state.mode}.${classifierNote}${arbitration}`, "info");
 				return;
 			}
@@ -397,8 +416,8 @@ export default function safety(pi: ExtensionAPI): void {
 				ctx.ui.notify("Checkpoint restore is now its own command: run /undo.", "info");
 				return;
 			}
-			if (action !== "yolo" && action !== "auto" && action !== "safe") {
-				ctx.ui.notify("Usage: /safety [yolo|auto|safe|log]", "error");
+			if (!isSafetyMode(action)) {
+				ctx.ui.notify(`Usage: /safety [${SAFETY_MODES.join("|")}|log]`, "error");
 				return;
 			}
 			await enter(action, ctx);
@@ -413,7 +432,8 @@ export default function safety(pi: ExtensionAPI): void {
 				return;
 			}
 			const probe = await probeClassifier(config.classifier);
-			const modes: SafetyMode[] = probe.available ? ["yolo", "auto", "safe"] : ["yolo", "safe"];
+			// `auto` is only reachable while its endpoint answers; every other mode is always available.
+			const modes: SafetyMode[] = SAFETY_MODES.filter((mode) => mode !== "auto" || probe.available);
 			const next = modes[(modes.indexOf(state.mode) + 1) % modes.length] ?? "yolo";
 			await enter(next, ctx);
 		},
@@ -425,9 +445,23 @@ export default function safety(pi: ExtensionAPI): void {
 		const tier = toolTier(event.toolName, pi.getAllTools());
 		if (tier === "read-only") return undefined;
 
+		// Read-only mode answers every remaining call on its own: nothing can change state, so there is
+		// no checkpoint worth taking, no residual worth classifying, and no dialog worth raising.
+		if (state.mode === "read-only") {
+			if (tier !== "bash") {
+				return denied(readOnlyDenial(`the "${event.toolName}" tool is unavailable because it is not verifiably read-only.`));
+			}
+			const command = commandOf(event.input);
+			const decision = readOnlyBash(command, config.denyBinaries);
+			if (!decision.allowed) return denied(readOnlyDenial(decision.reason));
+			// Claimed like any other safety-resolved command, so confirm-bash does not ask a second time.
+			markSafetyResolved(event.input);
+			return undefined;
+		}
+
 		if (tier === "bash") {
 			markSafetyResolved(event.input);
-			const command = typeof (event.input as { command?: unknown }).command === "string" ? (event.input as { command: string }).command : "";
+			const command = commandOf(event.input);
 			const result = classifyRisk(command, {
 				cwd: ctx.cwd,
 				allowBinaries: config.allowBinaries,
@@ -576,10 +610,10 @@ export default function safety(pi: ExtensionAPI): void {
 		state = restoreSafetyState(ctx.sessionManager.getBranch(), config.mode);
 		const flag = pi.getFlag("safety");
 		let flagSelected = false;
-		if (flag !== undefined && flag !== "yolo" && flag !== "auto" && flag !== "safe") {
-			ctx.ui.notify("--safety must be yolo, auto, or safe; starting in yolo mode.", "error");
+		if (flag !== undefined && !isSafetyMode(flag)) {
+			ctx.ui.notify(`--safety must be one of ${SAFETY_MODES.join(", ")}; starting in yolo mode.`, "error");
 			state = createSafetyState();
-		} else if (flag === "yolo" || flag === "auto" || flag === "safe") {
+		} else if (isSafetyMode(flag)) {
 			state = createSafetyState(flag);
 			flagSelected = true;
 		}

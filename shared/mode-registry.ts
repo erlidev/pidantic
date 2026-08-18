@@ -15,7 +15,15 @@
 
 import { sharedState } from "./process-registry.ts";
 
-export type SafetyMode = "yolo" | "auto" | "safe";
+export type SafetyMode = "yolo" | "auto" | "safe" | "read-only";
+
+/** Every mode, in increasing order of restriction; also the order `alt+s` cycles through. */
+export const SAFETY_MODES = ["yolo", "auto", "safe", "read-only"] as const;
+
+/** One place decides what a mode string is, for the config file, the flag, and the session log alike. */
+export function isSafetyMode(value: unknown): value is SafetyMode {
+	return typeof value === "string" && (SAFETY_MODES as readonly string[]).includes(value);
+}
 
 /** Opaque per-instance token. Identity is the whole value; the label exists for debugging. */
 export interface ModeOwner {

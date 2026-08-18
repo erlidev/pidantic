@@ -1,7 +1,7 @@
 # Pidantic
 
-Pidantic is a Pi package containing six extensions for web research, command approval, safety, planning,
-interruption handling, and (currently) a smart-compaction placeholder. Pi loads the package's
+Pidantic is a Pi package containing seven extensions for web research, command approval, safety, planning,
+interruption handling, terminal UI tweaks, and (currently) a smart-compaction placeholder. Pi loads the package's
 TypeScript entry points directly; there is no build step.
 
 The package is intended for interactive Pi sessions. `localsearch` can also run with hosted search
@@ -12,10 +12,11 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 | Extension | What it adds | Current status |
 | --- | --- | --- |
 | [`localsearch`](docs/extensions/localsearch.md) | `search`, `fetch`, and `/search-status` for web, Wikipedia, GitHub, page extraction, and filtering | Implemented |
-| [`safety`](docs/extensions/safety.md) | Session safety modes, confirmation gates, Git checkpoints, and optional residual classification | Implemented |
+| [`safety`](docs/extensions/safety.md) | Session safety modes, confirmation gates, a read-only mode, Git checkpoints, and optional residual classification | Implemented |
 | [`confirm-bash`](docs/extensions/confirm-bash.md) | Optional model-requested approval before a Bash command runs | Implemented |
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` to interrupt a run and record why it was interrupted | Implemented |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
+| [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed and desktop notifications when something needs the user | Implemented |
 | [`smart-compaction`](docs/extensions/smart-compaction.md) | Reserved extension entry point | Scaffold; no behavior |
 
 ## Install
@@ -61,8 +62,10 @@ search({"query":"Rust async cancellation"})
 fetch({"url":"https://docs.example.com/guide"})
 /search-status
 /safety safe
+/safety read-only
 /plan
 /stop stop after the current tool call
+/ui-tweaks scroll 5
 ```
 
 The bundled `ling-tiny` service is used only when safety's optional `auto` classifier is enabled and
@@ -79,6 +82,7 @@ runtime; start `searxng` alone instead.
 | GitHub repository and issue search | GitHub API | Internet access; unauthenticated requests work with GitHub's lower rate limit |
 | GitHub code search and private GitHub fetches | GitHub API | `LS_GH_TOKEN`; code search requires one |
 | Smart compaction | None currently | No behavior is implemented |
+| Attention notifications | `notify-send`, `osascript`, or an OSC-capable terminal | No key or service; the `terminal` backend needs nothing installed. A host where none works reports once and stays quiet |
 | Safety residual classifier | OpenAI-compatible API; Ling 3.0 Tiny is bundled as `ling-tiny` | Optional; required only for `auto` safety mode. Bundled service requires NVIDIA GPU/container runtime and the model download |
 
 SearXNG binds to loopback only. It has no authentication, so do not expose that port beyond the
@@ -265,12 +269,14 @@ through to the next usable provider in `order` and reports which one answered.
 
 ## `safety`
 
-Safety modes keep all tools active and interpose approval only where configured policy requires it:
+Safety modes keep all tools registered and interpose approval — or, in `read-only`, refusal — only
+where configured policy requires it:
 
 ```text
-/safety                 # report yolo, auto, or safe
+/safety                 # report yolo, auto, safe, or read-only
 /safety safe            # deterministic gates; unknown actions confirm
 /safety auto            # use the configured classifier for eligible residual cases
+/safety read-only       # refuse everything that is not verifiably read-only
 /safety yolo            # stock Pi behavior; safety is inert
 /safety log             # classifier decisions for this session
 /undo                   # confirm and restore the newest Git checkpoint
@@ -290,6 +296,16 @@ segment, so an ordinary pipeline such as `ps -ef | grep -F x | head -5` is one c
 rather than an automatic dialog. `auto` is selectable only while
 the configured OpenAI-compatible endpoint is available. `yolo` is the default and has no safety hook
 effects or status indicator.
+
+`read-only` is the one mode that never asks. A call runs only when it is verifiably read-only: the
+read-only tools, and a Bash command whose every segment passes the strict plan-mode allowlist, where
+any redirection at all — even `> out.txt` in the workspace — is a refusal. `write`, `edit`, unknown
+tools, and everything else are refused outright, and the model is told it is in read-only mode, why
+that call was refused, and to ask the user to leave the mode if the task needs a change. Because
+nothing can change state, the mode takes no checkpoints, runs no Git command, never consults the
+classifier, and raises no dialog, so it behaves the same headless as in a TUI. `denyTools` and
+`denyBinaries` still apply; `allowTools`, `allowBinaries`, and `allowReadPaths` do not, since they
+reduce confirmations rather than establish that a call changes nothing.
 
 A Bash confirmation highlights every offending segment inside the command itself and, when more than
 one rule matched, lists each segment with the rule it broke. A read-only segment that would otherwise
@@ -372,7 +388,7 @@ invalid configuration uses these defaults:
 | Environment variable | Default | Effect |
 | --- | --- | --- |
 | `SAFETY_CONFIG` | `~/.pi/agent/safety.json` | Overrides the safety configuration path |
-| `PI_SAFETY_HEADLESS` | Block confirmation-required calls | Set to `allow` to auto-approve gates in non-interactive modes |
+| `PI_SAFETY_HEADLESS` | Block confirmation-required calls | Set to `allow` to auto-approve gates in non-interactive modes; `read-only` raises no gates and is unaffected |
 
 The optional `ling-tiny` Compose service is now consumed by `auto` mode when enabled. It still
 requires an NVIDIA GPU and is not needed for `safe` or `yolo`. The classifier is a fatigue-reduction
@@ -477,6 +493,72 @@ Without that variable, headless plan mode blocks commands that would require a d
 `write_plan`. Use the escape hatch only when the scripted run is deliberately allowed to make those
 decisions without an interactive user.
 
+## `ui-tweaks`
+
+Two changes to Pi's interactive terminal UI, both inert outside the TUI:
+
+```text
+/ui-tweaks                  # scroll step, notification state, resolved backend, config path
+/ui-tweaks scroll 5         # 1-20 lines per mouse-wheel notch
+/ui-tweaks notify on        # or off
+/ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
+/ui-tweaks test             # send one notification now and report which backend answered
+```
+
+Every change takes effect immediately and is written to the config file as it is made; the write
+merges into the file, so hand-edited fields the command does not touch survive it.
+
+`scroll` sets how far one wheel notch moves in Pi's fullscreen mode, which Pi itself fixes at one
+line. It has no effect on the main-screen renderer, where the terminal emulator owns scrolling. Pi
+exposes no setting for this, so the value is written onto the live renderer; Pi builds a new renderer
+when fullscreen mode is toggled, and the value is re-applied at the next session, turn, or tool-call
+boundary.
+
+Notifications are raised when a confirmation dialog from `safety`, `plan-mode`, or `confirm-bash`
+blocks a run, and when a run settles after at least `minRunSeconds` (6 by default; a reply that fast
+was watched, not waited on). The title carries the project directory and the current model —
+`Ready · pi-extensions · Opus 5` — and the body is the reply's first 180 characters, flattened from
+Markdown to the plain text every backend actually renders. A confirmation is marked urgent, so
+backends that can keep it on screen until it is dismissed. Confirmations travel over the shared
+attention channel in `shared/attention.ts`, so any extension using the shared dialog is covered
+without depending on this one. Sending is fire-and-forget and never delays the dialog or the turn.
+
+Which mechanism works depends on the host, so every path fails soft: a backend that cannot deliver
+reports once per session and then stays quiet. `auto` picks a configured `command` argv first, then
+`osascript` on macOS, `notify-send` on Linux and BSD when the binary exists, and otherwise
+`terminal`, which writes an OSC 9 (or OSC 777 on foot and rxvt) escape and lets the terminal emulator
+raise the notification. The terminal backend needs no D-Bus session and no binary, so it also works
+over SSH, in containers, and in WSL; a terminal that implements neither sequence swallows it. Run
+`/ui-tweaks test` to see which one this host resolved to, and `/ui-tweaks notify off` to stop them.
+
+Configuration is loaded from `~/.pi/agent/ui-tweaks.json`, overridable with `UI_TWEAKS_CONFIG`.
+Missing or invalid configuration uses these defaults:
+
+```json
+{
+  "scroll": {
+    "wheelLines": 3
+  },
+  "notifications": {
+    "enabled": true,
+    "backend": "auto",
+    "command": [],
+    "onResponse": true,
+    "onConfirmation": true,
+    "minRunSeconds": 6,
+    "sound": false
+  }
+}
+```
+
+| Environment variable | Default | Effect |
+| --- | --- | --- |
+| `UI_TWEAKS_CONFIG` | `~/.pi/agent/ui-tweaks.json` | Overrides the ui-tweaks configuration path |
+
+`command` is the escape hatch for a host the built-in backends miss: `{title}`, `{body}`, and
+`{urgency}` are substituted per argv element, and the argv is spawned directly with no shell. See the
+[ui-tweaks manual](docs/extensions/ui-tweaks.md) for backend details and the notification texts.
+
 ## `smart-compaction`
 
 The extension is registered so the package has a stable entry point for future work, but it currently
@@ -493,4 +575,5 @@ observable effect.
 - [safety manual](docs/extensions/safety.md)
 - [plan-mode manual](docs/extensions/plan-mode.md)
 - [stop manual](docs/extensions/stop.md)
+- [ui-tweaks manual](docs/extensions/ui-tweaks.md)
 - [smart-compaction status](docs/extensions/smart-compaction.md)

@@ -11,16 +11,17 @@ separate path and bypass the extension.
 | `yolo` | Unchanged Pi behavior | Unchanged Pi behavior | Allowed |
 | `safe` | Deterministic irreversible-action rules; unknown binaries confirm. Checkpoint before any command that is held or can write | Checkpoint, then confirmation on every call | Every call confirms |
 | `auto` | Safe-mode rules and the same checkpoint; eligible unknown binaries may use the classifier | Checkpoint, then allowed without a dialog when the checkpoint succeeded; otherwise as `safe` | Classifier may allow a call it rates safe |
+| `read-only` | Only verifiably read-only commands run; everything else is refused outright. No checkpoint, no classifier, no dialog | Every call is refused | Every call is refused |
 
 Sessions start in `yolo` unless configuration or `--safety` selects another mode. Controls are:
 
 ```text
-/safety                 # report current mode
-/safety yolo|auto|safe  # switch mode
-/safety log             # list classifier decisions in this session
-/undo                   # confirm and restore the newest checkpoint
-Alt+S                   # cycle yolo → auto → safe; unavailable auto is skipped
-pi --safety safe        # select the starting mode
+/safety                          # report current mode
+/safety yolo|auto|safe|read-only # switch mode
+/safety log                      # list classifier decisions in this session
+/undo                            # confirm and restore the newest checkpoint
+Alt+S                            # cycle yolo → auto → safe → read-only; unavailable auto is skipped
+pi --safety safe                 # select the starting mode
 ```
 
 `auto` can be entered only when `classifier.enabled` is true and `GET <url>/models` succeeds within
@@ -31,6 +32,51 @@ the classifier.
 Plan mode takes precedence. While plan mode is active, safety's tool hook is inert and `/safety`
 reports the arbitration. In a gated safety mode, `confirm-bash` does not display a second dialog for
 a Bash call already resolved by safety.
+
+## Read-only mode
+
+`read-only` is the only mode that answers every call by itself. `safe` and `auto` ask the user or the
+classifier what to do about a risky call; `read-only` refuses it. Nothing in the mode raises a
+dialog, so `PI_SAFETY_HEADLESS` has no effect on it and the mode behaves identically in a TUI, in
+`pi -p`, and in JSON mode.
+
+A call runs only when it is verifiably read-only:
+
+- read-only tools — `read`, `grep`, `find`, `ls`, and the registered `search`/`fetch` — run
+  unchanged;
+- `write`, `edit`, and every unknown tool are refused, an unknown tool included because nothing
+  states what it does;
+- a Bash command runs only when the shared plan-mode allowlist in
+  [`shared/bash-policy.ts`](../../shared/bash-policy.ts) allows every one of its segments.
+
+That allowlist is the strictest policy in the package, and deliberately stricter than the
+irreversible-action rules the other modes use. Every segment must name a known non-mutating binary,
+and **any** redirection is a refusal regardless of where it points — including `> out.txt` inside the
+workspace and `2>/dev/null`, neither of which the `safe` rules object to. An unrecognized binary is
+refused rather than becoming residual, since read-only mode has nothing to escalate it to.
+
+The refusal is returned to the model as the tool result. It names the mode, quotes the specific
+reason — the offending chain segment for a command, the tool name for a tool — and tells the model to
+continue with read-only calls or ask the user to leave the mode, so a denial is not retried as though
+it were a transient failure. The user is not prompted; the mode's contract is that the session cannot
+change anything, not that the user is asked first.
+
+Consequences of that contract:
+
+- **No checkpoints.** Nothing can modify the worktree, so no snapshot is taken and no Git command is
+  run. `/undo` reports that no checkpoint is available, which is accurate.
+- **No classifier.** No call is ever residual, so no verdict or explanation request is made even
+  when `classifier.enabled` is true. The mode is available without the `ling-tiny` service.
+- **Deny lists apply; allow lists do not.** `denyTools` and `denyBinaries` are restrictive, so they
+  compose with the mode and are honoured. `allowTools` and `allowBinaries` exist to reduce
+  confirmation fatigue and cannot assert that a call leaves nothing behind, so `read-only` ignores
+  them; `allowBinaries: ["rm"]` does not make `rm` run.
+- **`allowReadPaths` is not consulted.** The mode asks what a call can change, not what it can see,
+  so a read is judged by its binary alone and a path outside the workspace is not itself a refusal.
+
+Like the rest of the extension, this is an approval workflow rather than a sandbox: user-entered `!`
+and `!!` commands still use pi's own path, and the allowlist bounds recognized binaries, not what a
+binary can be made to do.
 
 ## Deterministic Bash policy
 
@@ -478,10 +524,14 @@ Tool overrides do not disable the checkpoint and per-mode gating behavior of rec
 `edit` tools. A configured default of `auto` falls back to `yolo` with a notice when the classifier
 is unavailable, and a later `/safety auto` retries the endpoint.
 
+`mode` accepts `yolo`, `auto`, `safe`, and `read-only`; any other value falls back to `yolo`. In
+`read-only` mode only the deny lists are consulted, as described in
+[Read-only mode](#read-only-mode).
+
 | Environment variable | Default | Effect |
 | --- | --- | --- |
 | `SAFETY_CONFIG` | `~/.pi/agent/safety.json` | Overrides the configuration path |
-| `PI_SAFETY_HEADLESS` | Block confirmation-required calls | Set to `allow` to auto-approve gates in non-TUI sessions |
+| `PI_SAFETY_HEADLESS` | Block confirmation-required calls | Set to `allow` to auto-approve gates in non-TUI sessions. `read-only` raises no dialogs, so it is unaffected |
 
 ## Bundled classifier service
 

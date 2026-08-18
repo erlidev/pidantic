@@ -16,6 +16,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import { requestAttention } from "./attention.ts";
 
 export interface ConfirmDecision {
 	approved: boolean;
@@ -57,6 +58,10 @@ export async function askConfirmation(
 	{ title, body, reason, approveLabel = "Approve", denyLabel = "Deny…", onRefresh }: ConfirmationOptions,
 ): Promise<ConfirmDecision> {
 	if (ctx.signal?.aborted) return { approved: false };
+
+	// The run stops here until the user answers, so this is the moment anything watching for
+	// "you are needed" wants to know about. With no listener registered this is a no-op.
+	requestAttention({ kind: "confirmation", title, detail: reason, urgent: true });
 
 	return ctx.ui.custom<ConfirmDecision>((tui, theme, keybindings, done) => {
 		let optionIndex = APPROVE;

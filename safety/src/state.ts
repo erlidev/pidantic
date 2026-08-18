@@ -1,5 +1,5 @@
 import type { CustomEntry, ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
-import type { SafetyMode } from "../../shared/mode-registry.ts";
+import { isSafetyMode, type SafetyMode } from "../../shared/mode-registry.ts";
 
 export const SAFETY_ENTRY = "safety-mode";
 
@@ -31,7 +31,7 @@ export function restoreSafetyState(branch: readonly SessionEntry[], fallback: Sa
 		const entry = branch[index];
 		if (!entry || !isSafetyEntry(entry)) continue;
 		const mode = entry.data?.mode;
-		if (mode === "yolo" || mode === "auto" || mode === "safe") return createSafetyState(mode, now);
+		if (isSafetyMode(mode)) return createSafetyState(mode, now);
 	}
 	return createSafetyState(fallback);
 }
