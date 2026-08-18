@@ -85,6 +85,21 @@ export function isPlanModeActive(): boolean {
 	return registry.planActive;
 }
 
+export interface PlanModeSnapshot {
+	readonly owner: ModeOwner | undefined;
+	readonly active: boolean;
+}
+
+/** Preserve a parent plan-mode claim while an in-process child owns the registry. */
+export function snapshotPlanMode(): PlanModeSnapshot {
+	return { owner: registry.planOwner, active: registry.planActive };
+}
+
+export function restorePlanModeSnapshot(snapshot: PlanModeSnapshot): void {
+	registry.planOwner = snapshot.owner;
+	registry.planActive = snapshot.active;
+}
+
 export function claimSafetyMode(owner: ModeOwner): void {
 	registry.safetyOwner = owner;
 	registry.safetyMode = "yolo";
@@ -108,6 +123,22 @@ export function setSafetyMode(owner: ModeOwner, mode: SafetyMode): boolean {
 
 export function getSafetyMode(): SafetyMode {
 	return registry.safetyMode;
+}
+
+export interface SafetyModeSnapshot {
+	readonly owner: ModeOwner | undefined;
+	readonly mode: SafetyMode;
+}
+
+/** Preserve a parent session's ownership while an in-process child temporarily claims the registry. */
+export function snapshotSafetyMode(): SafetyModeSnapshot {
+	return { owner: registry.safetyOwner, mode: registry.safetyMode };
+}
+
+/** Restore the exact parent claim after the nested session has shut down. */
+export function restoreSafetyModeSnapshot(snapshot: SafetyModeSnapshot): void {
+	registry.safetyOwner = snapshot.owner;
+	registry.safetyMode = snapshot.mode;
 }
 
 export function markSafetyResolved(input: unknown): void {

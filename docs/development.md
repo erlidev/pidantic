@@ -46,12 +46,15 @@ npm run test:watch
 npm run smoke -- "your query"
 npm run smoke -- --fetch                          # live page fetches
 npm run smoke -- --filter <url> "grep(/x/i, 3)"   # live filter against a real page
+npm run smoke:subagent                            # construct/bind a child; no model request
 ```
 
 `npm run check` runs strict TypeScript checking followed by every network-independent test suite.
 `npm test` runs only those tests, and `npm run test:watch` reruns affected tests while developing.
-The explicit test glob excludes `localsearch/test/smoke.ts`, because smoke commands perform live
-queries and fetches and require the relevant local service or external provider configuration.
+The explicit test glob excludes both `smoke.ts` files. Localsearch smoke commands perform live
+queries and require the relevant service or external provider. The subagent smoke command creates a
+real file-backed child in a temporary session directory and loads the user's model and extension
+configuration, but does not send a model request.
 
 Pi and TypeBox are runtime peers supplied by the host. They are also development dependencies so
 the compiler can validate extension API usage. Keeping the same compatible ranges in both sections

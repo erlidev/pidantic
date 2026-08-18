@@ -50,6 +50,19 @@ test("safe mode allows read-only tools and deterministically safe commands witho
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "ls -la" })), "allowed");
 });
 
+test("a subagent startup mode overrides persisted and configured parent-independent state", async (t) => {
+	const cwd = await repository(t);
+	const previous = process.env.PI_SUBAGENT_SAFETY_MODE;
+	process.env.PI_SUBAGENT_SAFETY_MODE = "safe";
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_SUBAGENT_SAFETY_MODE;
+		else process.env.PI_SUBAGENT_SAFETY_MODE = previous;
+	});
+	const gate = await harness(t, { cwd, config: { mode: "yolo" } });
+	assert.equal(gate.status(), "Safety: safe");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "gated");
+});
+
 test("safe mode allows deterministic Bash reads from configured external directories", async (t) => {
 	const cwd = await repository(t);
 	const docs = join(cwd, "..", "pi-docs");

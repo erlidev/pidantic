@@ -42,6 +42,7 @@ import {
 import { findTool, toolTier } from "./tiers.ts";
 
 const HEADLESS_ENV = "PI_SAFETY_HEADLESS";
+const SUBAGENT_MODE_ENV = "PI_SUBAGENT_SAFETY_MODE";
 const WRITE_EXCERPT = 1200;
 
 function isHeadless(ctx: Pick<ExtensionContext, "mode" | "hasUI">): boolean {
@@ -665,12 +666,15 @@ export default function safety(pi: ExtensionAPI): void {
 		checkpointNoteCallId = undefined;
 		checkpointWarningShown = false;
 		state = restoreSafetyState(ctx.sessionManager.getBranch(), config.mode);
+		const inheritedMode = process.env[SUBAGENT_MODE_ENV];
+		const inheritsMode = isSafetyMode(inheritedMode);
+		if (inheritsMode) state = createSafetyState(inheritedMode);
 		const flag = pi.getFlag("safety");
 		let flagSelected = false;
-		if (flag !== undefined && !isSafetyMode(flag)) {
+		if (!inheritsMode && flag !== undefined && !isSafetyMode(flag)) {
 			ctx.ui.notify(`--safety must be one of ${SAFETY_MODES.join(", ")}; starting in yolo mode.`, "error");
 			state = createSafetyState();
-		} else if (isSafetyMode(flag)) {
+		} else if (!inheritsMode && isSafetyMode(flag)) {
 			state = createSafetyState(flag);
 			flagSelected = true;
 		}

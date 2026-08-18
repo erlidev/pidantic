@@ -32,6 +32,7 @@ pidantic/
 │   │   ├── safety.md
 │   │   ├── smart-compaction.md
 │   │   ├── stop.md
+│   │   ├── subagent.md
 │   │   └── ui-tweaks.md
 │   └── roadmaps/
 │       └── subagent.md
@@ -118,6 +119,24 @@ pidantic/
 │       ├── excerpt.test.ts
 │       ├── notify.test.ts
 │       └── scroll.test.ts
+├── subagent/
+│   ├── index.ts
+│   ├── src/
+│   │   ├── brief.ts
+│   │   ├── budget.ts
+│   │   ├── custom-prompt.ts
+│   │   ├── index.ts
+│   │   ├── progress.ts
+│   │   ├── render.ts
+│   │   ├── report.ts
+│   │   └── session.ts
+│   └── test/
+│       ├── brief.test.ts
+│       ├── budget.test.ts
+│       ├── custom-prompt.test.ts
+│       ├── progress.test.ts
+│       ├── report.test.ts
+│       └── smoke.ts
 ├── smart-compaction/
 │   └── index.ts
 └── localsearch/
@@ -185,8 +204,9 @@ pidantic/
   `/ui-tweaks` share, so it is described once rather than in each extension manual.
 - `docs/extensions/` contains one user and implementation manual per extension. Extension
   directories contain code only, so operational documentation has one predictable location.
-- `docs/roadmaps/` contains any incomplete implementation work. A roadmap is not a statement of
-  current behavior; implemented behavior belongs in the relevant extension manual.
+- `docs/roadmaps/` contains design records and any remaining manual verification checklists. A
+  roadmap is not a statement of current behavior; implemented behavior belongs in the relevant
+  extension manual.
 
 ## Extension directories
 
@@ -294,6 +314,15 @@ not expressible in a schema remain in `promptGuidelines`.
   `tryTriggerAutocomplete` is called by name, feature-detected and guarded like `scroll.ts`'s field
   write. The editor component is a single slot, so an editor another extension installed is never
   replaced.
+- `subagent/` registers the blocking `spawn` tool and constructs an in-process child `AgentSession`
+  with its own persistent JSONL session and fixed report file. `session.ts` owns loader filtering,
+  tool selection, report submission, inherited safety startup, and explicit child-extension
+  shutdown; `brief.ts` and `custom-prompt.ts` assemble the user and system guidance without mixing
+  the two precedence channels. `budget.ts`, `report.ts`, and `progress.ts` keep limit evaluation,
+  fallback resolution, and event folding independent of Pi registration. `render.ts` owns the
+  width-aware progress row and lazy report/transcript reads, so no child transcript is serialized
+  into the parent's tool result. `src/index.ts` coordinates one child at a time, forwards aborts,
+  restores the brief after compaction, and returns only the report pointer and status to the model.
 - `smart-compaction/` currently exposes a valid no-op entry point while its implementation is
   developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
@@ -308,6 +337,14 @@ not expressible in a schema remain in `promptGuidelines`.
   of `index.ts` so registration stays separable from logic. Pi's packages are also devDependencies,
   so an `index.ts` can be imported by a test and driven through a fake `ExtensionAPI` when the
   registration wiring itself is worth covering; `safety/test/harness.ts` does this.
+
+## Subagent tests
+
+The `subagent/test/` unit suites cover brief composition, the custom-prompt cascade and cap, both
+budget limits, progress event folding with unique file counters, and every report source/status
+combination. `smoke.ts` constructs and binds a real file-backed explore child in a temporary session
+directory without making a model request; it verifies prompt layering, tool restriction, and the
+recursion guard against a locally loaded package configuration.
 
 ## Localsearch tests
 

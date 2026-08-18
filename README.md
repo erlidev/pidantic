@@ -1,7 +1,7 @@
 # Pidantic
 
-Pidantic is a Pi package containing seven extensions for web research, command approval, safety, planning,
-interruption handling, terminal UI tweaks, and (currently) a smart-compaction placeholder. Pi loads the package's
+Pidantic is a Pi package containing eight extensions for web research, command approval, safety, planning,
+blocking subagents, interruption handling, terminal UI tweaks, and (currently) a smart-compaction placeholder. Pi loads the package's
 TypeScript entry points directly; there is no build step.
 
 The package is intended for interactive Pi sessions. `localsearch` can also run with hosted search
@@ -17,6 +17,7 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` to interrupt a run and record why it was interrupted | Implemented |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
 | [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
+| [`subagent`](docs/extensions/subagent.md) | Blocking `spawn` tool with isolated child context, read-only exploration, reports, budgets, and live progress | Implemented |
 | [`smart-compaction`](docs/extensions/smart-compaction.md) | Reserved extension entry point | Scaffold; no behavior |
 
 ## Install

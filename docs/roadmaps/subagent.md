@@ -1,7 +1,12 @@
 # subagent — blocking nested agents for context-constrained models
 
-Status: **design**. The architecture is settled by what the pi SDK actually exposes; all decisions
-are locked.
+Status: **implemented**. Automated tests and type-checking are complete; the manual model/TUI
+verification items in Phase 6 remain an operator checklist.
+
+Implementation correction: the Phase 1 instruction to add every extension tool to `explore` is
+internally inconsistent with D1's side-effect-free guarantee. `confirm-bash` registers a `bash`
+override, so that construction re-enables commands. The implementation uses the package's existing
+known-read-only registry (`search` and `fetch`) and excludes unknown extension tools in explore mode.
 
 ## The problem this solves
 

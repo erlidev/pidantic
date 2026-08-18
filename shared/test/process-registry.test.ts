@@ -97,3 +97,43 @@ test("releasing plan mode clears it for a session that loads without the extensi
 	registry.releasePlanMode(owner);
 	assert.equal(registry.isPlanModeActive(), false);
 });
+
+test("a nested safety claim can restore the exact parent owner and mode", async (t) => {
+	const registry = await import(MODES_A);
+	t.after(() => { registry.resetModeRegistry(); });
+	registry.resetModeRegistry();
+
+	const parent = registry.createModeOwner("parent");
+	registry.claimSafetyMode(parent);
+	registry.setSafetyMode(parent, "safe");
+	const snapshot = registry.snapshotSafetyMode();
+
+	const child = registry.createModeOwner("child");
+	registry.claimSafetyMode(child);
+	registry.setSafetyMode(child, "read-only");
+	registry.releaseSafetyMode(child);
+	registry.restoreSafetyModeSnapshot(snapshot);
+
+	assert.equal(registry.ownsSafetyMode(parent), true);
+	assert.equal(registry.getSafetyMode(), "safe");
+	assert.equal(registry.setSafetyMode(parent, "auto"), true);
+});
+
+test("a nested plan claim can restore the exact parent owner and state", async (t) => {
+	const registry = await import(MODES_A);
+	t.after(() => { registry.resetModeRegistry(); });
+	registry.resetModeRegistry();
+
+	const parent = registry.createModeOwner("parent-plan");
+	registry.claimPlanMode(parent);
+	registry.setPlanModeActive(parent, false);
+	const snapshot = registry.snapshotPlanMode();
+	const child = registry.createModeOwner("child-plan");
+	registry.claimPlanMode(child);
+	registry.releasePlanMode(child);
+	registry.restorePlanModeSnapshot(snapshot);
+
+	assert.equal(registry.ownsPlanMode(parent), true);
+	assert.equal(registry.setPlanModeActive(parent, true), true);
+	assert.equal(registry.isPlanModeActive(), true);
+});
