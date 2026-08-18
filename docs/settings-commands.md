@@ -71,7 +71,7 @@ and each value with what it currently means.
 
 ```text
 /safety-config check⇥
-  checkpoints            on|off · Take a Git checkpoint per turn so /undo can restore it
+  checkpoints            on|off · Take a Git checkpoint per user request so /undo can restore it
   checkpointRetain       number 1–500 · Checkpoints kept before the oldest is pruned
 
 /safety-config checkpointRetain ⇥
@@ -113,8 +113,10 @@ Most changes are in force for the next tool call:
 - `safety` re-reads the file after each change and rebuilds the two pieces of live state that are
   not read per call — the classifier instance, so a new endpoint or model does not answer from the
   previous one's cache, and checkpoint retention.
-- `ui-tweaks` re-reads the file, re-applies the wheel step, and installs or withdraws the
-  completion-chaining editor.
+- `ui-tweaks` re-reads the file, re-applies the wheel step, installs or withdraws the
+  completion-chaining editor, and installs or withdraws its footer. The footer's own fields — the
+  context display, the rate, the sparkline — are read on every frame, so they change under a mounted
+  footer without it being rebuilt.
 
 The exceptions announce themselves on the line that reports the change. `safety.mode` selects what a
 *new* session starts in and deliberately leaves the running session alone; `/safety` is what changes

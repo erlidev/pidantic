@@ -38,7 +38,7 @@ export const SETTINGS: readonly SettingSpec[] = [
 		key: "checkpoints",
 		group: "Checkpoints",
 		kind: "boolean",
-		description: "Take a Git checkpoint per turn so /undo can restore it",
+		description: "Take a Git checkpoint per user request so /undo can restore it",
 		appliesAt: "With checkpoints off, safe and auto confirm every write, since /undo can no longer recover one.",
 	},
 	{ key: "checkpointRetain", group: "Checkpoints", kind: "number", min: 1, max: 500, description: "Checkpoints kept before the oldest is pruned" },

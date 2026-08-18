@@ -6,6 +6,8 @@
  *    or a run finished and the reply is waiting to be read.
  * 3. Slash-command argument suggestions offered as soon as the command name is completed, which pi
  *    leaves to the next keystroke.
+ * 4. A footer that shows the context in use over the window rather than as a percentage of it, and
+ *    the rate the model is generating at.
  *
  * All are inert outside the interactive TUI. Which notification backend works is host-specific, so
  * every path fails soft: a backend that cannot deliver says so once per session and is then quiet,
@@ -14,16 +16,30 @@
 
 import { basename } from "node:path";
 import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ReadonlyFooterDataProvider } from "@earendil-works/pi-coding-agent";
 import { type AttentionRequest, onAttention } from "../../shared/attention.ts";
 import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
+import { autoCompactEnabled } from "./auto-compact.ts";
 import { withArgumentCompletions } from "./completion.ts";
 import { clampWheelLines, type ConfigPatch, configPath, DEFAULTS, loadConfig, MAX_WHEEL_LINES, type UiTweaksConfig, updateConfig } from "./config.ts";
 import { createEditorFactory, type EditorFactory } from "./editor.ts";
 import { excerpt } from "./excerpt.ts";
+import { collectUsage, createFooter, type FooterState, type UsageEntry } from "./footer.ts";
 import { createNotifier, type Notification } from "./notify.ts";
+import { TokenRate } from "./rate.ts";
 import { applyWheelLines, captureTui, type WheelTui } from "./scroll.ts";
 import { SETTINGS, verbCompletions } from "./settings.ts";
+
+/**
+ * How often the footer repaints while the agent is running.
+ *
+ * Pi's TUI renders every component on every frame, but only when something asks for a frame, and
+ * nothing does while a tool runs: the context figure and the rate would sit still through a long
+ * bash call and only catch up when the next message arrived. A run is the one period where this
+ * footer's own fields change on their own, so it asks for the frames itself, at a pace fast enough
+ * to read a moving number and slow enough to be nothing next to what streaming already costs.
+ */
+const FOOTER_REFRESH_MS = 250;
 
 function isInteractive(ctx: Pick<ExtensionContext, "mode" | "hasUI">): boolean {
 	return ctx.mode === "tui" && ctx.hasUI;
@@ -70,6 +86,12 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 	let lastMessage: AssistantMessage | undefined;
 	/** One failing backend is a configuration problem, not something to report on every run. */
 	let failureReported = false;
+	const rate = new TokenRate();
+	/** Set while this extension holds pi's footer slot; cleared when pi disposes the component. */
+	let footerClaimed = false;
+	/** Pi's tui handle as the footer factory receives it, used to repaint while a run moves. */
+	let footerTui: { requestRender?: (force?: boolean) => void } | undefined;
+	let footerTicker: NodeJS.Timeout | undefined;
 
 	const notifier = createNotifier({
 		exec: (command, args, options) => pi.exec(command, args, options),
@@ -80,6 +102,110 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 
 	function reapplyScroll(): void {
 		applyWheelLines(tui, config.scroll.wheelLines);
+	}
+
+	function repaintFooter(): void {
+		footerTui?.requestRender?.();
+	}
+
+	/** Repaint while the agent runs, and stop the moment it settles: an idle footer changes nothing. */
+	function trackRun(running: boolean): void {
+		if (footerTicker) {
+			clearInterval(footerTicker);
+			footerTicker = undefined;
+		}
+		if (!running || !footerTui) return;
+		footerTicker = setInterval(repaintFooter, FOOTER_REFRESH_MS);
+		// A repaint timer is not a reason to keep pi alive.
+		footerTicker.unref?.();
+	}
+
+	/**
+	 * Kimi Coding is subscription-backed despite authenticating with an API key, which is pi's own
+	 * special case. The rest is pi's `isUsingSubscription`, rebuilt from the registry the extension
+	 * context carries, since the model runtime that answers it is not exposed.
+	 */
+	function usingSubscription(ctx: ExtensionContext): boolean {
+		const model = ctx.model;
+		if (!model) return false;
+		if (model.provider === "kimi-coding") return true;
+		try {
+			return ctx.modelRegistry.isUsingOAuth(model) && ctx.modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true;
+		} catch {
+			return false;
+		}
+	}
+
+	/** Everything the footer draws, read fresh: pi renders the component on every frame. */
+	function footerState(ctx: ExtensionContext, footerData: ReadonlyFooterDataProvider): FooterState {
+		const { totals, cacheHitRate } = collectUsage(ctx.sessionManager.getEntries() as unknown as UsageEntry[]);
+		let context: ReturnType<ExtensionContext["getContextUsage"]>;
+		try {
+			context = ctx.getContextUsage();
+		} catch {
+			// A context torn down mid-render is a blank field, not a crashed footer.
+		}
+		const model = ctx.model;
+		return {
+			cwd: ctx.cwd,
+			home: process.env.HOME || process.env.USERPROFILE,
+			branch: footerData.getGitBranch() ?? undefined,
+			sessionName: ctx.sessionManager.getSessionName() ?? undefined,
+			usage: totals,
+			cacheHitRate,
+			contextTokens: context?.tokens ?? null,
+			contextWindow: context?.contextWindow ?? model?.contextWindow ?? 0,
+			contextPercent: context?.percent ?? null,
+			autoCompact: autoCompactEnabled(ctx.cwd, ctx.isProjectTrusted()),
+			subscription: usingSubscription(ctx),
+			experimental: process.env.PI_EXPERIMENTAL === "1",
+			model: model ? { id: model.id, provider: model.provider, reasoning: model.reasoning } : undefined,
+			thinkingLevel: ctx.thinkingLevel,
+			showProvider: footerData.getAvailableProviderCount() > 1,
+			rate: rate.snapshot(Date.now()),
+			statuses: [...footerData.getExtensionStatuses().entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text),
+		};
+	}
+
+	/**
+	 * Install or withdraw the footer, following the current setting.
+	 *
+	 * Pi has no `getFooter`, so the slot is claimed once per session rather than re-asserted: an
+	 * extension that installs its own footer after this one disposes ours, and taking it back would
+	 * be a fight neither footer wins. Pi drops every extension footer before a session switch or a
+	 * reload, and both are followed by `session_start`, which is where this runs.
+	 */
+	function applyFooter(ctx: ExtensionContext): void {
+		if (!isInteractive(ctx)) return;
+		try {
+			if (!config.footer.enabled) {
+				if (!footerClaimed) return;
+				footerClaimed = false;
+				footerTui = undefined;
+				ctx.ui.setFooter(undefined);
+				return;
+			}
+			if (footerClaimed) return;
+			// Claimed before the call, not inside the factory: withdrawing has to work even on a pi
+			// build that holds the factory rather than running it.
+			footerClaimed = true;
+			ctx.ui.setFooter((componentTui, theme, footerData) => {
+				footerTui = componentTui as unknown as { requestRender?: (force?: boolean) => void };
+				return createFooter(theme, {
+					state: () => footerState(ctx, footerData),
+					options: () => config.footer,
+					onDispose: () => {
+						footerClaimed = false;
+						footerTui = undefined;
+					},
+				});
+			});
+			// A footer claimed while a run is already in progress still has a run to follow.
+			trackRun(runStartedAt !== undefined);
+		} catch {
+			// A pi build without the footer slot keeps its own footer, not a broken session.
+			footerClaimed = false;
+		}
 	}
 
 	/**
@@ -135,6 +261,7 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 		tui = captureTui(ctx);
 		reapplyScroll();
 		applyCompletionChain(ctx);
+		applyFooter(ctx);
 
 		// The wrapper reads the setting on every request, so it is installed once and stays correct
 		// through a later change; pi offers no way to remove one.
@@ -155,11 +282,28 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async () => {
 		unsubscribe?.();
 		unsubscribe = undefined;
+		trackRun(false);
 	});
 
 	pi.on("agent_start", async () => {
 		runStartedAt = Date.now();
 		lastMessage = undefined;
+		trackRun(true);
+	});
+
+	// The rate has nowhere to be drawn outside the TUI, and message_update fires per streamed
+	// fragment, so neither hook does any work in a print, JSON, or RPC session.
+	pi.on("message_start", async (event, ctx) => {
+		if (event.message.role === "assistant" && isInteractive(ctx)) rate.start();
+	});
+
+	// Text, thinking, and tool-call arguments are all generated tokens, so every delta counts toward
+	// the live rate. Drawing it is the ticker's job; this only counts.
+	pi.on("message_update", async (event, ctx) => {
+		if (!isInteractive(ctx) || event.message.role !== "assistant") return;
+		const streamed = event.assistantMessageEvent;
+		if (!("delta" in streamed) || typeof streamed.delta !== "string") return;
+		rate.delta(streamed.delta, Date.now());
 	});
 
 	// Pi builds a new renderer when the user toggles fullscreen, and it starts at the stock one line
@@ -168,12 +312,21 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 	pi.on("tool_execution_end", async () => reapplyScroll());
 
 	pi.on("message_end", async (event) => {
-		if (event.message.role === "assistant") lastMessage = event.message as AssistantMessage;
+		if (event.message.role === "assistant") {
+			lastMessage = event.message as AssistantMessage;
+			// The exact count, and the only point the character estimate can be calibrated against.
+			rate.finish(lastMessage.usage?.output, Date.now());
+			repaintFooter();
+		}
 		return undefined;
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
 		reapplyScroll();
+		// An aborted or failed stream never reaches message_end; the live rate must not stay live.
+		rate.idle();
+		trackRun(false);
+		repaintFooter();
 		const startedAt = runStartedAt;
 		const message = lastMessage;
 		runStartedAt = undefined;
@@ -309,6 +462,7 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 				failureReported = false;
 				reapplyScroll();
 				applyCompletionChain(ctx);
+				applyFooter(ctx);
 				return;
 			}
 
@@ -316,6 +470,12 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 			const scrollState = tui?.mode === "fullscreen"
 				? `${config.scroll.wheelLines} lines/notch`
 				: `${config.scroll.wheelLines} lines/notch (fullscreen mode only)`;
+			// Only notify-send takes an expiry; the other backends leave the duration to the host.
+			const expiry = backend === "notify-send"
+				? config.notifications.timeoutSeconds === 0
+					? "up until dismissed"
+					: `up ${config.notifications.timeoutSeconds}s`
+				: undefined;
 			const triggers = [
 				config.notifications.onConfirmation ? "confirmations" : "",
 				config.notifications.onResponse
@@ -323,13 +483,20 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 						? `responses after ${config.notifications.minRunSeconds}s`
 						: "every response"
 					: "",
+				expiry ?? "",
 			].filter(Boolean).join(", ");
 			const notifyState = config.notifications.enabled
 				? `on · ${backend} · ${triggers || "nothing selected"}`
 				: `off · would use ${backend}`;
 			const chainState = config.autocomplete.chainArguments ? "slash-command arguments chained" : "off";
+			const footerSummary = config.footer.enabled
+				? [
+					config.footer.context === "tokens" ? "context in tokens" : "context in percent",
+					config.footer.tokensPerSecond ? (config.footer.sparkline ? "rate with sparkline" : "rate") : "no rate",
+				].join(" · ")
+				: "off · pi's own footer";
 			ctx.ui.notify(
-				`Scroll: ${scrollState}\nNotifications: ${notifyState}\nAutocomplete: ${chainState}\nConfig: ${configPath()}\n` +
+				`Scroll: ${scrollState}\nFooter: ${footerSummary}\nNotifications: ${notifyState}\nAutocomplete: ${chainState}\nConfig: ${configPath()}\n` +
 					"/ui-tweaks config lists every setting; /ui-tweaks <setting> <value> changes one.",
 				"info",
 			);

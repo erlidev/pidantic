@@ -54,11 +54,11 @@ test("mode arbitration crosses a second evaluation of the registry", async (t) =
 	assert.equal(b.setSafetyMode(safety, "safe"), true);
 	assert.equal(b.getSafetyMode(), "safe");
 
-	// The resolved-call marker is identity-based, so it has to be the same WeakSet on both sides.
+	// The approved-call marker is identity-based, so it has to be the same WeakSet on both sides.
 	const input = { command: "ls" };
-	a.markSafetyResolved(input);
-	assert.equal(b.wasSafetyResolved(input), true);
-	assert.equal(b.wasSafetyResolved({ command: "ls" }), false);
+	a.markSafetyApproved(input);
+	assert.equal(b.wasSafetyApproved(input), true);
+	assert.equal(b.wasSafetyApproved({ command: "ls" }), false);
 });
 
 test("only the current owner writes a mode", async (t) => {

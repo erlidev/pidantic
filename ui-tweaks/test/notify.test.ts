@@ -51,7 +51,7 @@ test("a configured command wins over platform detection under auto", async () =>
 	assert.equal(await notifier.resolve(notifications({ command: ["custom"] })), "command");
 });
 
-test("notify-send carries urgency, the icon and both text fields", async () => {
+test("an urgent send carries the same urgency and timeout as any other", async () => {
 	const { calls, notifier } = harness();
 	const outcome = await notifier.send(notifications({ backend: "notify-send" }), {
 		title: "Approval needed",
@@ -64,18 +64,26 @@ test("notify-send carries urgency, the icon and both text fields", async () => {
 	const [call] = calls;
 	assert.equal(call.command, "notify-send");
 	assert.deepEqual(call.args.slice(-2), ["Approval needed", "rm -rf build\npi-extensions"]);
-	assert.equal(call.args[call.args.indexOf("-u") + 1], "critical");
-	assert.equal(call.args[call.args.indexOf("-t") + 1], "0");
+	assert.equal(call.args[call.args.indexOf("-u") + 1], "normal");
+	assert.equal(call.args[call.args.indexOf("-t") + 1], "3000");
 	assert.ok(!call.args.some((arg) => arg.startsWith("string:sound-name")));
 });
 
-test("a non-urgent notify-send expires, and sound adds the hint", async () => {
+test("every send times out at the same mark, and sound adds the hint", async () => {
 	const { calls, notifier } = harness();
 	await notifier.send(notifications({ backend: "notify-send", sound: true }), { title: "Ready", body: "done" });
 	const [call] = calls;
 	assert.equal(call.args[call.args.indexOf("-u") + 1], "normal");
-	assert.equal(call.args[call.args.indexOf("-t") + 1], "6000");
+	assert.equal(call.args[call.args.indexOf("-t") + 1], "3000");
 	assert.ok(call.args.includes("string:sound-name:message-new-instant"));
+});
+
+test("the timeout follows the setting, and 0 stays up until dismissed", async () => {
+	const { calls, notifier } = harness();
+	await notifier.send(notifications({ backend: "notify-send", timeoutSeconds: 10 }), { title: "Ready", body: "done" });
+	await notifier.send(notifications({ backend: "notify-send", timeoutSeconds: 0 }), { title: "Approval needed", body: "rm -rf build", urgent: true });
+	assert.equal(calls[0].args[calls[0].args.indexOf("-t") + 1], "10000");
+	assert.equal(calls[1].args[calls[1].args.indexOf("-t") + 1], "0");
 });
 
 test("osascript quotes the script and keeps the title free of user text", async () => {

@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -15,6 +15,8 @@ export const STALE_CHECKPOINT_MS = 24 * 60 * 60 * 1000;
 export interface Checkpoint {
 	ref: string;
 	commit: string;
+	/** Root-relative paths a deterministic write may restore; undefined means the whole worktree. */
+	paths?: string[];
 }
 
 export interface CheckpointStoreOptions {
@@ -79,7 +81,12 @@ export class CheckpointStore {
 		}
 	}
 
-	async snapshot(): Promise<Checkpoint | undefined> {
+	private async normalizePaths(paths: string[]): Promise<string[]> {
+		const root = await this.git(["rev-parse", "--show-toplevel"]);
+		return [...new Set(paths.map((path) => relative(root, path)).filter((path) => path && !isAbsolute(path) && path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)))].sort();
+	}
+
+	async snapshot(paths?: string[]): Promise<Checkpoint | undefined> {
 		if (!await this.available()) return undefined;
 		const directory = await mkdtemp(join(tmpdir(), "pidantic-safety-"));
 		const index = join(directory, "index");
@@ -102,7 +109,7 @@ export class CheckpointStore {
 			const commit = await this.git(["commit-tree", tree, "-m", "Pidantic safety checkpoint"], identityEnv);
 			const ref = `${this.refPrefix}/${Date.now()}-${String(this.sequence++).padStart(4, "0")}`;
 			await this.git(["update-ref", ref, commit]);
-			const checkpoint = { ref, commit };
+			const checkpoint = { ref, commit, paths: paths === undefined ? undefined : await this.normalizePaths(paths) };
 			this.checkpoints.push(checkpoint);
 			await this.prune();
 			return checkpoint;
@@ -111,19 +118,44 @@ export class CheckpointStore {
 		}
 	}
 
+	/** Adds deterministic write targets to the latest checkpoint, or promotes it to worktree-wide. */
+	async extendLatest(paths?: string[]): Promise<void> {
+		const checkpoint = await this.latest();
+		if (!checkpoint || checkpoint.paths === undefined) return;
+		if (paths === undefined) {
+			checkpoint.paths = undefined;
+			return;
+		}
+		checkpoint.paths = [...new Set([...checkpoint.paths, ...await this.normalizePaths(paths)])].sort();
+	}
+
 	/**
 	 * The paths `restoreLatest` would rewrite or delete: everything that differs from the checkpoint,
-	 * plus untracked files it would remove. A restore covers the whole worktree, so this is the only
-	 * way to see beforehand that it also reverts work another Pi session did in this repository.
+	 * plus untracked files it would remove, restricted to deterministic write targets when available.
 	 */
-	async changedSince(commit: string): Promise<string[]> {
-		const tracked = (await this.git(["diff", "--name-only", commit, "--"])).split("\n").filter(Boolean);
+	async changedSince(commit: string, paths?: string[]): Promise<string[]> {
+		const directory = await mkdtemp(join(tmpdir(), "pidantic-safety-preview-"));
+		const index = join(directory, "index");
+		let tracked: string[];
+		try {
+			const env = { GIT_INDEX_FILE: index };
+			await this.git(["read-tree", commit], env);
+			tracked = paths?.length === 0
+				? []
+				: (await this.git(["diff", "--name-only", "--", ...(paths ?? [":/"])], env)).split("\n").filter(Boolean);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 		const checkpointPaths = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", commit])).split("\0").filter(Boolean));
+		const scope = paths === undefined ? undefined : new Set(paths);
 		// `:/` for the same reason `restoreLatest` uses it: Pi may have been started in a subdirectory.
 		const untracked = (await this.git(["ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", ":/"]))
 			.split("\0")
-			.filter((path) => path && !checkpointPaths.has(path));
-		return [...new Set([...tracked, ...untracked])].sort();
+			.filter((path) => path && !checkpointPaths.has(path) && (!scope || scope.has(path)));
+		const stagedAdded = (await this.git(["ls-files", "--cached", "--full-name", "-z", "--", ":/"]))
+			.split("\0")
+			.filter((path) => path && !checkpointPaths.has(path) && (!scope || scope.has(path)));
+		return [...new Set([...tracked, ...untracked, ...stagedAdded])].sort();
 	}
 
 	/**
@@ -170,8 +202,10 @@ export class CheckpointStore {
 		if (!checkpoint) return undefined;
 		const root = await this.git(["rev-parse", "--show-toplevel"]);
 		const checkpointPaths = new Set((await this.git(["ls-tree", "-r", "--name-only", "-z", checkpoint.commit])).split("\0").filter(Boolean));
-		await this.git(["restore", "--source", checkpoint.commit, "--worktree", "--", ":/"]);
-		// Undoing the turn means every path the checkpoint does not contain goes away, so the index is
+		const scope = checkpoint.paths === undefined ? undefined : new Set(checkpoint.paths);
+		const restorePaths = checkpoint.paths?.filter((path) => checkpointPaths.has(path)) ?? [":/"];
+		if (restorePaths.length > 0) await this.git(["restore", "--source", checkpoint.commit, "--worktree", "--", ...restorePaths]);
+		// Within the restore scope, every path the checkpoint does not contain goes away, so the index is
 		// listed alongside the untracked files: a file the agent created and staged is in neither set
 		// `git restore` covers — it is absent from the checkpoint tree and no longer untracked.
 		// `:/` because `ls-files` otherwise lists only the directory Pi was started in, not the worktree.
@@ -182,6 +216,7 @@ export class CheckpointStore {
 			...untracked.split("\0").filter(Boolean).map((path) => [path, false] as const),
 			...staged.split("\0").filter(Boolean).map((path) => [path, true] as const),
 		]) {
+			if (scope && !scope.has(relativePath)) continue;
 			if (checkpointPaths.has(relativePath)) continue;
 			if (tracked) added.push(relativePath);
 			try {

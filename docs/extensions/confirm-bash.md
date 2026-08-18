@@ -84,7 +84,13 @@ Two pieces, both in `index.ts`:
 - **The gate** is a `tool_call` handler, not code inside `execute`. Sibling tool calls are
   preflighted sequentially and only then executed concurrently, so gating in preflight serializes the
   dialogs for free while leaving bash's parallel execution intact. Denial returns
-  `{ block: true, reason }`, pi's native mechanism.
+  `{ block: true, reason }`, pi's native mechanism. The gate skips exactly one case: a call safety
+  already put in front of the user and they approved, which it learns from the claim safety records
+  in `shared/mode-registry.ts`. Safety runs first because it is registered first, and it claims a call
+  only after an interactive approval — a command it allowed by rule, by classifier, by read-only
+  policy, or through its own headless escape hatch asked nobody anything, so a flagged one still
+  reaches this dialog. A flagged command is never silently run because another extension found it
+  harmless.
 
 ## Known limitations
 

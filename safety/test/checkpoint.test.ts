@@ -171,6 +171,28 @@ test("changedSince is empty when the worktree still matches the checkpoint", asy
 	assert.deepEqual(await store.changedSince(checkpoint!.commit), []);
 });
 
+test("changedSince does not report an unchanged file that was untracked when captured", async (t) => {
+	const cwd = await repository(t);
+	await writeFile(join(cwd, "untracked.txt"), "user work\n");
+	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 5 });
+	const checkpoint = await store.snapshot();
+	assert.deepEqual(await store.changedSince(checkpoint!.commit), []);
+});
+
+test("a scoped checkpoint restores only deterministic write targets", async (t) => {
+	const cwd = await repository(t);
+	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 5 });
+	await store.snapshot([join(cwd, "agent.txt")]);
+
+	await writeFile(join(cwd, "agent.txt"), "agent output\n");
+	await writeFile(join(cwd, "tracked.txt"), "concurrent codex edit\n");
+	assert.deepEqual(await store.changedSince(store.list()[0]!.commit, store.list()[0]!.paths), ["agent.txt"]);
+	assert.ok(await store.restoreLatest());
+
+	await assert.rejects(readFile(join(cwd, "agent.txt"), "utf8"));
+	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "concurrent codex edit\n");
+});
+
 test("foreignRuns counts other runs' prefixes, not this run's refs", async (t) => {
 	const cwd = await repository(t);
 	const store = new CheckpointStore({ cwd, sessionId: "session", retain: 5 });

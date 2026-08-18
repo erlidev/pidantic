@@ -31,8 +31,11 @@ session remains in `auto`, but classifier requests fail closed into confirmation
 the classifier.
 
 Plan mode takes precedence. While plan mode is active, safety's tool hook is inert and `/safety`
-reports the arbitration. In a gated safety mode, `confirm-bash` does not display a second dialog for
-a Bash call already resolved by safety.
+reports the arbitration. `confirm-bash` does not display a second dialog for a Bash call the user
+already approved at a safety dialog. That claim covers an answered question, not a handled call: a
+command safety allowed by rule, by classifier verdict, by read-only policy, or through the
+`PI_SAFETY_HEADLESS` escape hatch was never put in front of anyone, so a model's `confirm: true`
+request on it still reaches `confirm-bash`'s own dialog.
 
 ## Read-only mode
 
@@ -205,7 +208,7 @@ rule violation never mixes in unrelated unknown binaries.
 
 ## Writes, commands, and checkpoints
 
-In both `safe` and `auto` an in-workspace `write` or `edit` runs without a dialog once the turn's
+In both `safe` and `auto` an in-workspace `write` or `edit` runs without a dialog once the request's
 checkpoint exists, because `/undo` can restore it. The dialog still appears when the write is outside
 the working directory, or when the checkpoint could not be created (no Git worktree, or a failed
 snapshot) — an unrecoverable write is never silently allowed. Paths outside the working directory are
@@ -240,7 +243,8 @@ call-level one: the snapshot belongs to the first call in the turn that could ch
 every later change in that turn — by any call, whether or not policy recognized it as mutating —
 falls inside the restored range.
 
-The cost is one `git add -A` against a temporary index per turn, on the first such call.
+The cost is one `git add -A` against a temporary index per delivered user message, on the first such
+call.
 A turn that runs a build or test command pays it even when nothing else happens.
 
 The gap this leaves is a change made earlier in the same turn by a call policy classified read-only.
@@ -249,42 +253,55 @@ but a command that both passes it and writes anyway would end up inside the base
 inside the restored range.
 
 A snapshot happens before the call it protects and leaves nothing in the transcript by itself, so the
-call that caused it reports it. Under a Bash row it is `checkpoint taken · /undo restores this turn`,
+call that caused it reports it. Under a Bash row it is `checkpoint taken · /undo restores this request`,
 appended to whatever else that call had to say — the note channel carries one line per call, so the
 snapshot shares it with the classifier verdict or the command description rather than displacing
 one. When the snapshot comes from a `write` or `edit`, whose renderer carries no note, it is an
-informational notification instead. Either way it appears once per turn: later calls reuse that
-snapshot and say nothing about it, so a long turn does not repeat the line.
+informational notification instead. Either way it appears once per delivered user message: later
+calls reuse that snapshot and say nothing about it, so a long response does not repeat the line.
 
 Because a command's effects cannot be predicted from its text the way a write path can, the
 confirmation's detail line states which case applies: a checkpoint was taken and `/undo` restores it,
 or none is available and `/undo` cannot recover the command. A held command that writes nothing —
 a read of a path outside the workspace, for instance — is told neither thing.
 
-Before the first checkpointed call in each agent turn — write, Bash, or unknown tool, whichever comes
-first — safety
+Before the first checkpointed call caused by each delivered user message — write, Bash, or unknown
+tool, whichever comes first — safety
 snapshots the complete Git worktree through a temporary index. Tracked changes and non-ignored untracked files are included;
 the user's index, `HEAD`, and normal reflogs are not modified. Snapshots live below
 `refs/pidantic/safety/<session>/<run>/` and are pruned to `checkpointRetain`. `/undo` restores
 and removes the newest snapshot after a separate confirmation. Ignored files are neither captured nor
 removed.
 
-Restoring means every path the snapshot does not contain goes away, so `/undo` sweeps the index as
-well as the untracked files: a file the turn created and then `git add`ed is absent from the snapshot
-tree, so `git restore` does not reach it, and staging it made it no longer untracked. Those paths are
-deleted and their index entries dropped. Nothing else in the index is touched — anything that existed
-when the snapshot was taken is in its tree, staged or not, so the user's own staged work survives
-`/undo` exactly as before.
+The boundary is the `message_start` event for a user message, not only the start of a top-level Pi
+agent run. Steering and follow-up messages queued while Pi is already running therefore take a fresh
+checkpoint before their first mutating call. Changes made by another process before a queued message
+is delivered are included in that checkpoint and survive `/undo`.
+
+For deterministic `write` and `edit` calls, the checkpoint records each canonical target path and
+restoration is limited to those paths. Multiple writes caused by one user message extend the same
+scope. If a later Bash or unknown tool uses that checkpoint, it is promoted to worktree-wide because
+the tool's affected paths cannot be known before execution.
+
+Within the restore scope, every path the snapshot does not contain goes away, so `/undo` sweeps the
+index as well as untracked files: a file the request created and then `git add`ed is absent from the
+snapshot tree, so `git restore` does not reach it, and staging it made it no longer untracked. Those
+paths are deleted and their index entries dropped. Nothing outside the scope is touched.
 
 ### What `/undo` reverts
 
-A restore covers the whole worktree, not the paths one session touched, so the confirmation lists
-what it is about to rewrite: every path that differs from the checkpoint, plus the untracked files it
-would remove, up to twelve with a count for the rest. Nothing changed since the checkpoint is stated
-as such, and a repository the paths cannot be listed in still offers the restore.
+A restore after only deterministic writes covers their target paths. A restore after Bash or an
+unknown tool covers the whole worktree. The confirmation lists what it is about to rewrite within
+that scope: every path that differs from the checkpoint, plus the untracked files it would remove, up
+to twelve with a count for the rest. The comparison uses the checkpoint tree as a temporary index, so
+a non-ignored untracked file captured in the checkpoint is not falsely reported as deleted merely
+because it is absent from the user's real index.
 
-That list is also the only warning available for a second Pi session working in the same repository:
-its edits are worktree changes made since this session's checkpoint, so `/undo` reverts them too. The
+Because `/undo` is explicitly initiated by the user, opening its confirmation does not raise an
+attention notification. Cancelling is a single `Cancel` action with no free-text reason prompt and no
+denial notification; the decision remains local to the command handler.
+
+That list also warns about overlap with a second Pi session working in the same repository. The
 dialog adds a line when checkpoint refs under another run's prefix exist, which means either a live
 concurrent session or a run that exited without disposing — the two cannot be told apart from a ref
 name, so it reports the possibility rather than asserting a fact.

@@ -103,7 +103,7 @@ test("the argument menu says what each setting takes, and what it is set to now"
 	const gate = await harness(t, { cwd, config: { mode: "safe", denyBinaries: ["curl"] } });
 
 	const keys = new Map(gate.completions("safety-config", "check").map((row) => [row.label, row.description]));
-	assert.equal(keys.get("checkpoints"), "on|off · Take a Git checkpoint per turn so /undo can restore it");
+	assert.equal(keys.get("checkpoints"), "on|off · Take a Git checkpoint per user request so /undo can restore it");
 	assert.equal(keys.get("checkpointRetain"), "number 1–500 · Checkpoints kept before the oldest is pruned");
 
 	const modes = new Map(gate.completions("safety-config", "mode ").map((row) => [row.label, row.description]));

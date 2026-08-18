@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -20,6 +20,10 @@ interface Driver {
 	/** The editor component pi currently holds, and how many autocomplete wrappers were added. */
 	editor(): unknown;
 	readonly wrappers: unknown[];
+	/** The footer pi currently holds, rendered, or undefined when pi has its own back. */
+	footer(width?: number): string[] | undefined;
+	/** Deliver one pi event to the extension, for the hooks the command itself cannot reach. */
+	emit(name: string, event: unknown): Promise<void>;
 }
 
 interface DriverOptions {
@@ -40,20 +44,40 @@ async function driver(t: TestContext, options: DriverOptions = {}): Promise<Driv
 		await rm(dir, { force: true, recursive: true });
 	});
 
+	// Pi's own settings, so the footer's auto-compaction marker is this test's fact, not the
+	// developer's. The extension reads it through pi's own agent directory.
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = join(dir, "agent");
+	await mkdir(join(dir, "agent"), { recursive: true });
+	await writeFile(join(dir, "agent", "settings.json"), JSON.stringify({ compaction: { enabled: true } }));
+	t.after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+
 	const notices: { message: string; level: string }[] = [];
 	const wrappers: unknown[] = [];
 	let editorComponent: unknown = options.foreignEditor;
+	let footerComponent: { render(width: number): string[]; dispose?(): void } | undefined;
 	const hooks = new Map<string, (event: unknown, ctx: unknown) => Promise<unknown>>();
 	let handler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
 	let complete: ((prefix: string) => { value: string; label: string; description?: string }[]) | undefined;
 
+	const entries = [
+		{ type: "message", message: { role: "assistant", usage: { input: 900, output: 120, cacheRead: 300, cacheWrite: 0, cost: { total: 0.02 } } } },
+	];
 	const ctx = {
 		cwd: dir,
 		// Non-interactive by default: the scroll tweak and every notification are inert, which is what
 		// most command cases want — only the configuration path is under test.
 		mode: options.interactive ? "tui" : "print",
 		hasUI: options.interactive === true,
-		model: undefined,
+		model: { id: "some-model", provider: "someone", reasoning: false, contextWindow: 200000 },
+		thinkingLevel: undefined,
+		sessionManager: { getEntries: () => entries, getSessionName: () => undefined },
+		modelRegistry: { isUsingOAuth: () => false, getProvider: () => undefined },
+		isProjectTrusted: () => true,
+		getContextUsage: () => ({ tokens: 84210, contextWindow: 200000, percent: 42.1 }),
 		ui: {
 			notify: (message: string, level: string) => { notices.push({ message, level }); },
 			// The scroll probe: nothing is mounted, so it captures no renderer.
@@ -61,6 +85,15 @@ async function driver(t: TestContext, options: DriverOptions = {}): Promise<Driv
 			getEditorComponent: () => editorComponent,
 			setEditorComponent: (factory: unknown) => { editorComponent = factory; },
 			addAutocompleteProvider: (factory: unknown) => { wrappers.push(factory); },
+			// Pi builds the component as it takes the factory, and disposes the one it is replacing.
+			setFooter: (factory: ((tui: unknown, theme: unknown, footerData: unknown) => typeof footerComponent) | undefined) => {
+				footerComponent?.dispose?.();
+				footerComponent = factory?.({}, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, {
+					getGitBranch: () => "main",
+					getExtensionStatuses: () => new Map([["safety", "safety: safe"]]),
+					getAvailableProviderCount: () => 1,
+				});
+			},
 		},
 	};
 
@@ -84,6 +117,8 @@ async function driver(t: TestContext, options: DriverOptions = {}): Promise<Driv
 		last: () => notices[notices.length - 1]?.message ?? "",
 		editor: () => editorComponent,
 		wrappers,
+		footer: (width = 120) => footerComponent?.render(width),
+		emit: async (name, event) => { await hooks.get(name)?.(event, ctx); },
 	};
 }
 
@@ -102,7 +137,9 @@ test("a setting the verbs never covered is reachable by key", async (t) => {
 	await ui.run("notifications.backend terminal");
 	assert.match(ui.last(), /notifications\.backend: auto → terminal/);
 	await ui.run("sound on");
-	assert.deepEqual((await ui.stored()).notifications, { backend: "terminal", sound: true });
+	await ui.run("notifications.timeoutSeconds 10");
+	assert.match(ui.last(), /notifications\.timeoutSeconds: 3s → 10s/);
+	assert.deepEqual((await ui.stored()).notifications, { backend: "terminal", sound: true, timeoutSeconds: 10 });
 });
 
 test("bare /ui-tweaks summarises and /ui-tweaks config lists", async (t) => {
@@ -177,6 +214,10 @@ test("the argument menu says what each verb and key takes", async (t) => {
 	assert.equal(rows.get("notify after"), "seconds ≥ 0 · how long a run must last before it notifies");
 	assert.equal(rows.get("notifications.backend"), "auto|notify-send|osascript|… · How a notification is delivered; auto picks one from the host");
 	assert.equal(rows.get("notifications.sound"), "on|off · Ask the backend for its sound, and ring the terminal bell");
+	assert.equal(
+		rows.get("notifications.timeoutSeconds"),
+		"seconds ≥ 0 · How long a notification stays up before expiring; 0 leaves it up until dismissed; only notify-send takes it",
+	);
 });
 
 test("a verb that takes a number offers the value in force and the default", async (t) => {
@@ -190,4 +231,55 @@ test("a verb that takes a number offers the value in force and the default", asy
 	// The verb and the key reach the same value; the menu lists it once.
 	assert.deepEqual(ui.completions("scroll ").filter((option) => option.value === "scroll 7").length, 1);
 	assert.deepEqual(ui.completions("notify after ").map((option) => option.label), ["6"]);
+});
+
+test("the footer replaces pi's own, and hands the slot back when it is turned off", async (t) => {
+	const ui = await driver(t, { interactive: true });
+
+	const lines = ui.footer();
+	assert.equal(lines?.length, 3);
+	assert.match(lines?.[0] ?? "", /\(main\)$/);
+	// The context in tokens, the marker read from pi's own settings, and the model on the right.
+	assert.match(lines?.[1] ?? "", /↑900 ↓120 R300 CH25\.0% \$0\.020 84\.2k\/200k \(auto\)\s+some-model$/);
+	assert.equal(lines?.[2], "safety: safe");
+
+	await ui.run("footer.enabled off");
+	assert.equal(ui.footer(), undefined);
+
+	await ui.run("footer.enabled on");
+	assert.match(ui.footer()?.[1] ?? "", /84\.2k\/200k/);
+});
+
+test("a footer setting changes what the mounted footer draws, without remounting it", async (t) => {
+	const ui = await driver(t, { interactive: true });
+	const mounted = ui.footer();
+
+	await ui.run("footer.context percent");
+	assert.match(ui.footer()?.[1] ?? "", /42\.1%\/200k/);
+	assert.deepEqual(await ui.stored(), { footer: { context: "percent" } });
+	assert.notDeepEqual(ui.footer(), mounted);
+});
+
+test("outside the tui pi keeps its own footer", async (t) => {
+	const ui = await driver(t);
+	assert.equal(ui.footer(), undefined);
+	await ui.run("footer.enabled off");
+	assert.equal(ui.footer(), undefined);
+});
+
+test("a streamed message puts its generation rate in the footer", async (t) => {
+	const ui = await driver(t, { interactive: true });
+	assert.doesNotMatch(ui.footer()?.[1] ?? "", /t\/s/);
+
+	await ui.emit("message_start", { message: { role: "assistant" } });
+	// Enough chunks, over enough time, that the rate is a reading rather than the provider's framing.
+	for (let chunk = 0; chunk < 6; chunk++) {
+		await ui.emit("message_update", { message: { role: "assistant" }, assistantMessageEvent: { type: "text_delta", delta: "x".repeat(2000) } });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+	await ui.emit("message_end", { message: { role: "assistant", usage: { output: 500 } } });
+
+	assert.match(ui.footer()?.[1] ?? "", /\d+t\/s/);
+	// Finished, so the number is the provider's own count and carries no estimate marker.
+	assert.doesNotMatch(ui.footer()?.[1] ?? "", /~\d/);
 });

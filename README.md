@@ -16,7 +16,7 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 | [`confirm-bash`](docs/extensions/confirm-bash.md) | Optional model-requested approval before a Bash command runs | Implemented |
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` to interrupt a run and record why it was interrupted | Implemented |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
-| [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
+| [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, a footer with context in tokens and a generation-rate readout, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
 | [`subagent`](docs/extensions/subagent.md) | Blocking `spawn` tool with isolated child context, read-only exploration, reports, budgets, and live progress | Implemented |
 | [`smart-compaction`](docs/extensions/smart-compaction.md) | Reserved extension entry point | Scaffold; no behavior |
 
@@ -69,6 +69,7 @@ fetch({"url":"https://docs.example.com/guide"})
 /plan
 /stop stop after the current tool call
 /ui-tweaks scroll 5
+/ui-tweaks footer.context percent
 ```
 
 The bundled `ling-tiny` service is used only when safety's optional `auto` classifier is enabled and
@@ -291,7 +292,7 @@ pi --safety safe        # select the starting mode
 ```
 
 `safe` confirms irreversible or outward-facing Bash commands and every unknown tool call. A `write`
-or `edit` inside the workspace runs without a dialog once the turn's checkpoint exists, since `/undo`
+or `edit` inside the workspace runs without a dialog once the request's checkpoint exists, since `/undo`
 restores it; one outside the workspace, or one with no usable checkpoint, still confirms. `auto`
 applies the same deterministic rules but may silently
 allow a structurally restricted unknown binary or an unknown tool call classified safe, judging the
@@ -337,27 +338,36 @@ Explanations are advisory text from a small local model, not a decision and not 
 read the highlighted command itself before approving it.
 
 Every `write` and `edit` call, every Bash command that can write to disk, and every unknown tool
-create one temporary-index Git checkpoint per agent turn, taken before the first of them runs, so
-`/undo` restores everything that turn changed rather than the last change alone. Checkpointing tracks
+create one temporary-index Git checkpoint per delivered user message, taken before the first of them
+runs, so `/undo` restores everything caused by that message rather than the last change alone. This
+boundary also applies to steering and follow-up messages queued while Pi is already running.
+Checkpointing tracks
 what a call can do, not whether it was held: a rule-allowed `echo x > file`, `sed -i`, or
 `npm install` is snapshotted just like a command that reached a dialog, because being recoverable is
 the reason policy lets it through. Commands the classifier approves are covered too, since the
 snapshot precedes that decision, as is a write outside the workspace, which the checkpoint cannot
-recover but which must not move the turn's baseline. Read-only commands and read-only tools take no
+recover but which must not move the request's baseline. Read-only commands and read-only tools take no
 snapshot. The snapshot includes non-ignored untracked files without changing the user's index or
 `HEAD`, and a Bash confirmation states whether `/undo` can recover the command it is asking about.
-Restoring removes any path the snapshot does not contain, including a file the turn created and
-staged, whose index entry is dropped with it; nothing that existed at snapshot time is touched. The call that caused a snapshot reports it once per turn —
-`checkpoint taken · /undo restores this turn` under a Bash call, appended to whatever else that call
+For `write` and `edit`, restoring is limited to the paths those calls targeted, so concurrent changes
+elsewhere in the repository are left alone. Bash and unknown tools retain worktree-wide recovery
+because their affected paths cannot be known before execution. Within that scope, restoring removes
+any path the snapshot does not contain, including a file the request created and staged, whose index
+entry is dropped with it. The call that caused a snapshot reports it once per user message —
+`checkpoint taken · /undo restores this request` under a Bash call, appended to whatever else that call
 had to say, or a notification when a `write` triggered it. Set `"checkpoints": false` to disable snapshots and `/undo` entirely;
 safety then runs no Git command, and both gated modes confirm every write, since the recoverability
 they trade that dialog for is gone.
 Checkpoints are scoped to the current Pi run: their refs are deleted when the session shuts down,
 and a resumed session starts with none, so `/undo` never reverts to a snapshot from an earlier
-run. A restore covers the whole worktree, so its confirmation lists the paths it is about to
-rewrite, and says so when another Pi run has checkpoints in the same repository and may be working
-there now. Outside a Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
-safety, and a Bash call resolved by safety does not produce a second `confirm-bash` dialog. Safety
+run. The restore confirmation lists the paths it is about to rewrite and says so when another Pi run
+has checkpoints in the same repository and may be working there now. Since `/undo` is user-initiated,
+that confirmation raises no attention notification and `Cancel` asks for no denial reason. Outside a
+Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
+safety, and a Bash call the user approved at a safety dialog does not produce a second
+`confirm-bash` dialog. A command safety allowed on its own — by rule, by classifier, by read-only
+policy, or through `PI_SAFETY_HEADLESS` — asked nobody anything, so a `confirm: true` on it is still
+raised by `confirm-bash`. Safety
 mode belongs to one session: switching sessions with `/new`, `/resume`, or a fork drops a mode change
 the outgoing session had not finished making, rather than applying it to the incoming one.
 
@@ -507,11 +517,13 @@ decisions without an interactive user.
 
 ## `ui-tweaks`
 
-Three changes to Pi's interactive terminal UI, all inert outside the TUI:
+Four changes to Pi's interactive terminal UI, all inert outside the TUI:
 
 ```text
-/ui-tweaks                  # scroll step, notification state, resolved backend, chaining, config path
+/ui-tweaks                  # scroll step, footer, notification state, resolved backend, chaining, config path
 /ui-tweaks scroll 5         # 1-20 lines per mouse-wheel notch
+/ui-tweaks footer.enabled off               # give pi its own footer back
+/ui-tweaks footer.context percent           # or tokens, the default
 /ui-tweaks notify on        # or off
 /ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
 /ui-tweaks test             # send one notification now and report which backend answered
@@ -529,12 +541,40 @@ exposes no setting for this, so the value is written onto the live renderer; Pi 
 when fullscreen mode is toggled, and the value is re-applied at the next session, turn, or tool-call
 boundary.
 
+The footer replaces Pi's own. It shows the context as the tokens in use over the window —
+`10.4k/150k (auto)` rather than `6.9%/150k (auto)` — and adds the rate the model is generating at:
+
+```text
+↑24k ↓445 10.4k/150k (auto) 61t/s                          claude-opus-5 • high
+```
+
+Every other field is Pi's own, field for field: cumulative tokens, the latest cache hit rate, cost and
+its `(sub)` marker, the warning and error colours as the context fills, the right-aligned model with
+its thinking level and provider, the working directory with its branch and session name, and the line
+other extensions' status text appears on. The tokens in use are printed one step finer than the
+counts beside them, so a few hundred tokens of tool result visibly move them. The sparkline is the same
+number over time, sampled once a second while output is being measured and once more at each
+message's end, so it moves with the readout beside it rather than gaining one bar per reply; it is
+scaled to the range of the samples it shows rather than to zero — rates cluster, and a zero baseline
+draws a solid bar that says nothing — and a steady run draws one flat level. A finished message's rate is the provider's own token count
+over the time it spent generating, measured from the first streamed fragment so a large context does
+not read as a slow model; while a message streams the number is a `~38/s` estimate from the characters
+that have arrived, calibrated by what previous messages turned out to cost in tokens. Each fragment is
+counted over the interval since the one before it rather than at the instant it arrived, so a backend
+that streams nothing while it generates a tool call — TabbyAPI writes one in a separate pass — reads
+as the throughput that pass actually had instead of sliding to zero and then spiking. The number
+changes at most twice a second, since a rate redrawn on every frame is flicker rather than a reading.
+`/ui-tweaks footer.enabled off` hands the slot back to Pi's own footer, and
+`/ui-tweaks footer.context percent` keeps this footer with Pi's percentage.
+
 Notifications are raised when a confirmation dialog from `safety`, `plan-mode`, or `confirm-bash`
 blocks a run, and when a run settles after at least `minRunSeconds` (6 by default; a reply that fast
 was watched, not waited on). The title carries the project directory and the current model —
 `Ready · pi-extensions · Opus 5` — and the body is the reply's first 180 characters, flattened from
-Markdown to the plain text every backend actually renders. A confirmation is marked urgent, so
-backends that can keep it on screen until it is dismissed. Confirmations travel over the shared
+Markdown to the plain text every backend actually renders. Every notification, approval or
+response, stays up for `notifications.timeoutSeconds` (3 by default) before expiring; a zero
+leaves it up until dismissed. The urgency mark of a confirmation is left for the `command`
+backend's `{urgency}` placeholder. Confirmations travel over the shared
 attention channel in `shared/attention.ts`, so any extension using the shared dialog is covered
 without depending on this one. Sending is fire-and-forget and never delays the dialog or the turn.
 
@@ -565,6 +605,12 @@ Missing or invalid configuration uses these defaults:
   "scroll": {
     "wheelLines": 3
   },
+  "footer": {
+    "enabled": true,
+    "context": "tokens",
+    "tokensPerSecond": true,
+    "sparkline": false
+  },
   "autocomplete": {
     "chainArguments": true
   },
@@ -575,6 +621,7 @@ Missing or invalid configuration uses these defaults:
     "onResponse": true,
     "onConfirmation": true,
     "minRunSeconds": 6,
+    "timeoutSeconds": 3,
     "sound": false
   }
 }

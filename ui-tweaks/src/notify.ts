@@ -21,7 +21,7 @@ export interface Notification {
 	body: string;
 	/** An optional second line — elapsed time, the excerpt's source. */
 	detail?: string;
-	/** A run is blocked on this. Backends that can, make it sticky instead of letting it time out. */
+	/** A run is blocked on this. The `command` backend's `{urgency}` placeholder is the only consumer. */
 	urgent?: boolean;
 }
 
@@ -161,12 +161,14 @@ export function createNotifier(deps: NotifyDeps) {
 		}
 
 		if (backend === "notify-send") {
+			// All Pi notifications, approval or response, run the same clock: a critical notice
+			// would linger on most servers until dismissed.
 			const args = [
 				"-a", "Pi",
 				"-i", ICON,
-				"-u", urgent ? "critical" : "normal",
-				// A critical notification is already sticky on most servers; 0 says so where it is not.
-				"-t", urgent ? "0" : "6000",
+				"-u", "normal",
+				// 0 rides notify-send's own reading of a zero timeout: stay up until dismissed.
+				"-t", String(config.timeoutSeconds * 1000),
 				"-h", SYNCHRONOUS_HINT,
 				...(config.sound ? ["-h", "string:sound-name:message-new-instant"] : []),
 				summary,

@@ -35,7 +35,7 @@ type ModeRegistry = {
 	planActive: boolean;
 	safetyOwner: ModeOwner | undefined;
 	safetyMode: SafetyMode;
-	safetyResolvedBash: WeakSet<object>;
+	safetyApprovedBash: WeakSet<object>;
 };
 
 function initial(): ModeRegistry {
@@ -44,7 +44,7 @@ function initial(): ModeRegistry {
 		planActive: false,
 		safetyOwner: undefined,
 		safetyMode: "yolo",
-		safetyResolvedBash: new WeakSet(),
+		safetyApprovedBash: new WeakSet(),
 	};
 }
 
@@ -141,12 +141,19 @@ export function restoreSafetyModeSnapshot(snapshot: SafetyModeSnapshot): void {
 	registry.safetyMode = snapshot.mode;
 }
 
-export function markSafetyResolved(input: unknown): void {
-	if (typeof input === "object" && input !== null) registry.safetyResolvedBash.add(input);
+/**
+ * Records that the user themselves approved this exact Bash call at a safety dialog, so confirm-bash
+ * does not ask about it a second time. It marks an answered question, not a handled call: a command
+ * safety allowed on its own — by rule, by classifier, by read-only policy, or through the headless
+ * escape hatch — was never put in front of anyone, so a model-requested confirmation on it still has
+ * to be asked. Identity is the input object, which both extensions see for one tool call.
+ */
+export function markSafetyApproved(input: unknown): void {
+	if (typeof input === "object" && input !== null) registry.safetyApprovedBash.add(input);
 }
 
-export function wasSafetyResolved(input: unknown): boolean {
-	return typeof input === "object" && input !== null && registry.safetyResolvedBash.has(input);
+export function wasSafetyApproved(input: unknown): boolean {
+	return typeof input === "object" && input !== null && registry.safetyApprovedBash.has(input);
 }
 
 /** Production claims and releases per session; tests need a clean slate without owning anything. */

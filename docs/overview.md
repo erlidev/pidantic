@@ -57,7 +57,9 @@ pidantic/
 │       ├── settings-coverage.test.ts
 │       └── tool-notes.test.ts
 ├── confirm-bash/
-│   └── index.ts
+│   ├── index.ts
+│   └── test/
+│       └── gate.test.ts
 ├── stop/
 │   └── index.ts
 ├── plan-mode/
@@ -103,12 +105,15 @@ pidantic/
 ├── ui-tweaks/
 │   ├── index.ts
 │   ├── src/
+│   │   ├── auto-compact.ts
 │   │   ├── completion.ts
 │   │   ├── config.ts
 │   │   ├── editor.ts
 │   │   ├── excerpt.ts
+│   │   ├── footer.ts
 │   │   ├── index.ts
 │   │   ├── notify.ts
+│   │   ├── rate.ts
 │   │   ├── scroll.ts
 │   │   └── settings.ts
 │   └── test/
@@ -117,7 +122,9 @@ pidantic/
 │       ├── config.test.ts
 │       ├── editor.test.ts
 │       ├── excerpt.test.ts
+│       ├── footer.test.ts
 │       ├── notify.test.ts
+│       ├── rate.test.ts
 │       └── scroll.test.ts
 ├── subagent/
 │   ├── index.ts
@@ -270,8 +277,14 @@ not expressible in a schema remain in `promptGuidelines`.
   slow one — and would otherwise set a mode for a session that never asked for it. Releasing on
   shutdown also means a session that loads without safety or plan-mode does not inherit the previous
   session's mode, and safety no longer depends on plan-mode being registered ahead of it to see a
-  correct plan flag. `confirm-bash/index.ts` registers the Bash override
-  and gate.
+  correct plan flag. The safety-approval claim it also carries is the narrowest of the three: safety
+  records a Bash call only after the user themselves approved it at a dialog, which is what lets
+  `confirm-bash` skip a second dialog for that one call without ever swallowing a `confirm: true` on a
+  call safety allowed by rule, by classifier, by read-only policy, or through its headless escape
+  hatch. `confirm-bash/index.ts` registers the Bash override
+  and gate. Its `test/gate.test.ts` drives that hook against a fake `ExtensionAPI`, including one case
+  that runs safety's real hook and this one over the same input object, in pi's registration order, so
+  the claim between the two extensions is pinned end to end rather than assumed on either side.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
 - `plan-mode/` provides a read-only investigation mode with policy-guarded Bash and an approval
   workflow that writes the finished plan and restores the prior tool set.
@@ -290,8 +303,32 @@ not expressible in a schema remain in `promptGuidelines`.
   `prompt.ts` holds the classifier's system prompts and untrusted-payload framing, following the same
   convention as `localsearch/src/prompt.ts`: model-facing text stays in one budgetable, testable file.
 - `ui-tweaks/` adjusts pi's interactive TUI: the fullscreen mouse-wheel step, which pi fixes at one
-  line per notch and exposes no setting for, optional desktop notifications for confirmations and
-  finished runs, and the slash-command argument suggestions pi's editor stops short of asking for. `scroll.ts` isolates the one unsupported thing the package does — writing
+  line per notch and exposes no setting for, a replacement footer, optional desktop notifications for
+  confirmations and finished runs, and the slash-command argument suggestions pi's editor stops short
+  of asking for. `footer.ts` holds the replacement's whole layout and imports nothing from pi beyond
+  the width helpers a terminal line needs — the theme is a structural argument and the state a plain
+  object, the same convention as `localsearch/src/render.ts` — because pi's footer offers no seam and
+  `setFooter` replaces it wholesale, so every field pi drew has to be rebuilt and stay covered.
+  `rate.ts` is the one piece of state behind it: the provider reports a token count only when a
+  message is finished, so the rate shown while one streams is a character estimate whose
+  chars-per-token ratio is calibrated by each finished message rather than assumed. Its window is
+  the part that is easy to get wrong — a trailing three seconds, so the number reads as speed rather
+  than as a whole-message average that stops moving; it never starts at the request, since prompt
+  processing is not generation; and whatever opens it is excluded from the count, because those
+  tokens predate the clock. A fragment is also counted over the interval since the one before it
+  rather than at the instant it landed, and the window ends at the newest fragment rather than at the
+  current frame, because not every backend streams every part of a message: a server that writes a
+  tool call in a separate constrained pass sends nothing for its whole duration and then one chunk,
+  which arrival-time counting reads as a model sliding to a stop and then briefly as thousands of
+  tokens a second. A message that arrived in too few chunks to measure that way is not
+  reported at all rather than reported as the hundreds of tokens a second its framing implies, and
+  the number that is measured is published at most twice a second, since the footer redraws faster
+  than a rate can be read. The sparkline's series is sampled from that number on its own slower clock
+  and kept across messages, rather than gaining one bar per finished reply, which left it still
+  through the whole message it was drawn beside. `auto-compact.ts`
+  reads the single pi setting the footer needs and the extension API does not carry, directly rather
+  than through `SettingsManager`, which takes a lock file around every read while the footer renders
+  on every frame. `scroll.ts` isolates the one unsupported thing the package does — writing
   `wheelScrollLines` onto pi's live renderer, reached through the widget factory that is the only
   place `ExtensionUIContext` hands out the TUI — and describes just the two properties it touches, so
   a pi build that changes them costs the tweak rather than the session. `notify.ts` holds backend
@@ -428,7 +465,10 @@ allowed call from a gated one from a hard denial. The classifier is observed by 
 `globalThis.fetch`, which counts verdict and explanation requests separately by response schema, so
 tests can assert both that deterministic policy resolves a command without paying an LLM round-trip
 and that the command is still explained afterwards. Explanations need a UI to draw them, so those
-cases opt into an interactive context and let the fire-and-forget request settle before asserting. The harness resets the process-global
+cases opt into an interactive context and let the fire-and-forget request settle before asserting. An
+interactive case can also answer the dialog it opens: the fake UI returns the harness's `dialog`
+decision instead of drawing one, which is what pins the claim safety hands `confirm-bash` to a real
+approval — an allowed, denied, read-only, or headless-approved call claims nothing. The harness resets the process-global
 mode registry around every case, since that state is shared with plan mode.
 
 ## ui-tweaks tests
@@ -456,6 +496,19 @@ thing, pi's `Editor` and `CombinedAutocompleteProvider`, through a whole setting
 command name, key, value — with the stock `CustomEditor` as the contrast case that still stops after
 the command name, so a pi build that renames the private trigger or changes the Tab branch fails here
 rather than in a session.
+`footer.test.ts` pins the layout on its own: both context displays and the unknown one after
+compaction, the colours as the context fills, the rate with and without its sparkline and its live
+marker, the fields pi's own footer draws and this one must not lose, the right-aligned model and the
+provider dropped when it does not fit, and the usage totals summed on pi's rules. `rate.test.ts` pins
+the tracker: an exact rate measured from the first streamed fragment rather than from the request, the
+estimate that appears only once there is enough of it to read, the ratio a finished message
+calibrates, the messages too short or too empty to record, and an aborted run that stops claiming a
+live rate without losing what was measured. The batched-backend cases are pinned there too, since
+they are what the tracker gets wrong most easily: a silence holds the last measurement rather than
+sliding to zero, the chunk that ends it is spread over the silence it covers, and a moving rate
+reaches the footer at most twice a second. The sparkline's series is pinned there too: it is a trace
+of the number on a one-second clock rather than one bar per reply, so it moves while a message
+streams, and a finished message's exact rate is its newest sample.
 `command.test.ts` drives the command itself against a fake `ExtensionAPI`, since the verbs and the
 key/value fallthrough share one handler: a verb writes only the field it names, a field no verb ever
 covered is reachable by key, `/ui-tweaks config` lists while a bare `/ui-tweaks` still summarises,
@@ -464,5 +517,8 @@ since a verb and a key can reach the same value — `scroll 5` is also `scroll.w
 two sources are merged by what they would insert. It covers installation from the same end — a tui
 session takes the editor slot and adds one provider wrapper, the setting withdraws the editor while
 the wrapper stays and passes requests through, and an editor another extension installed is left
-alone. `shared/test/attention.test.ts` pins the channel itself, including
+alone. The footer is covered there too, since pi mounts it nowhere else: the component pi
+builds is rendered against a fake session, `footer.enabled` hands the slot back and takes it again, a
+setting change reaches the mounted component without remounting it, and a streamed message drives the
+rate through the real event hooks. `shared/test/attention.test.ts` pins the channel itself, including
 delivery across a second evaluation of the module.

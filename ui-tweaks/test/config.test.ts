@@ -36,13 +36,14 @@ test("a partial config merges over defaults", async (t) => {
 test("invalid fields fall back independently", async (t) => {
 	const path = await configFile(t, {
 		scroll: { wheelLines: "fast" },
-		notifications: { enabled: "yes", backend: "telepathy", minRunSeconds: -4, command: [""] },
+		notifications: { enabled: "yes", backend: "telepathy", minRunSeconds: -4, timeoutSeconds: -1, command: [""] },
 	});
 	const config = await loadConfig({ UI_TWEAKS_CONFIG: path });
 	assert.equal(config.scroll.wheelLines, DEFAULTS.scroll.wheelLines);
 	assert.equal(config.notifications.enabled, DEFAULTS.notifications.enabled);
 	assert.equal(config.notifications.backend, DEFAULTS.notifications.backend);
 	assert.equal(config.notifications.minRunSeconds, DEFAULTS.notifications.minRunSeconds);
+	assert.equal(config.notifications.timeoutSeconds, DEFAULTS.notifications.timeoutSeconds);
 	assert.deepEqual(config.notifications.command, DEFAULTS.notifications.command);
 });
 

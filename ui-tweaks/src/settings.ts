@@ -9,7 +9,7 @@
  */
 
 import type { SettingCompletion, SettingSpec } from "../../shared/settings.ts";
-import { BACKENDS, DEFAULTS, MAX_WHEEL_LINES, type UiTweaksConfig } from "./config.ts";
+import { BACKENDS, CONTEXT_DISPLAYS, DEFAULTS, MAX_WHEEL_LINES, type UiTweaksConfig } from "./config.ts";
 
 export const SETTINGS: readonly SettingSpec[] = [
 	{
@@ -20,6 +20,22 @@ export const SETTINGS: readonly SettingSpec[] = [
 		max: MAX_WHEEL_LINES,
 		description: "Lines moved per mouse-wheel notch in fullscreen mode",
 	},
+
+	{
+		key: "footer.enabled",
+		group: "Footer",
+		kind: "boolean",
+		description: "Replace pi's footer with ui-tweaks' own",
+	},
+	{
+		key: "footer.context",
+		group: "Footer",
+		kind: "string",
+		values: CONTEXT_DISPLAYS,
+		description: "Show context as used/total tokens, or as pi's percentage of the window",
+	},
+	{ key: "footer.tokensPerSecond", group: "Footer", kind: "boolean", description: "Show the rate the model is generating at, live while it streams" },
+	{ key: "footer.sparkline", group: "Footer", kind: "boolean", description: "Show the recent rate samples as blocks beside the rate; a smear in most terminal fonts" },
 
 	{
 		key: "autocomplete.chainArguments",
@@ -53,6 +69,14 @@ export const SETTINGS: readonly SettingSpec[] = [
 		unit: "seconds",
 		min: 0,
 		description: "How long a run must last before it notifies; 0 notifies for every run",
+	},
+	{
+		key: "notifications.timeoutSeconds",
+		group: "Notifications",
+		kind: "number",
+		unit: "seconds",
+		min: 0,
+		description: "How long a notification stays up before expiring; 0 leaves it up until dismissed; only notify-send takes it",
 	},
 	{ key: "notifications.sound", group: "Notifications", kind: "boolean", description: "Ask the backend for its sound, and ring the terminal bell" },
 ];

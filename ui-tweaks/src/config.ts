@@ -32,6 +32,8 @@ export interface NotificationConfig {
 	onConfirmation: boolean;
 	/** A reply that arrived this fast was watched, not waited on. Suppresses the response notification. */
 	minRunSeconds: number;
+	/** How long a raised notification stays up before expiring; 0 leaves it up until dismissed. */
+	timeoutSeconds: number;
 	/** Ask the backend for its notification sound, and ring the terminal bell. */
 	sound: boolean;
 }
@@ -46,8 +48,27 @@ export interface ScrollConfig {
 	wheelLines: number;
 }
 
+/** `tokens` shows the context in use over the window; `percent` is what pi's own footer shows. */
+export type ContextDisplay = "tokens" | "percent";
+
+export const CONTEXT_DISPLAYS: readonly ContextDisplay[] = ["tokens", "percent"];
+
+export interface FooterConfig {
+	/** Replace pi's footer. Off restores pi's own, and with it pi's context display and no rate. */
+	enabled: boolean;
+	context: ContextDisplay;
+	/** Show the rate the model is generating at, live while it streams. */
+	tokensPerSecond: boolean;
+	/**
+	 * Show recent messages' rates as blocks beside it. Off by default: at a normal terminal font
+	 * size five block glyphs read as one grey smear rather than as a chart.
+	 */
+	sparkline: boolean;
+}
+
 export interface UiTweaksConfig {
 	scroll: ScrollConfig;
+	footer: FooterConfig;
 	autocomplete: CompletionConfig;
 	notifications: NotificationConfig;
 }
@@ -57,6 +78,7 @@ export const MAX_WHEEL_LINES = 20;
 
 export const DEFAULTS: UiTweaksConfig = {
 	scroll: { wheelLines: 3 },
+	footer: { enabled: true, context: "tokens", tokensPerSecond: true, sparkline: false },
 	autocomplete: { chainArguments: true },
 	notifications: {
 		enabled: true,
@@ -65,6 +87,7 @@ export const DEFAULTS: UiTweaksConfig = {
 		onResponse: true,
 		onConfirmation: true,
 		minRunSeconds: 6,
+		timeoutSeconds: 3,
 		sound: false,
 	},
 };
@@ -108,6 +131,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	}
 
 	const scroll = record(raw.scroll);
+	const footer = record(raw.footer);
 	const autocomplete = record(raw.autocomplete);
 	const notifications = record(raw.notifications);
 	const backend = BACKENDS.includes(notifications.backend as Backend)
@@ -116,6 +140,12 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 
 	return {
 		scroll: { wheelLines: clampWheelLines(scroll.wheelLines) },
+		footer: {
+			enabled: boolean(footer.enabled, DEFAULTS.footer.enabled),
+			context: CONTEXT_DISPLAYS.includes(footer.context as ContextDisplay) ? (footer.context as ContextDisplay) : DEFAULTS.footer.context,
+			tokensPerSecond: boolean(footer.tokensPerSecond, DEFAULTS.footer.tokensPerSecond),
+			sparkline: boolean(footer.sparkline, DEFAULTS.footer.sparkline),
+		},
 		autocomplete: { chainArguments: boolean(autocomplete.chainArguments, DEFAULTS.autocomplete.chainArguments) },
 		notifications: {
 			enabled: boolean(notifications.enabled, DEFAULTS.notifications.enabled),
@@ -124,6 +154,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 			onResponse: boolean(notifications.onResponse, DEFAULTS.notifications.onResponse),
 			onConfirmation: boolean(notifications.onConfirmation, DEFAULTS.notifications.onConfirmation),
 			minRunSeconds: seconds(notifications.minRunSeconds, DEFAULTS.notifications.minRunSeconds),
+			timeoutSeconds: seconds(notifications.timeoutSeconds, DEFAULTS.notifications.timeoutSeconds),
 			sound: boolean(notifications.sound, DEFAULTS.notifications.sound),
 		},
 	};
@@ -132,6 +163,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 /** The settings `/ui-tweaks` can change, as a patch against one of the file's sections. */
 export interface ConfigPatch {
 	scroll?: Partial<ScrollConfig>;
+	footer?: Partial<FooterConfig>;
 	autocomplete?: Partial<CompletionConfig>;
 	notifications?: Partial<NotificationConfig>;
 }

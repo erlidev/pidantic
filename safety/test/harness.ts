@@ -39,7 +39,13 @@ export interface HookResult {
 	reason?: string;
 }
 
-type ToolCallHook = (event: { toolName: string; input: unknown; toolCallId?: string }, ctx: unknown) => Promise<HookResult | undefined>;
+type HookEvent = {
+	toolName?: string;
+	input?: unknown;
+	toolCallId?: string;
+	message?: { role: string; content: unknown[]; timestamp: number };
+};
+type ToolCallHook = (event: HookEvent, ctx: unknown) => Promise<HookResult | undefined>;
 type CommandHandler = (args: string, ctx: unknown) => Promise<void>;
 
 export interface HarnessOptions {
@@ -59,10 +65,15 @@ export interface HarnessOptions {
 	 */
 	keepRegistry?: boolean;
 	/**
-	 * Report an interactive TUI session. Confirmation then goes to a dialog this fake UI cannot draw,
-	 * so only use it for calls that are allowed through — background explanations, for example.
+	 * Report an interactive TUI session. Confirmation then goes to a dialog, which this fake UI answers
+	 * with `dialog` instead of drawing.
 	 */
 	interactive?: boolean;
+	/**
+	 * The answer every confirmation dialog gets in an interactive session. Left unset, a dialog denies,
+	 * which is also what an interactive case that never expected to open one asserts against.
+	 */
+	dialog?: "approve" | "deny";
 }
 
 export interface Harness {
@@ -170,6 +181,8 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 		ui: {
 			notify: (message: string, level: string) => { notices.push({ message, level }); },
 			setStatus: (_key: string, value: string | undefined) => { statusValue = value; },
+			// The real dialog needs a TUI to draw itself; only its decision matters here.
+			custom: async () => ({ approved: options.dialog === "approve" }),
 		},
 		sessionManager: {
 			getSessionId: () => "harness-session",
@@ -205,7 +218,9 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 		/** What the argument menu would show for one of the registered commands. */
 		completions: (command: string, prefix: string) => completions.get(command)?.(prefix) ?? [],
 		undo: async () => { await commands.get("undo")?.("", ctx); },
-		startTurn: async () => { await hooks.get("before_agent_start")?.({ toolName: "", input: undefined }, ctx); },
+		startTurn: async () => {
+			await hooks.get("message_start")?.({ message: { role: "user", content: [], timestamp: Date.now() } }, ctx);
+		},
 		shutdown: async () => { await hooks.get("session_shutdown")?.({ toolName: "", input: undefined }, ctx); },
 		notices,
 		entries,

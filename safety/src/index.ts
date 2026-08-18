@@ -15,7 +15,7 @@ import {
 	createModeOwner,
 	isPlanModeActive,
 	isSafetyMode,
-	markSafetyResolved,
+	markSafetyApproved,
 	ownsSafetyMode,
 	releaseSafetyMode,
 	SAFETY_MODES,
@@ -140,7 +140,7 @@ type GateSource =
 
 const CLASSIFIER_ALLOWED = "classifier: safe";
 /** Says the snapshot exists and how to use it, short enough to sit at the end of another note. */
-const CHECKPOINT_NOTE = "checkpoint taken · /undo restores this turn";
+const CHECKPOINT_NOTE = "checkpoint taken · /undo restores this request";
 /** Prefixes an explanation that only describes the call, so it is never read as the reason for the hold. */
 const DESCRIPTION = "what this does";
 
@@ -212,7 +212,7 @@ function bashConfirmationBody(
 function bashConfirmationReason(findings: CommandFinding[], reason: string, checkpointed: boolean | undefined): string {
 	const summary = summarizeFindings(findings, reason);
 	if (checkpointed === undefined) return summary;
-	return `${summary} ${checkpointed ? "A checkpoint was taken before this turn; /undo restores it." : "No checkpoint is available, so /undo cannot recover this command."}`;
+	return `${summary} ${checkpointed ? "A checkpoint was taken before this request; /undo restores it." : "No checkpoint is available, so /undo cannot recover this command."}`;
 }
 
 function toolDescription(tool: unknown): string {
@@ -233,10 +233,10 @@ export default function safety(pi: ExtensionAPI): void {
 	let state = createSafetyState();
 	let classifier: ResidualClassifier;
 	let checkpoints: CheckpointStore;
-	let checkpointTakenThisTurn = false;
-	let checkpointProtectedThisTurn = false;
+	let checkpointTakenForRequest = false;
+	let checkpointProtectedForRequest = false;
 	let checkpointWarningShown = false;
-	/** The call whose gate created this turn's snapshot; its note carries the fact. */
+	/** The call whose gate created this request's snapshot; its note carries the fact. */
 	let checkpointNoteCallId: string | undefined;
 	const audit = new SafetyAudit();
 
@@ -258,28 +258,31 @@ export default function safety(pi: ExtensionAPI): void {
 			recordToolNote(event.toolCallId, CHECKPOINT_NOTE);
 			return;
 		}
-		ctx.ui.notify("Safety checkpoint taken: /undo restores the worktree to its state before this turn.", "info");
+		ctx.ui.notify("Safety checkpoint taken: /undo restores the worktree to its state before this request.", "info");
 	}
 
-	/** Snapshots once per agent turn; the return value reports whether /undo can recover this call. */
-	async function ensureCheckpoint(ctx: ExtensionContext, event: { toolName: string; toolCallId?: string }): Promise<boolean> {
+	/** Snapshots once per delivered user message; the return value reports whether /undo can recover this call. */
+	async function ensureCheckpoint(ctx: ExtensionContext, event: { toolName: string; toolCallId?: string }, paths?: string[]): Promise<boolean> {
 		// Disabled by configuration is a deliberate choice, not a failure, so it warns about nothing.
 		if (!config.checkpoints) return false;
-		if (checkpointTakenThisTurn) return checkpointProtectedThisTurn;
-		checkpointTakenThisTurn = true;
+		if (checkpointTakenForRequest) {
+			if (checkpointProtectedForRequest) await checkpoints.extendLatest(paths);
+			return checkpointProtectedForRequest;
+		}
+		checkpointTakenForRequest = true;
 		let checkpoint;
 		try {
-			checkpoint = await checkpoints.snapshot();
+			checkpoint = await checkpoints.snapshot(paths);
 		} catch {
 			checkpoint = undefined;
 		}
-		checkpointProtectedThisTurn = Boolean(checkpoint);
+		checkpointProtectedForRequest = Boolean(checkpoint);
 		if (checkpoint) reportCheckpoint(ctx, event);
 		if (!checkpoint && !checkpointWarningShown) {
 			checkpointWarningShown = true;
 			ctx.ui.notify("Safety checkpoint unavailable: changes in this session are not protected by /undo.", "warning");
 		}
-		return checkpointProtectedThisTurn;
+		return checkpointProtectedForRequest;
 	}
 
 	async function enter(mode: SafetyMode, ctx: ExtensionContext, persist = true): Promise<boolean> {
@@ -357,16 +360,15 @@ export default function safety(pi: ExtensionAPI): void {
 	const UNDO_PREVIEW_PATHS = 12;
 
 	/**
-	 * What `/undo` is about to rewrite. A restore covers the whole worktree, so anything edited since
-	 * the checkpoint goes back — including a file another Pi session running in this repository is
-	 * working on. Listing the paths is what turns that from a surprise into a decision.
+	 * What `/undo` is about to rewrite. Deterministic writes limit this to their target paths; Bash and
+	 * unknown tools retain worktree-wide recovery because their effects cannot be known in advance.
 	 */
 	async function undoPreview(): Promise<string> {
 		const checkpoint = await checkpoints.latest();
 		if (!checkpoint) return "No safety checkpoint is available.";
 		let paths: string[];
 		try {
-			paths = await checkpoints.changedSince(checkpoint.commit);
+			paths = await checkpoints.changedSince(checkpoint.commit, checkpoint.paths);
 		} catch {
 			return "Restore the most recent safety checkpoint?\nThe affected paths could not be listed.";
 		}
@@ -382,7 +384,7 @@ export default function safety(pi: ExtensionAPI): void {
 		// Refs under another prefix are either a live session or a run that exited without disposing,
 		// and the two cannot be told apart from here.
 		return foreign > 0
-			? `${body}\n\nAnother Pi run has checkpoints in this repository. If a session is working here now, this reverts its changes too.`
+			? `${body}\n\nAnother Pi run has checkpoints in this repository. If a session is working on an affected path now, this reverts its changes too.`
 			: body;
 	}
 
@@ -395,8 +397,21 @@ export default function safety(pi: ExtensionAPI): void {
 				ctx.ui.notify("Checkpoints are disabled by safety configuration: set \"checkpoints\": true to use /undo.", "warning");
 				return;
 			}
-			const reason = await confirm(ctx, "Restore safety checkpoint", await undoPreview(), "This discards worktree changes made since that checkpoint. Tracked files the turn did not create keep their index entries.");
-			if (reason) { ctx.ui.notify(reason, "error"); return; }
+			const body = await undoPreview();
+			if (isHeadless(ctx)) {
+				if (process.env[HEADLESS_ENV] !== "allow") return;
+			} else {
+				const decision = await askConfirmation(ctx, {
+					title: "Restore safety checkpoint",
+					body,
+					reason: "This discards changes to the affected paths made since that checkpoint. Tracked files the request did not create keep their index entries.",
+					approveLabel: "Restore",
+					denyLabel: "Cancel",
+					captureDenialReason: false,
+					notifyAttention: false,
+				});
+				if (!decision.approved) return;
+			}
 			try {
 				const restored = await checkpoints.restoreLatest();
 				ctx.ui.notify(restored ? "Restored the most recent safety checkpoint." : "No safety checkpoint is available.", restored ? "info" : "warning");
@@ -512,13 +527,12 @@ export default function safety(pi: ExtensionAPI): void {
 			const command = commandOf(event.input);
 			const decision = readOnlyBash(command, config.denyBinaries);
 			if (!decision.allowed) return denied(readOnlyDenial(decision.reason));
-			// Claimed like any other safety-resolved command, so confirm-bash does not ask a second time.
-			markSafetyResolved(event.input);
+			// Nobody was asked anything here, so nothing is claimed: a model-requested confirmation on a
+			// read-only command is still confirm-bash's to raise.
 			return undefined;
 		}
 
 		if (tier === "bash") {
-			markSafetyResolved(event.input);
 			const command = commandOf(event.input);
 			const result = classifyRisk(command, {
 				cwd: ctx.cwd,
@@ -587,7 +601,12 @@ export default function safety(pi: ExtensionAPI): void {
 				bashConfirmationReason(result.findings, result.reason ?? "Command requires confirmation.", protectedRun),
 				(refresh) => { refreshDialog = refresh; },
 			);
-			return reason ? denied(reason) : undefined;
+			if (reason) return denied(reason);
+			// The user has now seen this exact command and approved it, so confirm-bash asking again would
+			// be the same question twice. The headless escape hatch approves nothing on anyone's behalf,
+			// so it claims nothing.
+			if (!isHeadless(ctx)) markSafetyApproved(event.input);
+			return undefined;
 		}
 
 		if (tier === "write") {
@@ -595,9 +614,9 @@ export default function safety(pi: ExtensionAPI): void {
 			if (!requested) return denied("Safety could not determine the write target path.");
 			const path = await canonicalPath(ctx.cwd, requested);
 			const external = !inside(ctx.cwd, path);
-			// The snapshot is taken even for an external write, which it cannot recover: fixing the turn's
-			// baseline before anything else in the turn moves is what makes /undo cover the whole turn.
-			const checkpointed = await ensureCheckpoint(ctx, event);
+			// The snapshot is taken even for an external write, which it cannot recover: fixing the request's
+			// baseline before anything else caused by the request moves is what makes /undo cover it all.
+			const checkpointed = await ensureCheckpoint(ctx, event, external ? [] : [path]);
 			const protectedWrite = external ? false : checkpointed;
 			// Both gated modes trust the checkpoint instead of a dialog: a recoverable in-workspace write is undoable via /undo.
 			if (protectedWrite) return undefined;
@@ -608,14 +627,14 @@ export default function safety(pi: ExtensionAPI): void {
 			const detail = external
 				? "This path is outside the workspace and is not protected by a checkpoint."
 				: protectedWrite
-					? "A checkpoint was taken before this turn's write batch; /undo restores it."
+					? "A checkpoint was taken before this request's write batch; /undo restores it."
 					: "No checkpoint is available, so /undo cannot recover this write.";
 			const reason = await confirm(ctx, "Confirm file write", body, detail);
 			if (reason) return denied(reason);
 			return undefined;
 		}
 
-		// An unknown tool is unconstrained: it may write anywhere, so it fixes the turn's baseline before
+		// An unknown tool is unconstrained: it may write anywhere, so it fixes the request's baseline before
 		// any of the decisions below, including the ones that let it run without a dialog.
 		await ensureCheckpoint(ctx, event);
 		if (config.allowTools.includes(event.toolName)) return undefined;
@@ -641,11 +660,14 @@ export default function safety(pi: ExtensionAPI): void {
 		await checkpoints?.dispose().catch(() => undefined);
 	});
 
-	pi.on("before_agent_start", async () => {
-		checkpointTakenThisTurn = false;
-		checkpointProtectedThisTurn = false;
+	// `before_agent_start` is not emitted for steering and follow-up messages queued while Pi is
+	// already running. `message_start` is emitted when every user message is actually delivered, so
+	// it is the checkpoint boundary for both ordinary prompts and queued input.
+	pi.on("message_start", async (event) => {
+		if (event.message.role !== "user") return;
+		checkpointTakenForRequest = false;
+		checkpointProtectedForRequest = false;
 		checkpointNoteCallId = undefined;
-		return undefined;
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -661,8 +683,8 @@ export default function safety(pi: ExtensionAPI): void {
 		if (config.checkpoints) void checkpoints.sweepStale().catch(() => undefined);
 		audit.clear();
 		clearToolNotes();
-		checkpointTakenThisTurn = false;
-		checkpointProtectedThisTurn = false;
+		checkpointTakenForRequest = false;
+		checkpointProtectedForRequest = false;
 		checkpointNoteCallId = undefined;
 		checkpointWarningShown = false;
 		state = restoreSafetyState(ctx.sessionManager.getBranch(), config.mode);

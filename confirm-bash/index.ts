@@ -24,7 +24,7 @@ import {
 import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { askConfirmation } from "../shared/confirm-dialog.ts";
-import { getSafetyMode, wasSafetyResolved } from "../shared/mode-registry.ts";
+import { wasSafetyApproved } from "../shared/mode-registry.ts";
 import { markToolNoteRenderer, type ToolNote, toolNote, watchToolNote } from "../shared/tool-notes.ts";
 
 /** Escape hatch for non-interactive runs (`pi -p`, `--mode json`), where there is nobody to ask. */
@@ -170,7 +170,10 @@ export default function confirmBash(pi: ExtensionAPI) {
 
 		const input = event.input as ConfirmBashArgs;
 		if (input.confirm !== true) return undefined;
-		if (getSafetyMode() !== "yolo" && wasSafetyResolved(event.input)) return undefined;
+		// The one case this gate skips: safety already put this exact command in front of the user and
+		// they approved it. A command safety allowed on its own asked nobody anything, so it still
+		// reaches this dialog — the model asked for a person, not for a policy.
+		if (wasSafetyApproved(event.input)) return undefined;
 
 		if (!ctx.hasUI) {
 			if (process.env[HEADLESS_ENV] === "allow") return undefined;

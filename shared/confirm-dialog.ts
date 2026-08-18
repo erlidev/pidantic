@@ -36,6 +36,10 @@ export interface ConfirmationOptions {
 	reason?: string;
 	approveLabel?: string;
 	denyLabel?: string;
+	/** Disable for user-initiated actions that should cancel immediately instead of asking why. */
+	captureDenialReason?: boolean;
+	/** Disable when the user action that opened the dialog already provides sufficient attention. */
+	notifyAttention?: boolean;
 	/**
 	 * Hands the caller a callback that redraws the open dialog. Use it when the body renderer closes
 	 * over state that can still change while the user is deciding — safety's command explanation
@@ -55,13 +59,22 @@ const DENY = 1;
  */
 export async function askConfirmation(
 	ctx: ExtensionContext,
-	{ title, body, reason, approveLabel = "Approve", denyLabel = "Deny…", onRefresh }: ConfirmationOptions,
+	{
+		title,
+		body,
+		reason,
+		approveLabel = "Approve",
+		denyLabel = "Deny…",
+		captureDenialReason = true,
+		notifyAttention = true,
+		onRefresh,
+	}: ConfirmationOptions,
 ): Promise<ConfirmDecision> {
 	if (ctx.signal?.aborted) return { approved: false };
 
 	// The run stops here until the user answers, so this is the moment anything watching for
 	// "you are needed" wants to know about. With no listener registered this is a no-op.
-	requestAttention({ kind: "confirmation", title, detail: reason, urgent: true });
+	if (notifyAttention) requestAttention({ kind: "confirmation", title, detail: reason, urgent: true });
 
 	return ctx.ui.custom<ConfirmDecision>((tui, theme, keybindings, done) => {
 		let optionIndex = APPROVE;
@@ -135,6 +148,8 @@ export async function askConfirmation(
 			if (keybindings.matches(data, "tui.select.confirm") || data === "\n") {
 				if (optionIndex === APPROVE) {
 					finish({ approved: true });
+				} else if (!captureDenialReason) {
+					finish({ approved: false });
 				} else {
 					denyMode = true;
 					refresh();

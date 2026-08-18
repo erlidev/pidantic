@@ -27,7 +27,7 @@ export interface AttentionRequest {
 	title: string;
 	/** Optional second line: the command, the excerpt, the elapsed time. */
 	detail?: string;
-	/** The request cannot be missed without stalling the run. Backends that can, make it sticky. */
+	/** The request cannot be missed without stalling the run. */
 	urgent?: boolean;
 }
 

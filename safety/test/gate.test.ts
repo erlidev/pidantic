@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { claimPlanMode, createModeOwner, getSafetyMode, setPlanModeActive } from "../../shared/mode-registry.ts";
+import { claimPlanMode, createModeOwner, getSafetyMode, setPlanModeActive, wasSafetyApproved } from "../../shared/mode-registry.ts";
 import { markToolNoteRenderer, toolNote } from "../../shared/tool-notes.ts";
 import { CHECKPOINT_NAMESPACE } from "../src/checkpoint.ts";
 import { DEFAULT_TOOLS, harness, outcome, repository } from "./harness.ts";
@@ -396,17 +396,40 @@ test("checkpoints end with the run: shutdown clears them and a resumed session h
 	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "written by the agent\n");
 });
 
-test("undo restores the checkpoint taken before this turn's writes", async (t) => {
+test("undo restores the checkpoint taken before this request's writes", async (t) => {
 	const cwd = await repository(t);
 	process.env.PI_SAFETY_HEADLESS = "allow";
 	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
 	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: models });
 	await gate.startTurn();
-	await gate.toolCall("write", { path: "new.txt", content: "hello" });
+	await gate.toolCall("write", { path: "tracked.txt", content: "agent edit" });
 	await writeFile(join(cwd, "tracked.txt"), "agent edit\n");
 	await gate.undo();
 	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "base\n");
 	assert.equal((await checkpointRefs(cwd)).length, 0);
+});
+
+test("a queued user message starts a fresh checkpoint boundary", async (t) => {
+	const cwd = await repository(t);
+	process.env.PI_SAFETY_HEADLESS = "allow";
+	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
+	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: models });
+
+	// The first message creates a checkpoint. A follow-up queued during the same Pi agent run does
+	// not emit `before_agent_start`, but does emit `message_start` when it is delivered.
+	await gate.startTurn();
+	await gate.toolCall("write", { path: "first.txt", content: "first" });
+	await writeFile(join(cwd, "first.txt"), "first\n");
+	await writeFile(join(cwd, "tracked.txt"), "codex edit before follow-up\n");
+
+	await gate.startTurn();
+	await gate.toolCall("write", { path: "second.txt", content: "second" });
+	await writeFile(join(cwd, "second.txt"), "second\n");
+	await gate.undo();
+
+	assert.equal(await readFile(join(cwd, "tracked.txt"), "utf8"), "codex edit before follow-up\n");
+	assert.equal(await readFile(join(cwd, "first.txt"), "utf8"), "first\n");
+	assert.equal(await stat(join(cwd, "second.txt")).then(() => true, () => false), false);
 });
 
 test("a gated bash command is checkpointed before it runs, so undo recovers it", async (t) => {
@@ -436,7 +459,7 @@ test("checkpoints follow what a command can write, not whether it was held", asy
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "frobnicate --check" })), "allowed");
 	assert.equal((await checkpointRefs(cwd)).length, 1);
 
-	// One snapshot per turn, shared with the write path.
+	// One snapshot per request, shared with the write path.
 	await gate.toolCall("write", { path: "new.txt", content: "hello" });
 	assert.equal((await checkpointRefs(cwd)).length, 1);
 });
@@ -456,7 +479,7 @@ test("a rule-allowed command that writes is checkpointed even though no dialog a
 	assert.equal(await stat(join(cwd, "note.txt")).then(() => true, () => false), false);
 });
 
-test("the call that caused a snapshot says so, once per turn", async (t) => {
+test("the call that caused a snapshot says so, once per request", async (t) => {
 	const cwd = await repository(t);
 	process.env.PI_SAFETY_HEADLESS = "allow";
 	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
@@ -467,7 +490,7 @@ test("the call that caused a snapshot says so, once per turn", async (t) => {
 	// Rule-allowed but mutating: the note exists only because the snapshot does.
 	await gate.toolCall("bash", { command: "echo hi > note.txt" }, "call-1");
 	await gate.idle();
-	assert.match(toolNote("call-1")?.text ?? "", /checkpoint taken · \/undo restores this turn$/);
+	assert.match(toolNote("call-1")?.text ?? "", /checkpoint taken · \/undo restores this request$/);
 	// The channel carries one line per call, so the explanation and the snapshot share it.
 	assert.match(toolNote("call-1")?.text ?? "", /^what this does · harness explanation/);
 
@@ -574,13 +597,57 @@ test("a mode change stranded by a session switch does not reach the next session
 	assert.equal(await outcome(() => incoming.toolCall("bash", { command: "rm tracked.txt" })), "gated");
 });
 
-test("a gated bash call is marked resolved so confirm-bash does not ask again", async (t) => {
+test("only a bash call the user approved is claimed from confirm-bash", async (t) => {
 	const cwd = await repository(t);
-	const gate = await harness(t, { cwd, config: { mode: "safe" } });
-	const input = { command: "rm tracked.txt" };
-	await gate.toolCall("bash", input);
-	const { wasSafetyResolved } = await import("../../shared/mode-registry.ts");
-	assert.equal(wasSafetyResolved(input), true);
+	const gate = await harness(t, {
+		cwd,
+		config: { mode: "safe", checkpoints: false },
+		interactive: true,
+		dialog: "approve",
+	});
+
+	// Approved at safety's own dialog: the same question does not need asking twice.
+	const approved = { command: "rm tracked.txt" };
+	assert.equal(await gate.toolCall("bash", approved), undefined);
+	assert.equal(wasSafetyApproved(approved), true);
+
+	// Allowed by rule, so nobody was asked: a model-requested confirmation on it is still confirm-bash's.
+	const ruleAllowed = { command: "ls -la" };
+	assert.equal(await gate.toolCall("bash", ruleAllowed), undefined);
+	assert.equal(wasSafetyApproved(ruleAllowed), false);
+});
+
+test("a denied dialog and the headless escape hatch claim nothing", async (t) => {
+	const cwd = await repository(t);
+	const denying = await harness(t, {
+		cwd,
+		config: { mode: "safe", checkpoints: false },
+		interactive: true,
+		dialog: "deny",
+	});
+	const denied = { command: "rm tracked.txt" };
+	assert.equal((await denying.toolCall("bash", denied))?.block, true);
+	assert.equal(wasSafetyApproved(denied), false);
+
+	// PI_SAFETY_HEADLESS approves on nobody's behalf, so confirm-bash keeps its own headless rule.
+	const headless = await harness(t, { cwd, config: { mode: "safe", checkpoints: false } });
+	const unattended = { command: "rm tracked.txt" };
+	const previous = process.env.PI_SAFETY_HEADLESS;
+	process.env.PI_SAFETY_HEADLESS = "allow";
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_SAFETY_HEADLESS;
+		else process.env.PI_SAFETY_HEADLESS = previous;
+	});
+	assert.equal(await headless.toolCall("bash", unattended), undefined);
+	assert.equal(wasSafetyApproved(unattended), false);
+});
+
+test("read-only mode claims nothing, since it asks nothing", async (t) => {
+	const cwd = await repository(t);
+	const gate = await harness(t, { cwd, config: { mode: "read-only" } });
+	const input = { command: "ls -la" };
+	assert.equal(await gate.toolCall("bash", input), undefined);
+	assert.equal(wasSafetyApproved(input), false);
 });
 
 test("auto downgrades to yolo when the classifier endpoint is unavailable", async (t) => {
@@ -606,7 +673,7 @@ test("the safety command reports mode, records transitions, and rejects bad inpu
 	assert.ok(gate.notices.at(-1)?.message.includes("No classifier decisions"));
 });
 
-test("a non-read-only call fixes the turn's baseline even when it is not itself recoverable", async (t) => {
+test("a non-read-only call fixes the request's baseline even when it is not itself recoverable", async (t) => {
 	const cwd = await repository(t);
 	process.env.PI_SAFETY_HEADLESS = "allow";
 	t.after(() => { delete process.env.PI_SAFETY_HEADLESS; });
@@ -629,7 +696,7 @@ test("a non-read-only call fixes the turn's baseline even when it is not itself 
 	await assert.rejects(readFile(join(cwd, "new.txt"), "utf8"));
 });
 
-test("a write outside the workspace still confirms, but the turn's baseline is taken before it", async (t) => {
+test("a write outside the workspace still confirms, but the request's baseline is taken before it", async (t) => {
 	const cwd = await repository(t);
 	const gate = await harness(t, { cwd, config: { mode: "safe" } });
 	await gate.startTurn();
