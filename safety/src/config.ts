@@ -94,11 +94,15 @@ function sampler(value: unknown): Record<string, unknown> {
 	return Object.fromEntries(Object.entries(record(value)).filter(([key]) => !RESERVED_SAMPLER_KEYS.has(key)));
 }
 
+export function configPath(env: Record<string, string | undefined> = process.env): string {
+	return env.SAFETY_CONFIG ?? join(homedir(), ".pi", "agent", "safety.json");
+}
+
 /** Load and validate the optional config. Invalid fields fall back independently to defaults. */
 export async function loadConfig(env: Record<string, string | undefined> = process.env): Promise<SafetyConfig> {
 	let raw: Record<string, unknown> = {};
 	try {
-		raw = record(JSON.parse(await readFile(env.SAFETY_CONFIG ?? join(homedir(), ".pi", "agent", "safety.json"), "utf8")));
+		raw = record(JSON.parse(await readFile(configPath(env), "utf8")));
 	} catch {
 		// Missing, unreadable, and malformed files all use the complete defaults.
 	}

@@ -50,6 +50,14 @@ export class CheckpointStore {
 		this.refPrefix = `${CHECKPOINT_NAMESPACE}/${safeSegment(options.sessionId)}/${safeSegment(options.runId ?? randomUUID())}`;
 	}
 
+	/**
+	 * Retention is settable mid-session by `/safety-config`. Rebuilding the store instead would end
+	 * the run's checkpoints, so the depth is changed in place and applies at the next prune.
+	 */
+	setRetain(retain: number): void {
+		this.options.retain = retain;
+	}
+
 	private async git(args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
 		const result = await execFileAsync("git", args, { cwd: this.options.cwd, env: { ...process.env, ...env }, maxBuffer: 10_000_000 });
 		return result.stdout.trim();

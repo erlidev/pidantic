@@ -87,6 +87,8 @@ export const DEFAULTS: Config = {
 		exa: { month: 900 },
 		brave: { month: 2000 },
 		marginalia: { day: 100 },
+		// Tracked like a provider so the shared operation count has a quota to be set against.
+		github: {},
 	},
 };
 
@@ -104,13 +106,17 @@ export function defaultDeps(): Deps {
 	};
 }
 
+export function configPath(env: Record<string, string | undefined> = process.env): string {
+	return env.LOCALSEARCH_CONFIG ?? join(homedir(), ".pi", "agent", "localsearch.json");
+}
+
 /**
  * Merge defaults with `~/.pi/agent/localsearch.json` and environment overrides.
  * A malformed or missing config file is not an error — defaults win.
  */
 export async function loadConfig(deps: Deps): Promise<Config> {
 	let file: Partial<Config> = {};
-	const path = deps.env.LOCALSEARCH_CONFIG ?? join(homedir(), ".pi", "agent", "localsearch.json");
+	const path = configPath(deps.env);
 	try {
 		file = JSON.parse(await readFile(path, "utf8")) as Partial<Config>;
 	} catch {

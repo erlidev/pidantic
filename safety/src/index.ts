@@ -22,14 +22,16 @@ import {
 	setSafetyMode,
 	type SafetyMode,
 } from "../../shared/mode-registry.ts";
+import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
 import { clearToolNotes, recordToolNote, rendersToolNotes } from "../../shared/tool-notes.ts";
 import { SafetyAudit } from "./audit.ts";
 import { CheckpointStore } from "./checkpoint.ts";
 import { probeClassifier, ResidualClassifier } from "./classifier.ts";
-import { loadConfig, type SafetyConfig } from "./config.ts";
+import { configPath, DEFAULTS as CONFIG_DEFAULTS, loadConfig, type SafetyConfig } from "./config.ts";
 import { classifierPreGate } from "./pre-gate.ts";
 import { readOnlyBash, readOnlyDenial } from "./read-only.ts";
 import { classifyRisk } from "./risk-policy.ts";
+import { rebuildsClassifier, SETTINGS } from "./settings.ts";
 import {
 	createSafetyState,
 	persistSafetyState,
@@ -63,6 +65,15 @@ const MODE_SUMMARY: Record<SafetyMode, string> = {
 	auto: "  confirmation gates active",
 	safe: "  confirmation gates active",
 	"read-only": "  writes and unknown tools blocked",
+};
+
+/** What each `/safety` argument does, said where the argument is chosen rather than in the manual. */
+const MODE_HELP: Record<SafetyMode | "log", string> = {
+	yolo: "stock pi behaviour; safety is inert",
+	auto: "safe, plus the classifier for residual cases",
+	safe: "deterministic gates; anything unknown confirms",
+	"read-only": "refuse everything not verifiably read-only",
+	log: "classifier decisions for this session",
 };
 
 function transitionContent(mode: SafetyMode, theme: Pick<Theme, "fg" | "bold">): string {
@@ -396,6 +407,14 @@ export default function safety(pi: ExtensionAPI): void {
 
 	pi.registerCommand("safety", {
 		description: "Report or change safety mode; show classifier log",
+		getArgumentCompletions: (prefix) =>
+			([...SAFETY_MODES, "log"] as (SafetyMode | "log")[])
+				.filter((option) => option.startsWith(prefix))
+				.map((option) => ({
+					value: option,
+					label: option,
+					description: option === state.mode ? `current · ${MODE_HELP[option]}` : MODE_HELP[option],
+				})),
 		handler: async (args, ctx) => {
 			const action = args.trim();
 			if (!action) {
@@ -417,10 +436,48 @@ export default function safety(pi: ExtensionAPI): void {
 				return;
 			}
 			if (!isSafetyMode(action)) {
-				ctx.ui.notify(`Usage: /safety [${SAFETY_MODES.join("|")}|log]`, "error");
+				ctx.ui.notify(`Usage: /safety [${SAFETY_MODES.join("|")}|log]. Everything else lives in /safety-config.`, "error");
 				return;
 			}
 			await enter(action, ctx);
+		},
+	});
+
+	/**
+	 * The rest of `safety.json`, editable from the session it affects. A change is written as it is
+	 * made and re-read straight back, so the running session uses it without a reload — including the
+	 * two pieces of live state that are not read per call: the classifier instance, which is rebuilt
+	 * so a new endpoint or model does not answer from the old one's cache, and checkpoint retention.
+	 */
+	pi.registerCommand("safety-config", {
+		description: "Show or change safety configuration",
+		getArgumentCompletions: (prefix) =>
+			settingCompletions(SETTINGS, prefix, {
+				current: config as unknown as Record<string, unknown>,
+				defaults: CONFIG_DEFAULTS as unknown as Record<string, unknown>,
+			}),
+		handler: async (args, ctx) => {
+			const result = await runSettingsCommand({
+				args,
+				command: "/safety-config",
+				title: "safety",
+				specs: SETTINGS,
+				current: config as unknown as Record<string, unknown>,
+				defaults: CONFIG_DEFAULTS as unknown as Record<string, unknown>,
+				path: configPath(),
+			});
+			ctx.ui.notify(result.message, result.level);
+			if (result.changed.length === 0) return;
+
+			config = await loadConfig();
+			if (rebuildsClassifier(result.changed)) classifier = new ResidualClassifier(config.classifier);
+			if (result.changed.includes("checkpointRetain")) checkpoints?.setRetain(config.checkpointRetain);
+			// Auto mode without a classifier would send every residual call to a failing endpoint and
+			// then to a dialog. Falling back to safe is the same policy without the wasted round-trip.
+			if (state.mode === "auto" && !config.classifier.enabled) {
+				await enter("safe", ctx);
+				ctx.ui.notify("Auto mode needs the classifier; this session switched to safe.", "warning");
+			}
 		},
 	});
 

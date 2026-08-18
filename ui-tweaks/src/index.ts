@@ -1,11 +1,13 @@
 /**
- * ui-tweaks — two small quality-of-life changes to pi's interactive UI.
+ * ui-tweaks — small quality-of-life changes to pi's interactive UI.
  *
  * 1. Mouse-wheel scroll speed in fullscreen mode, which pi fixes at one line per notch.
  * 2. A desktop notification when something wants the user: a confirmation dialog is holding a run,
  *    or a run finished and the reply is waiting to be read.
+ * 3. Slash-command argument suggestions offered as soon as the command name is completed, which pi
+ *    leaves to the next keystroke.
  *
- * Both are inert outside the interactive TUI. Which notification backend works is host-specific, so
+ * All are inert outside the interactive TUI. Which notification backend works is host-specific, so
  * every path fails soft: a backend that cannot deliver says so once per session and is then quiet,
  * and `/ui-tweaks test` reports what the current host resolved to.
  */
@@ -14,10 +16,14 @@ import { basename } from "node:path";
 import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type AttentionRequest, onAttention } from "../../shared/attention.ts";
+import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
+import { withArgumentCompletions } from "./completion.ts";
 import { clampWheelLines, type ConfigPatch, configPath, DEFAULTS, loadConfig, MAX_WHEEL_LINES, type UiTweaksConfig, updateConfig } from "./config.ts";
+import { createEditorFactory, type EditorFactory } from "./editor.ts";
 import { excerpt } from "./excerpt.ts";
 import { createNotifier, type Notification } from "./notify.ts";
 import { applyWheelLines, captureTui, type WheelTui } from "./scroll.ts";
+import { SETTINGS, verbCompletions } from "./settings.ts";
 
 function isInteractive(ctx: Pick<ExtensionContext, "mode" | "hasUI">): boolean {
 	return ctx.mode === "tui" && ctx.hasUI;
@@ -57,6 +63,9 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 	let config: UiTweaksConfig = DEFAULTS;
 	let tui: WheelTui | undefined;
 	let unsubscribe: (() => void) | undefined;
+	/** Built once so the installed factory can be recognised as this extension's own. */
+	const editorFactory: EditorFactory = createEditorFactory();
+	let providerWrapped = false;
 	let runStartedAt: number | undefined;
 	let lastMessage: AssistantMessage | undefined;
 	/** One failing backend is a configuration problem, not something to report on every run. */
@@ -71,6 +80,27 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 
 	function reapplyScroll(): void {
 		applyWheelLines(tui, config.scroll.wheelLines);
+	}
+
+	/**
+	 * Install or withdraw the chaining editor, following the current setting.
+	 *
+	 * The editor component is a single slot, so an editor another extension installed is left alone
+	 * rather than replaced — its own behaviour is worth more than this tweak. Pi clears the slot when
+	 * a session is invalidated, so the check also makes reinstalling idempotent.
+	 */
+	function applyCompletionChain(ctx: Pick<ExtensionContext, "ui" | "mode" | "hasUI">): void {
+		if (!isInteractive(ctx)) return;
+		try {
+			const installed = ctx.ui.getEditorComponent();
+			if (config.autocomplete.chainArguments) {
+				if (!installed) ctx.ui.setEditorComponent(editorFactory);
+			} else if (installed === editorFactory) {
+				ctx.ui.setEditorComponent(undefined);
+			}
+		} catch {
+			// A pi build without the editor slot loses the chain, not the session.
+		}
 	}
 
 	/**
@@ -104,6 +134,18 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 		config = await loadConfig();
 		tui = captureTui(ctx);
 		reapplyScroll();
+		applyCompletionChain(ctx);
+
+		// The wrapper reads the setting on every request, so it is installed once and stays correct
+		// through a later change; pi offers no way to remove one.
+		if (isInteractive(ctx) && !providerWrapped) {
+			try {
+				ctx.ui.addAutocompleteProvider((current) => withArgumentCompletions(current, () => config.autocomplete.chainArguments));
+				providerWrapped = true;
+			} catch {
+				// Same trade as above: a pi build without the hook keeps its own Tab behaviour.
+			}
+		}
 
 		// Owned by this session: a superseded session must stop reacting to its successor's dialogs.
 		unsubscribe?.();
@@ -164,10 +206,22 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 
 	pi.registerCommand("ui-tweaks", {
 		description: "Show or change scroll speed and attention notifications",
-		getArgumentCompletions: (prefix) =>
-			["notify on", "notify off", "notify after ", "scroll ", "test"]
-				.filter((option) => option.startsWith(prefix))
-				.map((option) => ({ value: option, label: option })),
+		// A verb and a key can reach the same argument — `scroll 5` is also `scroll.wheelLines 5` — so
+		// the two sources are merged by what they would insert, and the verb's own row wins.
+		getArgumentCompletions: (prefix) => {
+			const seen = new Set<string>();
+			return [
+				...verbCompletions(prefix, config),
+				...settingCompletions(SETTINGS, prefix, {
+					current: config as unknown as Record<string, unknown>,
+					defaults: DEFAULTS as unknown as Record<string, unknown>,
+				}),
+			].filter((row) => {
+				if (seen.has(row.value)) return false;
+				seen.add(row.value);
+				return true;
+			});
+		},
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const [verb, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 			const value = rest.join(" ");
@@ -235,8 +289,26 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 				return;
 			}
 
+			// Everything past the verbs is a setting key. The verbs cover the two changes people make
+			// most; the schema covers the rest of the file, including the fields that had no command.
 			if (verb) {
-				ctx.ui.notify(`Unknown argument "${verb}". Use notify, scroll, or test.`, "warning");
+				const result = await runSettingsCommand({
+					args: verb === "config" ? value : args.trim(),
+					command: "/ui-tweaks",
+					title: "ui-tweaks",
+					specs: SETTINGS,
+					current: config as unknown as Record<string, unknown>,
+					defaults: DEFAULTS as unknown as Record<string, unknown>,
+					path: configPath(),
+					listCommand: "/ui-tweaks config",
+				});
+				ctx.ui.notify(result.message, result.level);
+				if (result.changed.length === 0) return;
+				config = await loadConfig();
+				// A backend that failed under the old settings deserves a fresh chance to report.
+				failureReported = false;
+				reapplyScroll();
+				applyCompletionChain(ctx);
 				return;
 			}
 
@@ -255,7 +327,12 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 			const notifyState = config.notifications.enabled
 				? `on · ${backend} · ${triggers || "nothing selected"}`
 				: `off · would use ${backend}`;
-			ctx.ui.notify(`Scroll: ${scrollState}\nNotifications: ${notifyState}\nConfig: ${configPath()}`, "info");
+			const chainState = config.autocomplete.chainArguments ? "slash-command arguments chained" : "off";
+			ctx.ui.notify(
+				`Scroll: ${scrollState}\nNotifications: ${notifyState}\nAutocomplete: ${chainState}\nConfig: ${configPath()}\n` +
+					"/ui-tweaks config lists every setting; /ui-tweaks <setting> <value> changes one.",
+				"info",
+			);
 		},
 	});
 }

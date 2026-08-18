@@ -24,6 +24,7 @@ pidantic/
 ├── docs/
 │   ├── overview.md
 │   ├── development.md
+│   ├── settings-commands.md
 │   ├── extensions/
 │   │   ├── confirm-bash.md
 │   │   ├── localsearch.md
@@ -44,12 +45,15 @@ pidantic/
 │   ├── mode-registry.ts
 │   ├── process-registry.ts
 │   ├── read-only-tools.ts
+│   ├── settings.ts
 │   ├── tool-notes.ts
 │   └── test/
 │       ├── attention.test.ts
 │       ├── bash-policy.test.ts
 │       ├── command-findings.test.ts
 │       ├── process-registry.test.ts
+│       ├── settings.test.ts
+│       ├── settings-coverage.test.ts
 │       └── tool-notes.test.ts
 ├── confirm-bash/
 │   └── index.ts
@@ -80,6 +84,7 @@ pidantic/
 │   │   ├── prompt.ts
 │   │   ├── read-only.ts
 │   │   ├── risk-policy.ts
+│   │   ├── settings.ts
 │   │   ├── state.ts
 │   │   └── tiers.ts
 │   └── test/
@@ -91,18 +96,25 @@ pidantic/
 │       ├── pre-gate.test.ts
 │       ├── read-only.test.ts
 │       ├── risk-policy.test.ts
+│       ├── settings.test.ts
 │       ├── state.test.ts
 │       └── tiers.test.ts
 ├── ui-tweaks/
 │   ├── index.ts
 │   ├── src/
+│   │   ├── completion.ts
 │   │   ├── config.ts
+│   │   ├── editor.ts
 │   │   ├── excerpt.ts
 │   │   ├── index.ts
 │   │   ├── notify.ts
-│   │   └── scroll.ts
+│   │   ├── scroll.ts
+│   │   └── settings.ts
 │   └── test/
+│       ├── command.test.ts
+│       ├── completion.test.ts
 │       ├── config.test.ts
+│       ├── editor.test.ts
 │       ├── excerpt.test.ts
 │       ├── notify.test.ts
 │       └── scroll.test.ts
@@ -124,6 +136,7 @@ pidantic/
     │   ├── read.ts
     │   ├── render.ts
     │   ├── rewrite.ts
+    │   ├── settings.ts
     │   ├── sources.ts
     │   └── status.ts
     └── test/
@@ -139,6 +152,7 @@ pidantic/
         ├── read.test.ts
         ├── render.test.ts
         ├── rewrite.test.ts
+        ├── settings.test.ts
         ├── sources.test.ts
         ├── status.test.ts
         ├── smoke.ts
@@ -167,6 +181,8 @@ pidantic/
 
 - `docs/overview.md` describes the package architecture and maintains this complete tree.
 - `docs/development.md` contains installation, service startup, testing, and contribution steps.
+- `docs/settings-commands.md` documents the one grammar `/search-config`, `/safety-config`, and
+  `/ui-tweaks` share, so it is described once rather than in each extension manual.
 - `docs/extensions/` contains one user and implementation manual per extension. Extension
   directories contain code only, so operational documentation has one predictable location.
 - `docs/roadmaps/` contains any incomplete implementation work. A roadmap is not a statement of
@@ -200,6 +216,21 @@ not expressible in a schema remain in `promptGuidelines`.
   result renderer this way, each with a tone the renderer turns into a marker. Because an
   explanation can land after the row has been drawn, a renderer also registers that row's repaint
   callback there, and recording a note fires it.
+  `settings.ts` is the schema-driven half of every configuration command. An extension declares its
+  fields once — key, type, bounds, description, and any caveat — and that list produces the grouped
+  listing, the per-setting detail, value parsing, validation, the argument menu, and the merging
+  write, so `/search-config`, `/safety-config`, and `/ui-tweaks` share one grammar and one
+  implementation instead of a hand-written branch per knob. The argument menu is the same
+  declaration read out loud: each key carries the type it accepts before its description, each value
+  carries whether it is the one in force or the default, and a key is matched by the rounds
+  `resolveKey` uses, so what completes and what the command accepts cannot drift apart. A value is
+  only offered when it parses back to what it stands for — a duration is written `4s`, a size `2mb`,
+  and a field whose printed form is a label rather than a value (`(empty)`) offers no row at all.
+  Every row is an ordinary pi autocomplete item, so this works with or without `ui-tweaks`, which
+  changes only when the menu opens. It imports nothing from pi: the caller
+  passes the live config object, the defaults, and the file path, and gets back one block of text and
+  the list of keys that changed, so each extension decides for itself what live state to re-apply.
+  Writes are per leaf, so a field the extension does not know about survives one.
   `attention.ts` is the third such channel and the smallest: the extension that knows a run is
   waiting on a person raises a request, and whatever wants to act on it — `ui-tweaks` turns it into a
   desktop notification — listens. `askConfirmation` raises one as it opens, so every dialog in the
@@ -234,11 +265,13 @@ not expressible in a schema remain in `promptGuidelines`.
   The mode strings themselves live in `shared/mode-registry.ts` alongside the type, so the config
   file, the `--safety` flag, `/safety`, the `alt+s` cycle, and the session log all validate against
   one list.
+  `settings.ts` declares the fields `/safety-config` edits, kept out of `config.ts` so loading — what
+  every session does — stays independent of editing, which one command does.
   `prompt.ts` holds the classifier's system prompts and untrusted-payload framing, following the same
   convention as `localsearch/src/prompt.ts`: model-facing text stays in one budgetable, testable file.
 - `ui-tweaks/` adjusts pi's interactive TUI: the fullscreen mouse-wheel step, which pi fixes at one
-  line per notch and exposes no setting for, and optional desktop notifications for confirmations and
-  finished runs. `scroll.ts` isolates the one unsupported thing the package does — writing
+  line per notch and exposes no setting for, optional desktop notifications for confirmations and
+  finished runs, and the slash-command argument suggestions pi's editor stops short of asking for. `scroll.ts` isolates the one unsupported thing the package does — writing
   `wheelScrollLines` onto pi's live renderer, reached through the widget factory that is the only
   place `ExtensionUIContext` hands out the TUI — and describes just the two properties it touches, so
   a pi build that changes them costs the tweak rather than the session. `notify.ts` holds backend
@@ -246,13 +279,28 @@ not expressible in a schema remain in `promptGuidelines`.
   the platform, and the environment injected so no test needs a notification daemon. `excerpt.ts`
   flattens the Markdown of a finished reply into the one plain-text line a notification can carry,
   which no backend would render otherwise. A `/ui-tweaks` change is written to the configuration file
-  as it is made rather than at a save step, and `config.ts` merges that write into the existing file
-  so hand-edited fields survive it.
+  as it is made rather than at a save step, through the shared per-leaf writer, so hand-edited fields
+  survive it. `settings.ts` declares the same file as keys, which is what lets the command reach the
+  fields its verbs never covered — the backend, the argv escape hatch, the trigger switches, the
+  sound, and the completion chain. `completion.ts` holds that chain's two decisions and no pi
+  knowledge: whether the keystroke that just ran applied something another argument follows — the
+  menu was open and is now closed, the text changed, and the cursor sits where a further argument
+  would start, which is the trailing space pi gives a command name and a settings key gives itself —
+  and how a forced request in argument position is answered, which is by asking the provider underneath again,
+  unforced, since pi's own provider consults `getArgumentCompletions` only when `force` is unset.
+  `editor.ts` is the adapter: a subclass of the `CustomEditor` pi documents extensions to subclass,
+  overriding `handleInput` alone, plus the one call pi does not expose — the editor cancels its menu
+  at the end of its Tab branch and offers no way to re-open it, so the private
+  `tryTriggerAutocomplete` is called by name, feature-detected and guarded like `scroll.ts`'s field
+  write. The editor component is a single slot, so an editor another extension installed is never
+  replaced.
 - `smart-compaction/` currently exposes a valid no-op entry point while its implementation is
   developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
   performs registration, and the remaining source modules separate configuration, provider
   failover, fetching, extraction, formatting, notices, URL rewriting, and source adapters.
+  `settings.ts` declares the fields `/search-config` edits; the tools never import it, and it never
+  takes part in loading.
   `prompt.ts` holds every model-facing instruction string so the permanent token cost can be
   budgeted and tested in one place; `read.ts` holds the `fetch` pipeline, and `filter.ts` the
   sandboxed expression evaluator it runs. `render.ts` builds the compact transcript line for each
@@ -285,7 +333,16 @@ the count of other runs' ref prefixes that decides the concurrent-session warnin
 Classifier tests also cover explanation-only requests: their separate prompt, schema, and timeout,
 per-session caching, single-flight sharing of concurrent requests for one command, and the give-up
 threshold that stops asking a failing endpoint.
-The shared Bash policy, the finding renderer, and the tool-note channel keep their suites in
+`settings.test.ts` pins the settings engine on its own specs: leaf writes and their pruning, the
+merging file write, every key-resolution round including the ambiguity that lists a section instead
+of failing, unit-scaled parsing in both directions, list add/remove, reset, the no-op when a value is
+already set, and a failed write reported as a failure. Its completion cases pin what the argument
+menu says: the type hint each kind produces, the `current` and `default` marks, the numbers offered
+in their own unit, the list verbs and what each of them can be given, the key-matching rounds, and
+the fields that honestly offer nothing. `settings-coverage.test.ts` pins the one
+invariant across extensions — every configurable field is reachable from a command, and every spec
+names a field the configuration has — which is what catches a new config field that would otherwise
+stay file-only. The shared Bash policy, the finding renderer, and the tool-note channel keep their suites in
 `shared/test/`; the policy suite also pins segment spans against quoted, escaped, and multi-line
 commands, and the tool-note suite pins the repaint callback a late note fires.
 `process-registry.test.ts` reproduces pi's per-extension loading by importing the same module twice
@@ -306,6 +363,15 @@ exactly once while later calls in the turn stay silent, and
 `"checkpoints": false` produces none while restoring the write dialog in both gated modes. Suites that pin note text
 for other reasons set `checkpoints: false` so the assertions stay about one thing.
 `risk-policy.test.ts` pins the `mutates` flag that decides this separately from the verdict.
+`settings.test.ts` drives `/safety-config` through the same harness, since what matters about a
+setting is not that it was written but that the running session obeys it — including its argument
+menu, which is asked for through the harness and follows the running configuration rather than the
+file the session started from, and `/safety`'s own menu, which names what each mode does and marks
+the one in force: a deny-list entry added
+mid-session gates the next call, `checkpoints off` restores the write dialog on the next turn, a
+`mode` write leaves the session's own mode alone, and disabling the classifier drops an `auto`
+session to `safe`. The harness now always points `SAFETY_CONFIG` at a temporary file, so a
+developer's real configuration is never read and never written by a test.
 `read-only.test.ts` pins that mode's policy on its own — allowed reads, refused chains, every
 redirection, quoted metacharacters, and the deny list it still honours — and `gate.test.ts` pins the
 gate consequences the unit suite cannot see: refusals are hard denials rather than dialogs on both
@@ -332,7 +398,8 @@ mode registry around every case, since that state is shared with plan mode.
 
 `config.test.ts` pins the independent per-field fallbacks and the merging write behind every
 `/ui-tweaks` change: an unknown section and an untouched sibling both survive it, and a missing or
-unparseable file is replaced by one holding just the change. `excerpt.test.ts` pins the Markdown
+unparseable file is replaced by one holding just the change. The write itself is now the shared
+per-leaf writer, whose own cases live in `shared/test/settings.test.ts`. `excerpt.test.ts` pins the Markdown
 flattening in both directions — emphasis, code, fences, headings, bullets, quotes, and links become
 their contents, while `snake_case` and `2 * 3` are left alone.
 `notify.test.ts` drives every backend through injected dependencies: `auto` resolution per platform,
@@ -344,5 +411,21 @@ are pinned directly on `compose`, since they are what keeps model- and user-supp
 closing an escape early. `scroll.test.ts` covers the capture detour with a fake widget registry: the
 handle is borrowed and nothing is left mounted, a non-interactive context probes nothing, a registry
 that rejects the factory is survivable, and the wheel step is written only on a fullscreen renderer
-that actually has the field. `shared/test/attention.test.ts` pins the channel itself, including
+that actually has the field. `completion.test.ts` pins the completion chain's two decisions on their own: every shape that is and
+is not an argument position, the keystrokes that must not chain — Escape, a refined filter, a
+completed value, an applied-and-submitted command — the ones that must, and the wrapper's fallback to
+pi's forced answer when a command has no arguments of its own. `editor.test.ts` drives the real
+thing, pi's `Editor` and `CombinedAutocompleteProvider`, through a whole settings-shaped argument —
+command name, key, value — with the stock `CustomEditor` as the contrast case that still stops after
+the command name, so a pi build that renames the private trigger or changes the Tab branch fails here
+rather than in a session.
+`command.test.ts` drives the command itself against a fake `ExtensionAPI`, since the verbs and the
+key/value fallthrough share one handler: a verb writes only the field it names, a field no verb ever
+covered is reachable by key, `/ui-tweaks config` lists while a bare `/ui-tweaks` still summarises,
+and an unknown argument points at the listing. The argument menu is covered from the same place,
+since a verb and a key can reach the same value — `scroll 5` is also `scroll.wheelLines 5` — and the
+two sources are merged by what they would insert. It covers installation from the same end — a tui
+session takes the editor slot and adds one provider wrapper, the setting withdraws the editor while
+the wrapper stays and passes requests through, and an editor another extension installed is left
+alone. `shared/test/attention.test.ts` pins the channel itself, including
 delivery across a second evaluation of the module.

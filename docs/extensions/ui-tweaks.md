@@ -1,19 +1,21 @@
 # ui-tweaks
 
-Two small changes to pi's interactive terminal UI:
+Three small changes to pi's interactive terminal UI:
 
 1. **Scroll speed** — how many lines one mouse-wheel notch moves in pi's fullscreen mode. Pi's own
    value is one line per notch, which is unusable on a long transcript.
 2. **Attention notifications** — a native desktop notification when a confirmation dialog is holding
    a run, or when a run finishes and the reply is waiting to be read.
+3. **Completion chaining** — a slash command's argument suggestions offered as soon as its name is
+   completed, which pi leaves to whatever keystroke happens next.
 
 Which notification mechanism works depends on the host — a desktop session, an SSH connection, a
 container, WSL — so every path fails soft: a backend that cannot deliver reports once per session and
 is then quiet. `/ui-tweaks test` says what the current host resolved to, and `/ui-tweaks notify off`
 turns the whole thing off.
 
-Both tweaks are inert outside the interactive TUI (`pi -p`, JSON mode, RPC), where there is no
-renderer to configure and no user watching for a popup.
+All three are inert outside the interactive TUI (`pi -p`, JSON mode, RPC), where there is no
+renderer to configure, no editor to type in, and no user watching for a popup.
 
 ## Install
 
@@ -24,12 +26,23 @@ no build step and no service to run.
 ## The command
 
 ```text
-/ui-tweaks                  # current scroll step, notification state, resolved backend, config path
+/ui-tweaks                  # current scroll step, notification state, resolved backend, chaining, config path
 /ui-tweaks scroll 5         # 1–20 lines per wheel notch
 /ui-tweaks notify on        # or off
 /ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
 /ui-tweaks test             # send one notification now and report which backend answered
+/ui-tweaks config           # every setting in the file, grouped, with its current value
+/ui-tweaks notifications.backend terminal   # change any setting by key
 ```
+
+Completing an argument says what it takes: `scroll` and `notify after` are listed with their range
+and offer the value in force alongside the default, and every setting key carries its type before its
+description. The verbs above cover the two changes people make most. Everything else in the file —
+the backend, the `command` argv, the two trigger switches, the sound, and the completion chain — is
+set by key with the same grammar
+`/search-config` and `/safety-config` use, described in
+[Editing configuration from inside pi](../settings-commands.md). A key/value change re-reads the
+file and re-applies the wheel step, so it takes effect at once like the verbs do.
 
 A change takes effect immediately and is written to `~/.pi/agent/ui-tweaks.json` as it is made —
 these are preferences, not session flags, so there is no separate save step. The write merges into
@@ -55,6 +68,49 @@ Pi has no setting for this — `TuiAltScreen` takes a `wheelScrollLines` option 
 
 If a future pi version renames or removes the field, `applyWheelLines` finds no number to write and
 leaves the renderer alone — the tweak is lost, not the session.
+
+## Completion chaining
+
+Completing a slash command name with Tab used to leave nothing on screen. `/saf` + Tab produces
+`/safety-config `, which is exactly the state whose next suggestions are that command's arguments,
+and pi asks for none of them: `Editor.handleInput` applies the completion, closes the menu, and stops.
+Backspacing over the trailing space and retyping it is the shortest sequence that brings the argument
+menu up, because backspace re-opens the *command* menu and the space is then an update to an open one.
+
+Pressing Tab a second time did not help either. That path is a **forced** request, and pi's provider
+skips its slash-command branch whenever `force` is set (`if (!options.force && …)` in
+`CombinedAutocompleteProvider.getSuggestions`), so it answers with file paths rather than with the
+command's own arguments.
+
+The extension patches both halves:
+
+- **After a completion.** Pi's editor is replaced with a subclass of the `CustomEditor` it documents
+  extensions to subclass, whose only override is `handleInput`. It adds no key of its own: it asks
+  what the keystroke did and, when the answer is "applied something another argument follows",
+  requests the next round of suggestions. The menu must have been open and now be closed, the text
+  must have changed, and the cursor must sit where a further argument would start — three conditions
+  that between them exclude a keystroke that merely refined the filter and an Escape that dismissed
+  the menu. The completion itself decides the third: pi always ends a command name with a space, and
+  a completion that has to be followed by something — a settings key before its value, `add` before
+  the item to add — carries one of its own. So `/saf⇥` opens the key menu, `check⇥` opens that key's
+  values, and the value, which ends the line and carries no space, closes the menu so Enter submits.
+- **On a forced request.** An autocomplete wrapper answers a forced request in argument position by
+  asking the provider underneath it again, unforced — the one branch that consults the command. A
+  command with no argument completions returns nothing and pi's file-path answer stands, so Tab keeps
+  completing paths for every command that never wanted arguments of its own.
+
+Two consequences are worth knowing:
+
+- The editor component is a **single slot**. If another extension has already installed one, this
+  extension leaves it alone and the chain is simply absent — the other extension's editor is worth
+  more than the tweak. Setting `autocomplete.chainArguments` to `false` withdraws the editor
+  immediately, and the wrapper, which pi offers no way to remove, then passes every request straight
+  through.
+- Re-opening the menu is the one unsupported call here. Pi cancels the menu at the end of its own Tab
+  branch and exposes no way to re-open it, so the editor's private `tryTriggerAutocomplete` is called
+  by name. It is feature-detected and guarded: a pi build that renames it costs the chain, not the
+  session — and `ui-tweaks/test/editor.test.ts` drives pi's real editor and provider, so that change
+  shows up as a failing test rather than as a quiet regression.
 
 ## Notifications
 
@@ -132,6 +188,9 @@ own. These are the complete defaults:
   "scroll": {
     "wheelLines": 3
   },
+  "autocomplete": {
+    "chainArguments": true
+  },
   "notifications": {
     "enabled": true,
     "backend": "auto",
@@ -147,6 +206,7 @@ own. These are the complete defaults:
 | Field | Default | Effect |
 | --- | --- | --- |
 | `scroll.wheelLines` | `3` | Lines moved per wheel notch in fullscreen mode; clamped to 1–20 |
+| `autocomplete.chainArguments` | `true` | Offer a slash command's arguments as soon as its name is completed, and on a forced Tab in argument position |
 | `notifications.enabled` | `true` | Master switch. Nothing is sent while this is false |
 | `notifications.backend` | `"auto"` | `auto`, `notify-send`, `osascript`, `terminal`, or `command` |
 | `notifications.command` | `[]` | argv for the `command` backend; `{title}`, `{body}`, `{urgency}` are substituted |
@@ -165,7 +225,9 @@ own. These are the complete defaults:
 | --- | --- |
 | `ui-tweaks/index.ts` | Pi entry point |
 | `ui-tweaks/src/index.ts` | Registration: hooks, the `/ui-tweaks` command, and the notification triggers |
+| `ui-tweaks/src/completion.ts` | The two completion decisions: when a keystroke should chain, and how a forced request in argument position is answered |
 | `ui-tweaks/src/config.ts` | Configuration loading, validation, and the merging write behind every `/ui-tweaks` change |
+| `ui-tweaks/src/editor.ts` | The `CustomEditor` subclass that asks for the next suggestions, and the request pi has no public call for |
 | `ui-tweaks/src/excerpt.ts` | Flattening a Markdown reply into the one plain-text line a notification carries |
 | `ui-tweaks/src/notify.ts` | Backend resolution, argv construction, escapes, sanitization |
 | `ui-tweaks/src/scroll.ts` | Borrowing the TUI handle and writing the wheel step |
@@ -173,4 +235,6 @@ own. These are the complete defaults:
 
 `notify.ts` takes its process spawner, stdout writer, platform, and environment as injected
 dependencies, so every backend is tested without a notification daemon. `scroll.ts` never imports pi
-internals: it describes the two properties it touches and leaves anything else alone.
+internals: it describes the two properties it touches and leaves anything else alone. `completion.ts`
+holds no pi knowledge either — it is two decisions over plain text — which is what lets `editor.ts`
+stay a ten-line adapter around the one call pi does not expose.

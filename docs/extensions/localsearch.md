@@ -435,7 +435,8 @@ SearXNG outage. Quota defaults: searxng unlimited, exa 900/month, tavily 1000/mo
     "tavily": {"month": 1000},
     "exa": {"month": 900},
     "brave": {"month": 2000},
-    "marginalia": {"day": 100}
+    "marginalia": {"day": 100},
+    "github": {}
   },
 
   "fetchTimeoutMs": 20000,
@@ -466,6 +467,26 @@ are never written to config:
 | `TAVILY_API_KEY` | Unset | Enables Tavily failover |
 | `BRAVE_API_KEY` | Unset | Enables Brave failover |
 | `LS_GH_TOKEN` | Unset | Enables GitHub code search and authenticated GitHub reads |
+
+### Changing it from pi
+
+`/search-config` reads and writes the same file, so nothing above has to be hand-edited:
+
+```text
+/search-config                        # every setting, grouped, with its current value
+/search-config fetch-timeout 45s      # durations, sizes, and hours take their own units
+/search-config order searxng, brave   # lists take commas, plus add and remove
+/search-config brave 500/month        # a quota is a count and a period, not a JSON object
+/search-config limits                 # a name that matches a section lists that section
+/search-config reset fetchMaxBytes    # drop the key so the default applies again
+```
+
+Both tools load the file on every call, so a change is in force for the next `search` or `fetch`
+without a reload. `searxngUrl` is still overridden by `SEARXNG_URL` when that variable is set, and
+the command says so on the line that reports the write. Completing an argument reads the same file,
+so each key is listed with the type it accepts and each value with whether it is the one in force or
+the default — a quota offers `2000/month` rather than an abstract "json". The full grammar is in
+[Editing configuration from inside pi](../settings-commands.md#the-argument-menu).
 
 ## Development
 

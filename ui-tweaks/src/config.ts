@@ -5,9 +5,10 @@
  * hand-edited file degrades to defaults rather than to an unusable extension.
  */
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { type SettingWrite, writeSettings } from "../../shared/settings.ts";
 
 /**
  * `auto` picks a backend from the platform and what is installed. The rest force one:
@@ -16,7 +17,7 @@ import { dirname, join } from "node:path";
  */
 export type Backend = "auto" | "notify-send" | "osascript" | "terminal" | "command";
 
-const BACKENDS: readonly Backend[] = ["auto", "notify-send", "osascript", "terminal", "command"];
+export const BACKENDS: readonly Backend[] = ["auto", "notify-send", "osascript", "terminal", "command"];
 
 export interface NotificationConfig {
 	/** On by default. Every backend failure path degrades to one warning, so a host without a
@@ -35,6 +36,11 @@ export interface NotificationConfig {
 	sound: boolean;
 }
 
+export interface CompletionConfig {
+	/** Ask for a slash command's argument suggestions as soon as its name is completed. */
+	chainArguments: boolean;
+}
+
 export interface ScrollConfig {
 	/** Logical lines moved per mouse-wheel notch in fullscreen mode. Pi's own default is 1. */
 	wheelLines: number;
@@ -42,6 +48,7 @@ export interface ScrollConfig {
 
 export interface UiTweaksConfig {
 	scroll: ScrollConfig;
+	autocomplete: CompletionConfig;
 	notifications: NotificationConfig;
 }
 
@@ -50,6 +57,7 @@ export const MAX_WHEEL_LINES = 20;
 
 export const DEFAULTS: UiTweaksConfig = {
 	scroll: { wheelLines: 3 },
+	autocomplete: { chainArguments: true },
 	notifications: {
 		enabled: true,
 		backend: "auto",
@@ -100,6 +108,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	}
 
 	const scroll = record(raw.scroll);
+	const autocomplete = record(raw.autocomplete);
 	const notifications = record(raw.notifications);
 	const backend = BACKENDS.includes(notifications.backend as Backend)
 		? (notifications.backend as Backend)
@@ -107,6 +116,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 
 	return {
 		scroll: { wheelLines: clampWheelLines(scroll.wheelLines) },
+		autocomplete: { chainArguments: boolean(autocomplete.chainArguments, DEFAULTS.autocomplete.chainArguments) },
 		notifications: {
 			enabled: boolean(notifications.enabled, DEFAULTS.notifications.enabled),
 			backend,
@@ -119,34 +129,25 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	};
 }
 
-/** The settings `/ui-tweaks` can change, as a patch against one of the two sections. */
+/** The settings `/ui-tweaks` can change, as a patch against one of the file's sections. */
 export interface ConfigPatch {
 	scroll?: Partial<ScrollConfig>;
+	autocomplete?: Partial<CompletionConfig>;
 	notifications?: Partial<NotificationConfig>;
 }
 
 /**
  * Persist one change. A `/ui-tweaks` setting takes effect and is kept — there is no separate save
- * step — so this merges into whatever the file already holds instead of writing the whole resolved
- * configuration back. Fields this extension does not know about, and fields the user left at a
- * default on purpose, survive the write; only the changed leaves are touched.
+ * step — so the shared writer merges the changed leaves into whatever the file already holds.
+ * Fields this extension does not know about, and fields the user left at a default on purpose,
+ * survive the write.
  */
 export async function updateConfig(patch: ConfigPatch, env: Record<string, string | undefined> = process.env): Promise<string> {
 	const path = configPath(env);
-	let raw: Record<string, unknown> = {};
-	try {
-		raw = record(JSON.parse(await readFile(path, "utf8")));
-	} catch {
-		// A missing or unparseable file is replaced by one holding just this change.
-	}
-
-	const merged: Record<string, unknown> = { ...raw };
+	const writes: SettingWrite[] = [];
 	for (const [section, values] of Object.entries(patch)) {
-		if (!values) continue;
-		merged[section] = { ...record(raw[section]), ...values };
+		for (const [field, value] of Object.entries(values ?? {})) writes.push({ key: `${section}.${field}`, value });
 	}
-
-	await mkdir(dirname(path), { recursive: true });
-	await writeFile(path, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+	await writeSettings(path, writes);
 	return path;
 }

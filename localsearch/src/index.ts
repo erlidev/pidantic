@@ -13,8 +13,11 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
+import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
 import {
 	type Config,
+	configPath,
+	DEFAULTS,
 	type Deps,
 	defaultDeps,
 	describeError,
@@ -27,6 +30,7 @@ import { noProviderMessage, searchNotices, withNotices } from "./notices.ts";
 import { FETCH, SEARCH } from "./prompt.ts";
 import { readPage } from "./read.ts";
 import { formatFetchCall, formatSearchCall } from "./render.ts";
+import { SETTINGS } from "./settings.ts";
 import { type GitHubKind, searchGitHub, searchWikipedia } from "./sources.ts";
 import { statusReport } from "./status.ts";
 
@@ -147,6 +151,37 @@ export default function localsearch(pi: ExtensionAPI) {
 			const deps = defaultDeps();
 			const cfg = await loadConfig(deps);
 			ctx.ui.notify(await statusReport(cfg, deps), "info");
+		},
+	});
+
+	/**
+	 * `localsearch.json`, editable from the session it affects. Nothing has to be re-applied here:
+	 * both tools load the file on every call, so a write is in force for the next `search` or `fetch`.
+	 */
+	pi.registerCommand("search-config", {
+		description: "Show or change search and fetch configuration",
+		// The file is the only copy of this configuration — nothing here holds it between calls — so a
+		// completion reads it, which is what lets a row name the value currently in force.
+		getArgumentCompletions: async (prefix) => {
+			const deps = defaultDeps();
+			return settingCompletions(SETTINGS, prefix, {
+				current: (await loadConfig(deps)) as unknown as Record<string, unknown>,
+				defaults: DEFAULTS as unknown as Record<string, unknown>,
+			});
+		},
+		handler: async (args, ctx) => {
+			const deps = defaultDeps();
+			const result = await runSettingsCommand({
+				args,
+				command: "/search-config",
+				title: "localsearch",
+				specs: SETTINGS,
+				current: (await loadConfig(deps)) as unknown as Record<string, unknown>,
+				defaults: DEFAULTS as unknown as Record<string, unknown>,
+				path: configPath(deps.env),
+				env: deps.env,
+			});
+			ctx.ui.notify(result.message, result.level);
 		},
 	});
 }

@@ -19,6 +19,7 @@ Sessions start in `yolo` unless configuration or `--safety` selects another mode
 /safety                          # report current mode
 /safety yolo|auto|safe|read-only # switch mode
 /safety log                      # list classifier decisions in this session
+/safety-config                   # show or change everything else in safety.json
 /undo                            # confirm and restore the newest checkpoint
 Alt+S                            # cycle yolo → auto → safe → read-only; unavailable auto is skipped
 pi --safety safe                 # select the starting mode
@@ -532,6 +533,36 @@ is unavailable, and a later `/safety auto` retries the endpoint.
 | --- | --- | --- |
 | `SAFETY_CONFIG` | `~/.pi/agent/safety.json` | Overrides the configuration path |
 | `PI_SAFETY_HEADLESS` | Block confirmation-required calls | Set to `allow` to auto-approve gates in non-TUI sessions. `read-only` raises no dialogs, so it is unaffected |
+
+### Changing it from pi
+
+`/safety-config` reads and writes the same file, so none of it has to be hand-edited:
+
+```text
+/safety-config                          # every setting, grouped, with its current value
+/safety-config classifier               # a name that matches a section lists that section
+/safety-config classifier.timeoutMs 8s  # durations take their own units
+/safety-config denyBinaries add curl    # lists take add, remove, commas, and none
+/safety-config checkpoints off
+/safety-config reset checkpointRetain   # drop the key so the default applies again
+```
+
+The change is written and re-read immediately, so the running session uses it for the next tool
+call. Two pieces of live state are rebuilt with it: the classifier instance, so a new endpoint or
+model never answers from the previous one's verdict cache, and checkpoint retention, which is
+changed in place rather than by restarting the store, since restarting it would end this run's
+checkpoints.
+
+Two changes are announced rather than silently applied. `mode` selects what a *new* session starts
+in and leaves the current session's mode alone — `/safety` is what changes that. Turning
+`classifier.enabled` off while the session is in `auto` drops it to `safe`, because auto mode without
+a classifier would send every residual call to an endpoint that is not there and then to a dialog.
+Completing an argument says what the setting takes and what it is set to now — `checkpointRetain`
+offers the count in force and the default it would return to, `denyBinaries` offers `add`, `remove`,
+and `none`, and `denyBinaries remove` offers only the binaries the list actually holds. `/safety`
+does the same for its own argument: each mode is listed with what it does, and the one in force is
+marked. The full grammar is in
+[Editing configuration from inside pi](../settings-commands.md#the-argument-menu).
 
 ## Bundled classifier service
 

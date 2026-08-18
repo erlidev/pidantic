@@ -16,7 +16,7 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 | [`confirm-bash`](docs/extensions/confirm-bash.md) | Optional model-requested approval before a Bash command runs | Implemented |
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` to interrupt a run and record why it was interrupted | Implemented |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
-| [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed and desktop notifications when something needs the user | Implemented |
+| [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
 | [`smart-compaction`](docs/extensions/smart-compaction.md) | Reserved extension entry point | Scaffold; no behavior |
 
 ## Install
@@ -61,8 +61,10 @@ Then use the tools from Pi:
 search({"query":"Rust async cancellation"})
 fetch({"url":"https://docs.example.com/guide"})
 /search-status
+/search-config fetchTimeoutMs 45s
 /safety safe
 /safety read-only
+/safety-config classifier.enabled on
 /plan
 /stop stop after the current tool call
 /ui-tweaks scroll 5
@@ -111,11 +113,12 @@ service. It is not read by `localsearch`.
 
 ## `localsearch`
 
-`localsearch` registers two model tools and one user command:
+`localsearch` registers two model tools and two user commands:
 
 - `search` finds current information and returns titles, URLs, and short descriptions.
 - `fetch` reads a known URL and returns extracted content as Markdown, plain text, or the raw body.
 - `/search-status` displays provider health, quota state, and cache size.
+- `/search-config` shows and changes `localsearch.json` without leaving pi.
 
 Each call renders a one-line summary in the transcript — `search "rust async cancellation" in web`,
 `fetch docs.example.com/guide §Configuration · filter grep(/timeout/i, 3)` — so the exact query,
@@ -228,7 +231,8 @@ the complete default configuration; only values that need changing must be prese
     "tavily": {"month": 1000},
     "exa": {"month": 900},
     "brave": {"month": 2000},
-    "marginalia": {"day": 100}
+    "marginalia": {"day": 100},
+    "github": {}
   },
   "fetchTimeoutMs": 20000,
   "fetchMaxBytes": 2000000,
@@ -279,6 +283,7 @@ where configured policy requires it:
 /safety read-only       # refuse everything that is not verifiably read-only
 /safety yolo            # stock Pi behavior; safety is inert
 /safety log             # classifier decisions for this session
+/safety-config          # show or change everything else in safety.json
 /undo                   # confirm and restore the newest Git checkpoint
 Alt+S                   # cycle available modes
 pi --safety safe        # select the starting mode
@@ -378,12 +383,18 @@ invalid configuration uses these defaults:
   },
   "allowBinaries": [],
   "denyBinaries": [],
+  "allowReadPaths": [],
   "allowTools": [],
   "denyTools": [],
   "checkpoints": true,
   "checkpointRetain": 20
 }
 ```
+
+Every field above is also settable from the session it affects with `/safety-config`, which writes
+the same file: `/safety-config classifier.timeoutMs 8s`, `/safety-config denyBinaries add curl`,
+`/safety-config reset checkpointRetain`. `mode` is the exception that announces itself — it selects
+what a new session starts in, and `/safety` is still what changes the running one.
 
 | Environment variable | Default | Effect |
 | --- | --- | --- |
@@ -495,14 +506,17 @@ decisions without an interactive user.
 
 ## `ui-tweaks`
 
-Two changes to Pi's interactive terminal UI, both inert outside the TUI:
+Three changes to Pi's interactive terminal UI, all inert outside the TUI:
 
 ```text
-/ui-tweaks                  # scroll step, notification state, resolved backend, config path
+/ui-tweaks                  # scroll step, notification state, resolved backend, chaining, config path
 /ui-tweaks scroll 5         # 1-20 lines per mouse-wheel notch
 /ui-tweaks notify on        # or off
 /ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
 /ui-tweaks test             # send one notification now and report which backend answered
+/ui-tweaks config           # every setting in the file, grouped, with its current value
+/ui-tweaks autocomplete.chainArguments off  # stop chaining slash-command argument suggestions
+/ui-tweaks notifications.backend terminal   # change any setting by key
 ```
 
 Every change takes effect immediately and is written to the config file as it is made; the write
@@ -531,6 +545,17 @@ raise the notification. The terminal backend needs no D-Bus session and no binar
 over SSH, in containers, and in WSL; a terminal that implements neither sequence swallows it. Run
 `/ui-tweaks test` to see which one this host resolved to, and `/ui-tweaks notify off` to stop them.
 
+Completing a slash command name with Tab also offers that command's arguments straight away. Pi
+applies the completion, closes the menu, and asks for nothing further, so `/safety-config ` — the one
+state whose next suggestions are that command's arguments — stays blank until some later keystroke
+happens to re-trigger it, and a second Tab answers with file paths because pi's provider skips its
+slash-command branch on a forced request. The extension patches both: a subclass of pi's documented
+`CustomEditor` requests the next round after a completion something else follows — a command name, or
+a settings key before its value — and an autocomplete wrapper
+answers a forced request in argument position with the command's own arguments, falling back to pi's
+file paths for commands that have none. Pi's editor is a single slot, so an editor another extension
+installed is left alone; `autocomplete.chainArguments` turns the whole thing off.
+
 Configuration is loaded from `~/.pi/agent/ui-tweaks.json`, overridable with `UI_TWEAKS_CONFIG`.
 Missing or invalid configuration uses these defaults:
 
@@ -538,6 +563,9 @@ Missing or invalid configuration uses these defaults:
 {
   "scroll": {
     "wheelLines": 3
+  },
+  "autocomplete": {
+    "chainArguments": true
   },
   "notifications": {
     "enabled": true,
@@ -568,6 +596,9 @@ observable effect.
 ## Further documentation
 
 - [Repository overview](docs/overview.md) — package layout and architecture
+- [Editing configuration from inside pi](docs/settings-commands.md) — the grammar shared by
+  `/search-config`, `/safety-config`, and `/ui-tweaks`, and the argument menu that says what each
+  setting takes and what it is set to now
 - [Development guide](docs/development.md) — tests, smoke checks, and extension development
 - [localsearch manual](docs/extensions/localsearch.md) — extraction, filtering, provider behavior,
   and implementation details

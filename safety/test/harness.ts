@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -70,6 +70,12 @@ export interface Harness {
 	toolCall(toolName: string, input?: unknown, toolCallId?: string): Promise<HookResult | undefined>;
 	/** Drives /safety. */
 	command(args: string): Promise<void>;
+	/** Drives /safety-config. */
+	configure(args: string): Promise<void>;
+	/** The JSON the settings command has written, as it now stands on disk. */
+	storedConfig(): Promise<Record<string, unknown>>;
+	/** What a registered command's argument menu would show for one prefix. */
+	completions(command: string, prefix: string): { value: string; label: string; description?: string }[];
 	/** Drives /undo, which restores the newest checkpoint. */
 	undo(): Promise<void>;
 	startTurn(): Promise<void>;
@@ -114,21 +120,22 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 	const entries: Array<{ type: string; data: unknown }> = [];
 	const hooks = new Map<string, ToolCallHook>();
 	const commands = new Map<string, CommandHandler>();
+	const completions = new Map<string, (prefix: string) => { value: string; label: string; description?: string }[]>();
 	let statusValue: string | undefined;
 	let classifierCalls = 0;
 	let explanationCalls = 0;
 
-	if (options.config) {
-		const path = join(await mkdtemp(join(tmpdir(), "safety-config-")), "safety.json");
-		await writeFile(path, JSON.stringify(options.config));
-		const previous = process.env.SAFETY_CONFIG;
-		process.env.SAFETY_CONFIG = path;
-		t.after(() => {
-			if (previous === undefined) delete process.env.SAFETY_CONFIG;
-			else process.env.SAFETY_CONFIG = previous;
-			return rm(path, { force: true });
-		});
-	}
+	// Always a temp file, even with no `config`: the developer's real ~/.pi/agent/safety.json must
+	// never be read here, and /safety-config writes to whatever SAFETY_CONFIG points at.
+	const configFile = join(await mkdtemp(join(tmpdir(), "safety-config-")), "safety.json");
+	await writeFile(configFile, JSON.stringify(options.config ?? {}));
+	const previousConfig = process.env.SAFETY_CONFIG;
+	process.env.SAFETY_CONFIG = configFile;
+	t.after(() => {
+		if (previousConfig === undefined) delete process.env.SAFETY_CONFIG;
+		else process.env.SAFETY_CONFIG = previousConfig;
+		return rm(configFile, { force: true });
+	});
 
 	installFetch();
 	globalThis.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
@@ -172,7 +179,13 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 
 	const pi = {
 		registerFlag: () => {},
-		registerCommand: (name: string, spec: { handler: CommandHandler }) => { commands.set(name, spec.handler); },
+		registerCommand: (
+			name: string,
+			spec: { handler: CommandHandler; getArgumentCompletions?: (prefix: string) => { value: string; label: string; description?: string }[] },
+		) => {
+			commands.set(name, spec.handler);
+			if (spec.getArgumentCompletions) completions.set(name, spec.getArgumentCompletions);
+		},
 		registerShortcut: () => {},
 		registerEntryRenderer: () => {},
 		appendEntry: (type: string, data: unknown) => { entries.push({ type, data }); },
@@ -187,6 +200,10 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 	return {
 		toolCall: async (toolName, input = {}, toolCallId = "harness-call") => hooks.get("tool_call")?.({ toolName, input, toolCallId }, ctx),
 		command: async (args) => { await commands.get("safety")?.(args, ctx); },
+		configure: async (args) => { await commands.get("safety-config")?.(args, ctx); },
+		storedConfig: async () => JSON.parse(await readFile(configFile, "utf8")) as Record<string, unknown>,
+		/** What the argument menu would show for one of the registered commands. */
+		completions: (command: string, prefix: string) => completions.get(command)?.(prefix) ?? [],
 		undo: async () => { await commands.get("undo")?.("", ctx); },
 		startTurn: async () => { await hooks.get("before_agent_start")?.({ toolName: "", input: undefined }, ctx); },
 		shutdown: async () => { await hooks.get("session_shutdown")?.({ toolName: "", input: undefined }, ctx); },
