@@ -14,13 +14,17 @@ command is held at a dialog until you approve or deny it:
  → Approve
    Deny…
 
- ↑↓ navigate • enter select • esc deny
+ ↑↓ navigate • pgup/pgdn scroll • enter select • esc deny
 ──────────────────────────────────────────────
 ```
 
 Choosing **Deny…** opens an inline editor for a one-line reason, which is fed back to the model as
 the tool's error result — so you can redirect it ("wrong directory", "do a dry run first") instead of
 just refusing.
+
+The title and decision controls remain visible when a command or explanation is taller than the
+available terminal area. The detail section scrolls independently with **Page Up** and **Page Down**;
+the same behavior applies to the shared safety and plan-mode confirmation dialogs.
 
 This is **not** a permission system. There is no allowlist and no pattern matching: the model decides
 which of its own calls warrant a human, and unflagged calls run exactly as before. Steering lives in

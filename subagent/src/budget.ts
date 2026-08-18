@@ -1,4 +1,5 @@
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000;
+export const DEFAULT_REPORT_TIMEOUT_MS = 2 * 60 * 1_000;
 export const DEFAULT_CONTEXT_FRACTION = 0.8;
 
 export type BudgetReason = "timeout" | "tokens";
@@ -43,9 +44,10 @@ function positiveInteger(value: string | undefined): number | undefined {
 export function resolveBudgetOptions(
 	contextWindow: number,
 	env: NodeJS.ProcessEnv = process.env,
-): { timeoutMs: number; maxTokens: number } {
+): { timeoutMs: number; maxTokens: number; reportTimeoutMs: number } {
 	return {
 		timeoutMs: positiveInteger(env.PI_SUBAGENT_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS,
+		reportTimeoutMs: positiveInteger(env.PI_SUBAGENT_REPORT_TIMEOUT_MS) ?? DEFAULT_REPORT_TIMEOUT_MS,
 		maxTokens:
 			positiveInteger(env.PI_SUBAGENT_MAX_TOKENS) ??
 			Math.max(1, Math.floor(contextWindow * DEFAULT_CONTEXT_FRACTION)),

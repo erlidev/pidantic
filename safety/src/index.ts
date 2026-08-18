@@ -39,7 +39,7 @@ import {
 	SAFETY_ENTRY,
 	transitionSafetyMode,
 } from "./state.ts";
-import { findTool, toolTier } from "./tiers.ts";
+import { findTool, toolCallTier } from "./tiers.ts";
 
 const HEADLESS_ENV = "PI_SAFETY_HEADLESS";
 const SUBAGENT_MODE_ENV = "PI_SUBAGENT_SAFETY_MODE";
@@ -236,6 +236,7 @@ export default function safety(pi: ExtensionAPI): void {
 	let checkpointTakenForRequest = false;
 	let checkpointProtectedForRequest = false;
 	let checkpointWarningShown = false;
+	let subagentSession = false;
 	/** The call whose gate created this request's snapshot; its note carries the fact. */
 	let checkpointNoteCallId: string | undefined;
 	const audit = new SafetyAudit();
@@ -515,7 +516,7 @@ export default function safety(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		if (state.mode === "yolo" || isPlanModeActive()) return undefined;
 		if (config.denyTools.includes(event.toolName)) return denied(`Tool "${event.toolName}" is denied by safety configuration.`);
-		const tier = toolTier(event.toolName, pi.getAllTools());
+		const tier = toolCallTier(event.toolName, event.input, pi.getAllTools(), { subagentSession });
 		if (tier === "read-only") return undefined;
 
 		// Read-only mode answers every remaining call on its own: nothing can change state, so there is
@@ -690,6 +691,7 @@ export default function safety(pi: ExtensionAPI): void {
 		state = restoreSafetyState(ctx.sessionManager.getBranch(), config.mode);
 		const inheritedMode = process.env[SUBAGENT_MODE_ENV];
 		const inheritsMode = isSafetyMode(inheritedMode);
+		subagentSession = inheritsMode;
 		if (inheritsMode) state = createSafetyState(inheritedMode);
 		const flag = pi.getFlag("safety");
 		let flagSelected = false;

@@ -5,7 +5,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { briefForMode, buildOpeningMessage, type SubagentMode } from "./brief.ts";
+import { briefForMode, buildBudgetReportMessage, buildOpeningMessage, type SubagentMode } from "./brief.ts";
 import { createBudget, resolveBudgetOptions, type BudgetReason } from "./budget.ts";
 import { loadCustomPrompt } from "./custom-prompt.ts";
 import { createProgress, reduceProgress, snapshotProgress } from "./progress.ts";
@@ -119,6 +119,9 @@ export default function subagent(pi: ExtensionAPI): void {
 			let abortedByParent = signal?.aborted ?? false;
 			let promptError: unknown;
 			let abortStarted = false;
+			let transcriptRevision = 0;
+			let reportOnly = false;
+			let budgetReportMessage: string | undefined;
 
 			const abortChild = (reason?: BudgetReason) => {
 				if (abortStarted) return;
@@ -128,10 +131,11 @@ export default function subagent(pi: ExtensionAPI): void {
 			};
 			const abortListener = () => {
 				abortedByParent = true;
-				abortChild();
+				abortStarted = true;
+				void child.session.abort();
 			};
 			signal?.addEventListener("abort", abortListener, { once: true });
-			if (signal?.aborted) abortChild();
+			if (signal?.aborted) abortListener();
 			const timeout = setTimeout(() => abortChild("timeout"), budgetOptions.timeoutMs);
 
 			const publish = () => {
@@ -140,6 +144,8 @@ export default function subagent(pi: ExtensionAPI): void {
 					details: {
 						mode,
 						progress: snapshotProgress(progress),
+						contextUsage: child.session.getContextUsage(),
+						transcriptRevision,
 						sessionFile: child.sessionFile,
 						reportPath: child.reportPath,
 					},
@@ -147,13 +153,16 @@ export default function subagent(pi: ExtensionAPI): void {
 			};
 			const listener = (event: AgentSessionEvent) => {
 				progress = reduceProgress(progress, event);
+				if (event.type === "message_end" || event.type === "compaction_end") transcriptRevision += 1;
 				if (event.type === "compaction_end" && !event.aborted) {
-					void child.session.steer(briefForMode(mode)).catch((error: unknown) => {
+					void child.session.steer(reportOnly ? budgetReportMessage ?? buildBudgetReportMessage(budgetReason ?? "timeout") : briefForMode(mode)).catch((error: unknown) => {
 						ctx.ui.notify(`Could not restore the subagent brief after compaction: ${String(error)}`, "warning");
 					});
 				}
-				const checked = budget.check({ tokens: child.session.getContextUsage()?.tokens });
-				if (checked.exceeded) abortChild(checked.reason);
+				if (!reportOnly) {
+					const checked = budget.check({ tokens: child.session.getContextUsage()?.tokens });
+					if (checked.exceeded) abortChild(checked.reason);
+				}
 				publish();
 			};
 			const unsubscribe = child.session.subscribe(listener);
@@ -166,15 +175,35 @@ export default function subagent(pi: ExtensionAPI): void {
 					source: "extension",
 				});
 			} catch (error) {
-				promptError = error;
+				if (!budgetReason && !abortedByParent) promptError = error;
 			} finally {
 				clearTimeout(timeout);
-				signal?.removeEventListener("abort", abortListener);
-				unsubscribe();
 			}
+
+			if (budgetReason && !abortedByParent) {
+				reportOnly = true;
+				budgetReportMessage = buildBudgetReportMessage(budgetReason);
+				child.enforceBudgetReportOnly();
+				const reportTimeout = setTimeout(() => { void child.session.abort(); }, budgetOptions.reportTimeoutMs);
+				try {
+					await child.session.prompt(budgetReportMessage, {
+						expandPromptTemplates: false,
+						source: "extension",
+					});
+				} catch {
+					// The report resolver prefers a submitted report, then useful partial assistant text.
+				} finally {
+					clearTimeout(reportTimeout);
+				}
+			}
+
+			signal?.removeEventListener("abort", abortListener);
+			unsubscribe();
 
 			if (budgetReason) statusHint = "budget-truncated";
 			else if (abortedByParent || assistantWasAborted(child.session.messages)) statusHint = "aborted";
+			const completedAt = Date.now();
+			const contextUsage = child.session.getContextUsage();
 			const messages = promptError
 				? [
 					...child.session.messages,
@@ -186,7 +215,9 @@ export default function subagent(pi: ExtensionAPI): void {
 				const report = await resolveReport({ reportPath: child.reportPath, messages, statusHint });
 				const details: SpawnDetails = {
 					mode,
-					progress: snapshotProgress(progress),
+					progress: snapshotProgress(progress, completedAt),
+					contextUsage,
+					transcriptRevision,
 					sessionFile: child.sessionFile,
 					reportPath: report.reportPath,
 					reportSource: report.reportSource,

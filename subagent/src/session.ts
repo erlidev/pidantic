@@ -26,6 +26,37 @@ const CHILD_SAFETY_MODE_ENV = "PI_SUBAGENT_SAFETY_MODE";
 const HEADLESS_ENV = "PI_SUBAGENT_HEADLESS";
 const CHILD_HEADLESS_ENVS = ["PI_SAFETY_HEADLESS", "PI_CONFIRM_BASH_HEADLESS", "PI_PLAN_MODE_HEADLESS"] as const;
 
+interface ChildExtensionCandidate {
+	resolvedPath: string;
+	tools: ReadonlyMap<string, unknown>;
+}
+
+export const REPORT_GUARD_PATH = "<inline:subagent-report-guard>";
+const REPORT_ONLY_REASON = "The subagent budget was reached. Investigation is over; call write_report now using only findings already in context.";
+
+/**
+ * Child extensions share the parent's UI context so confirmation dialogs remain interactive.
+ * Extensions that own global TUI slots cannot safely share it: their child instance would replace
+ * the parent's component and leave callbacks holding a stale child context after disposal.
+ */
+export function includeChildExtension(extension: ChildExtensionCandidate): boolean {
+	if (extension.tools.has("spawn")) return false;
+	return !/(^|[\\/])ui-tweaks([\\/]|$)/.test(extension.resolvedPath);
+}
+
+/** Keep the budget guard ahead of safety and other hooks so blocked calls cannot open a dialog. */
+export function orderChildExtensions<T extends ChildExtensionCandidate>(extensions: T[]): T[] {
+	const included = extensions.filter(includeChildExtension);
+	const guard = included.find((extension) => extension.resolvedPath === REPORT_GUARD_PATH);
+	return guard ? [guard, ...included.filter((extension) => extension !== guard)] : included;
+}
+
+export function budgetReportToolCall(reportOnly: boolean, toolName: string) {
+	return reportOnly && toolName !== "write_report"
+		? { block: true as const, reason: REPORT_ONLY_REASON }
+		: undefined;
+}
+
 function applyHeadlessOverrides(mode: ExtensionContext["mode"]): () => void {
 	if (mode === "tui" || process.env[HEADLESS_ENV] !== "allow") return () => undefined;
 	const previous = CHILD_HEADLESS_ENVS.map((name) => [name, process.env[name]] as const);
@@ -56,6 +87,7 @@ export interface ChildSessionHandle {
 	session: AgentSession;
 	sessionFile: string;
 	reportPath: string;
+	enforceBudgetReportOnly(): void;
 	dispose(): Promise<void>;
 }
 
@@ -106,12 +138,20 @@ export async function createChildSession(options: CreateChildSessionOptions): Pr
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile) throw new Error("The child session manager did not create a session file.");
 	const reportPath = reportPathFor(sessionFile);
+	let reportOnly = false;
 	const loader = new DefaultResourceLoader({
 		cwd: options.cwd,
 		agentDir,
+		extensionFactories: [{
+			name: "subagent-report-guard",
+			hidden: true,
+			factory: (pi) => {
+				pi.on("tool_call", (event) => budgetReportToolCall(reportOnly, event.toolName));
+			},
+		}],
 		extensionsOverride: (base) => ({
 			...base,
-			extensions: base.extensions.filter((extension) => !extension.tools.has("spawn")),
+			extensions: orderChildExtensions(base.extensions),
 		}),
 		appendSystemPromptOverride: (base) =>
 			options.appendSystemPrompt ? [...base, options.appendSystemPrompt] : base,
@@ -170,6 +210,9 @@ export async function createChildSession(options: CreateChildSessionOptions): Pr
 		session,
 		sessionFile,
 		reportPath,
+		enforceBudgetReportOnly() {
+			reportOnly = true;
+		},
 		async dispose() {
 			if (disposed) return;
 			disposed = true;

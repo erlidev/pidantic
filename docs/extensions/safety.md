@@ -13,6 +13,13 @@ separate path and bypass the extension.
 | `auto` | Safe-mode rules and the same checkpoint; eligible unknown binaries may use the classifier | Checkpoint, then allowed without a dialog when the checkpoint succeeded; otherwise as `safe` | Classifier may allow a call it rates safe |
 | `read-only` | Only verifiably read-only commands run; everything else is refused outright. No checkpoint, no classifier, no dialog | Every call is refused | Every call is refused |
 
+The subagent tools have narrower deterministic handling than the generic unknown-tool column:
+registered `spawn` calls with `mode: "explore"` run without a checkpoint, classifier request, or
+confirmation in every safety mode. Their tool set cannot modify the project. The child's fixed-path
+`write_report` submission is allowed for the same reason; it can only write the report artifact
+selected by the extension. `spawn` with `mode: "implement"`, a missing mode, or any other mode remains
+an unknown state-changing tool and follows the table above. An explicit `denyTools` entry still wins.
+
 Sessions start in `yolo` unless configuration or `--safety` selects another mode. Controls are:
 
 ```text
@@ -48,8 +55,8 @@ A call runs only when it is verifiably read-only:
 
 - read-only tools — `read`, `grep`, `find`, `ls`, and the registered `search`/`fetch` — run
   unchanged;
-- `write`, `edit`, and every unknown tool are refused, an unknown tool included because nothing
-  states what it does;
+- `write`, `edit`, and every unknown tool are refused, except for a registered `spawn` call whose
+  exact mode is `explore` and the child's fixed-path `write_report` submission;
 - a Bash command runs only when the shared plan-mode allowlist in
   [`shared/bash-policy.ts`](../../shared/bash-policy.ts) allows every one of its segments.
 

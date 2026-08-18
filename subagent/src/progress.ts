@@ -19,6 +19,7 @@ export interface ProgressState {
 export interface ProgressSnapshot {
 	turns: number;
 	startedAt: number;
+	completedAt?: number;
 	filesEdited: string[];
 	filesRead: string[];
 	commands: number;
@@ -113,10 +114,11 @@ export function reduceProgress(state: ProgressState, event: AgentSessionEvent): 
 	return next;
 }
 
-export function snapshotProgress(state: ProgressState): ProgressSnapshot {
+export function snapshotProgress(state: ProgressState, completedAt?: number): ProgressSnapshot {
 	return {
 		turns: state.turns,
 		startedAt: state.startedAt,
+		...(completedAt === undefined ? {} : { completedAt }),
 		filesEdited: [...state.filesEdited],
 		filesRead: [...state.filesRead],
 		commands: state.commands,

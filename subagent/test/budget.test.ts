@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createBudget, DEFAULT_TIMEOUT_MS, resolveBudgetOptions } from "../src/budget.ts";
+import { createBudget, DEFAULT_REPORT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, resolveBudgetOptions } from "../src/budget.ts";
 
 test("token and timeout limits trip independently", () => {
 	const budget = createBudget({ timeoutMs: 1_000, maxTokens: 800, startedAt: 100 });
@@ -19,9 +19,11 @@ test("environment overrides accept only positive integers", () => {
 	assert.deepEqual(resolveBudgetOptions(100_000, {
 		PI_SUBAGENT_TIMEOUT_MS: "2500",
 		PI_SUBAGENT_MAX_TOKENS: "60000",
-	}), { timeoutMs: 2_500, maxTokens: 60_000 });
+		PI_SUBAGENT_REPORT_TIMEOUT_MS: "9000",
+	}), { timeoutMs: 2_500, maxTokens: 60_000, reportTimeoutMs: 9_000 });
 	assert.deepEqual(resolveBudgetOptions(100, {
 		PI_SUBAGENT_TIMEOUT_MS: "0",
 		PI_SUBAGENT_MAX_TOKENS: "invalid",
-	}), { timeoutMs: DEFAULT_TIMEOUT_MS, maxTokens: 80 });
+		PI_SUBAGENT_REPORT_TIMEOUT_MS: "-1",
+	}), { timeoutMs: DEFAULT_TIMEOUT_MS, maxTokens: 80, reportTimeoutMs: DEFAULT_REPORT_TIMEOUT_MS });
 });

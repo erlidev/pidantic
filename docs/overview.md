@@ -236,7 +236,9 @@ not expressible in a schema remain in `promptGuidelines`.
   theme as a structural argument, so it stays testable. `confirm-dialog.ts` accepts either a plain
   body string or such a renderer, which receives the live theme on every re-render, and takes an
   optional `onRefresh` callback so a caller can redraw an open dialog when the state its renderer
-  closes over changes — safety's command explanation arrives while the dialog is already up.
+  closes over changes — safety's command explanation arrives while the dialog is already up. Its
+  title and decision controls are fixed layout regions around a shrinking detail `ScrollView`, so a
+  wrapped command cannot push approval off-screen; Page Up and Page Down move through those details.
   `tool-notes.ts` carries one-line annotations from the extension that decides something about a tool
   call to the extension that renders it, keyed by `toolCallId`; safety's classifier verdicts, its
   background command explanations, and its account of what held a gated call reach confirm-bash's Bash
@@ -378,7 +380,7 @@ not expressible in a schema remain in `promptGuidelines`.
 ## Subagent tests
 
 The `subagent/test/` unit suites cover brief composition, the custom-prompt cascade and cap, both
-budget limits, progress event folding with unique file counters, and every report source/status
+  budget limits, progress event folding with unique file counters, and every report source/status
 combination. `smoke.ts` constructs and binds a real file-backed explore child in a temporary session
 directory without making a model request; it verifies prompt layering, tool restriction, and the
 recursion guard against a locally loaded package configuration.

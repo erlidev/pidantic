@@ -16,3 +16,8 @@ export function briefForMode(mode: SubagentMode): string {
 export function buildOpeningMessage(instructions: string, mode: SubagentMode): string {
 	return `${briefForMode(mode)}\n\n--- TASK ---\n${instructions}`;
 }
+
+export function buildBudgetReportMessage(reason: "timeout" | "tokens"): string {
+	const limit = reason === "timeout" ? "wall-clock time" : "context-token";
+	return `The ${limit} budget was reached and the investigation has been stopped. Do not investigate, analyze further, or call any tool except write_report. Using only findings already present in this conversation, submit the best partial report immediately with write_report. Clearly state what remains incomplete because the budget was reached.`;
+}

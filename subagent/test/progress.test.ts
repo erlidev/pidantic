@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { createProgress, describe, reduceProgress } from "../src/progress.ts";
+import { createProgress, describe, reduceProgress, snapshotProgress } from "../src/progress.ts";
 
 function event(value: object): AgentSessionEvent {
 	return value as AgentSessionEvent;
@@ -38,6 +38,12 @@ test("an unmatched end event is harmless", () => {
 	const state = reduceProgress(initial, event({ type: "tool_execution_end", toolCallId: "missing", toolName: "read", result: {}, isError: true }));
 	assert.deepEqual([...state.filesRead], []);
 	assert.equal(state.current, undefined);
+});
+
+test("a completed progress snapshot records the fixed completion time", () => {
+	const state = createProgress(1_000);
+	assert.deepEqual(snapshotProgress(state).completedAt, undefined);
+	assert.equal(snapshotProgress(state, 4_000).completedAt, 4_000);
 });
 
 test("tool descriptions use the actual built-in argument names", () => {

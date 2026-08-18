@@ -50,6 +50,52 @@ test("safe mode allows read-only tools and deterministically safe commands witho
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "ls -la" })), "allowed");
 });
 
+test("explore subagents bypass safety gates", async (t) => {
+	const cwd = await repository(t);
+	const tools = [
+		...DEFAULT_TOOLS,
+		{ name: "spawn" } as (typeof DEFAULT_TOOLS)[number],
+	];
+	const gate = await harness(t, { cwd, tools, config: { mode: "safe" } });
+	await gate.startTurn();
+	assert.equal(await outcome(() => gate.toolCall("spawn", { mode: "explore", instructions: "audit" })), "allowed");
+	assert.equal((await checkpointRefs(cwd)).length, 0);
+
+	assert.equal(await outcome(() => gate.toolCall("spawn", { mode: "implement", instructions: "change" })), "gated");
+	assert.equal(await outcome(() => gate.toolCall("spawn", { instructions: "ambiguous" })), "gated");
+});
+
+test("only a child session bypasses safety for fixed report submission", async (t) => {
+	const cwd = await repository(t);
+	const tools = [...DEFAULT_TOOLS, { name: "write_report" } as (typeof DEFAULT_TOOLS)[number]];
+	const parent = await harness(t, { cwd, tools, config: { mode: "safe" } });
+	assert.equal(await outcome(() => parent.toolCall("write_report", { content: "done" })), "gated");
+
+	const previous = process.env.PI_SUBAGENT_SAFETY_MODE;
+	process.env.PI_SUBAGENT_SAFETY_MODE = "safe";
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_SUBAGENT_SAFETY_MODE;
+		else process.env.PI_SUBAGENT_SAFETY_MODE = previous;
+	});
+	const child = await harness(t, { cwd, tools, config: { mode: "safe" } });
+	assert.equal(await outcome(() => child.toolCall("write_report", { content: "done" })), "allowed");
+});
+
+test("read-only mode allows explore spawn but refuses implement spawn", async (t) => {
+	const cwd = await repository(t);
+	const tools = [...DEFAULT_TOOLS, { name: "spawn" } as (typeof DEFAULT_TOOLS)[number]];
+	const gate = await harness(t, { cwd, tools, config: { mode: "read-only" } });
+	assert.equal(await outcome(() => gate.toolCall("spawn", { mode: "explore", instructions: "audit" })), "allowed");
+	assert.equal(await outcome(() => gate.toolCall("spawn", { mode: "implement", instructions: "change" })), "denied");
+});
+
+test("denyTools still overrides the explore-subagent exception", async (t) => {
+	const cwd = await repository(t);
+	const tools = [...DEFAULT_TOOLS, { name: "spawn" } as (typeof DEFAULT_TOOLS)[number]];
+	const gate = await harness(t, { cwd, tools, config: { mode: "safe", denyTools: ["spawn"] } });
+	assert.equal(await outcome(() => gate.toolCall("spawn", { mode: "explore", instructions: "audit" })), "denied");
+});
+
 test("a subagent startup mode overrides persisted and configured parent-independent state", async (t) => {
 	const cwd = await repository(t);
 	const previous = process.env.PI_SUBAGENT_SAFETY_MODE;
