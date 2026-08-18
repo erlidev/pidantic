@@ -65,6 +65,10 @@ services:
       - ling3
       - --reasoning-parser
       - ling3
+      - --enable-prefix-caching
+      - --enable-chunked-prefill
+      - --max-num-batched-tokens
+      - "4096"
       # uncomment these for fp8
       #- --hf-overrides
       #- '{"quantization_config":{"activation_scheme":"dynamic","fmt":"e4m3","quant_method":"fp8","scale_fmt":"ue8m0","weight_block_size":[128,128],"modules_to_not_convert":["fused_qkv_a_proj","q_a_proj","q_b_proj","fused_qkv_a_proj_with_mqa","kv_a_proj_with_mqa","kv_b_proj","lm_head","word_embeddings","b_proj","mlp.gate","3.attention.g_proj","7.attention.g_proj","11.attention.g_proj","15.attention.g_proj","19.attention.g_proj","23.attention.g_proj"]}}'
