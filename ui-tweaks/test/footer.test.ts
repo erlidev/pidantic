@@ -9,12 +9,17 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { collectUsage, type FooterOptions, type FooterState, formatTokens, formatUsedTokens, renderFooter, sparkline } from "../src/footer.ts";
+import { collectUsage, type FooterOptions, type FooterState, type FooterStatus, formatTokens, formatUsedTokens, renderFooter, sparkline } from "../src/footer.ts";
 
 const plain = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 const marked = { fg: (color: string, text: string) => `<${color}>${text}</>`, bold: (text: string) => text };
 
-const OPTIONS: FooterOptions = { context: "tokens", tokensPerSecond: true, sparkline: false };
+const OPTIONS: FooterOptions = { context: "tokens", tokensPerSecond: true, sparkline: false, status: "inline" };
+
+const BADGES: readonly FooterStatus[] = [
+	{ key: "plan-mode", icon: "▤", label: "plan", tone: "notice" },
+	{ key: "subagent", icon: "◉", label: "sub ×2", tone: "active" },
+];
 
 function state(overrides: Partial<FooterState> = {}): FooterState {
 	return {
@@ -100,10 +105,42 @@ test("the model is right-aligned, with its thinking level and the provider that 
 	assert.doesNotMatch(tight, /\(someone\)/);
 });
 
-test("extension statuses keep their own line, flattened to it", () => {
+test("extension statuses are badges right-aligned against the path, on the path's own line", () => {
 	assert.equal(renderFooter(state(), OPTIONS, 120, plain).length, 2);
-	const lines = renderFooter(state({ statuses: ["safety: safe", "plan:\n  on"] }), OPTIONS, 120, plain);
-	assert.equal(lines[2], "safety: safe plan: on");
+	const lines = renderFooter(state({ branch: "main", statuses: BADGES }), OPTIONS, 120, plain);
+	// Two lines, not three: the status no longer costs a row of its own.
+	assert.equal(lines.length, 2);
+	assert.match(lines[0] ?? "", /^~\/project \(main\) +▤ plan  ◉ sub ×2$/);
+	assert.equal((lines[0] ?? "").length, 120);
+});
+
+test("a badge is painted by its tone, and a status pi alone knows about still appears", () => {
+	const line = renderFooter(state({ statuses: [...BADGES, { key: "other", label: "something:\n  on", tone: "info" }] }), OPTIONS, 200, marked)[0] ?? "";
+	assert.match(line, /<warning>▤ plan<\/>/);
+	assert.match(line, /<accent>◉ sub ×2<\/>/);
+	// Flattened to one line, whatever the extension put in it, and drawn without a glyph it never gave.
+	assert.match(line, /<muted>something: on<\/>/);
+});
+
+test("the badges keep their room when the path cannot have all of its own", () => {
+	// truncateToWidth writes its own resets around the ellipsis, so widths are read without them.
+	const bare = (text: string) => text.replace(/\x1B\[[0-9;]*m/g, "");
+	const line = bare(renderFooter(state({ cwd: "/home/dev/project/deeply/nested/working/directory", statuses: BADGES }), OPTIONS, 40, plain)[0] ?? "");
+	assert.match(line, /^~\/project\/deeply\/\S*\.\.\. +▤ plan  ◉ sub ×2$/);
+	assert.equal(line.length, 40);
+	// Narrower than the badges themselves: what is left is the badges, truncated, not the path.
+	assert.equal(bare(renderFooter(state({ statuses: BADGES }), OPTIONS, 12, plain)[0] ?? ""), "▤ plan  ◉...");
+});
+
+test("the statuses can keep pi's own line, or be dropped entirely", () => {
+	const own = renderFooter(state({ statuses: BADGES }), { ...OPTIONS, status: "line" }, 120, plain);
+	assert.equal(own.length, 3);
+	assert.equal(own[0]?.trimEnd(), "~/project");
+	assert.equal(own[2], "▤ plan  ◉ sub ×2");
+
+	const none = renderFooter(state({ statuses: BADGES }), { ...OPTIONS, status: "off" }, 120, plain);
+	assert.equal(none.length, 2);
+	assert.equal(none[0]?.trimEnd(), "~/project");
 });
 
 test("usage is summed on pi's rules, and the cache hit rate is the latest request's", () => {

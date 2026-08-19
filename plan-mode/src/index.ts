@@ -12,6 +12,7 @@ import { askConfirmation } from "../../shared/confirm-dialog.ts";
 import { classify } from "../../shared/bash-policy.ts";
 import { renderCommandFindings, summarizeFindings } from "../../shared/command-findings.ts";
 import { claimPlanMode, createModeOwner, releasePlanMode, setPlanModeActive } from "../../shared/mode-registry.ts";
+import { publishStatusBadge, setStatusBadge } from "../../shared/status-registry.ts";
 import { planFileExists, resolvePlanPath, writePlanFile } from "./plan-file.ts";
 import { denyReason, planToolSet } from "./policy.ts";
 import { BRIEF } from "./prompt.ts";
@@ -67,7 +68,9 @@ function headlessConfirmationReason(action: string): string {
 }
 
 function setPlanStatus(ctx: Pick<ExtensionContext, "ui">, active: boolean): void {
-	ctx.ui.setStatus("plan-mode", active ? "Plan Mode" : undefined);
+	// Plan mode is the outermost restriction a session can be in, so its badge sorts first, and it
+	// wears the same warning colour as the banner the transition prints.
+	setStatusBadge(ctx, "plan-mode", active ? { icon: "▤", label: "plan", tone: "notice", order: 10, plain: "Plan Mode" } : undefined);
 }
 
 function transitionContent(active: boolean, theme: Pick<Theme, "fg" | "bold">): string {
@@ -369,6 +372,8 @@ export default function planMode(pi: ExtensionAPI): void {
 		// Cleared before the next session starts, so safety never arbitrates against a dead session's
 		// plan mode — and never depends on this extension loading first to correct it.
 		releasePlanMode(owner);
+		// The badge would outlive pi's own status line otherwise: the registry is process-wide.
+		publishStatusBadge("plan-mode", undefined);
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

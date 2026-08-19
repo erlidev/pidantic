@@ -106,7 +106,9 @@ test("a subagent startup mode overrides persisted and configured parent-independ
 		else process.env.PI_SUBAGENT_SAFETY_MODE = previous;
 	});
 	const gate = await harness(t, { cwd, config: { mode: "yolo" } });
-	assert.equal(gate.status(), "Safety: safe");
+	// A child shares its parent's UI, so it inherits the mode without writing the parent's status
+	// line; that the command is gated is what proves the inherited mode took effect.
+	assert.equal(gate.status(), undefined);
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "gated");
 });
 

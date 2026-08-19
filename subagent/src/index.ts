@@ -6,6 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
+import { setStatusBadge } from "../../shared/status-registry.ts";
 import { briefForMode, buildBudgetReportMessage, buildOpeningMessage, type SubagentMode } from "./brief.ts";
 import { createBudget, isReportProgress, resolveBudgetOptions, type BudgetReason } from "./budget.ts";
 import { configPath, DEFAULTS as CONFIG_DEFAULTS, loadConfig } from "./config.ts";
@@ -59,8 +60,17 @@ export default function subagent(pi: ExtensionAPI): void {
 	const concurrency = new ConcurrencyGate();
 	const childGroup = createChildSessionGroup();
 
+	// Children come and go inside one run, so the badge sorts last: a mode indicator that moved every
+	// time a child started would be harder to read than the count it sits beside.
 	const updateStatus = (ctx: ExtensionContext) => {
-		ctx.ui.setStatus("subagent", concurrency.active === 0 ? undefined : concurrency.active === 1 ? "SUB" : `SUB ×${concurrency.active}`);
+		const active = concurrency.active;
+		setStatusBadge(
+			ctx,
+			"subagent",
+			active === 0
+				? undefined
+				: { icon: "◉", label: active === 1 ? "sub" : `sub ×${active}`, tone: "active", order: 30, plain: active === 1 ? "SUB" : `SUB ×${active}` },
+		);
 	};
 
 	pi.registerFlag("subagent-prompt", {

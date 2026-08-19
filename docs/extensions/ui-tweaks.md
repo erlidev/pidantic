@@ -5,7 +5,8 @@ Four small changes to pi's interactive terminal UI:
 1. **Scroll speed** — how many lines one mouse-wheel notch moves in pi's fullscreen mode. Pi's own
    value is one line per notch, which is unusable on a long transcript.
 2. **Footer** — the context shown as the tokens in use over the window rather than as a percentage of
-   it, and the rate the model is generating at, live while it streams.
+   it, the rate the model is generating at, live while it streams, and the other extensions' statuses
+   drawn as icon-and-label badges beside the working directory instead of as a plain line of their own.
 3. **Attention notifications** — a native desktop notification when a confirmation dialog is holding
    a run, or when a run finishes and the reply is waiting to be read.
 4. **Completion chaining** — a slash command's argument suggestions offered as soon as its name is
@@ -32,6 +33,7 @@ no build step and no service to run.
 /ui-tweaks scroll 5         # 1–20 lines per wheel notch
 /ui-tweaks footer.enabled off               # give pi its own footer back
 /ui-tweaks footer.context percent           # or tokens, the default
+/ui-tweaks footer.status line               # or inline, the default, or off
 /ui-tweaks notify on        # or off
 /ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
 /ui-tweaks test             # send one notification now and report which backend answered
@@ -82,9 +84,8 @@ beside it. This footer prints the same field as tokens over the window, and adds
 generating at:
 
 ```text
-~/Code/pi-extensions (main)
+~/Code/pi-extensions (main)                                              ◆ auto
 ↑24k ↓445 10.4k/150k (auto) 61t/s                          claude-opus-5 • high
-Safety: auto
 ```
 
 The tokens in use are printed one step finer than the cumulative counts beside them — `10.4k`, not
@@ -93,9 +94,42 @@ footer. Pi's percentage moved on every tenth of a percent, and this has to be at
 
 Everything else is pi's own footer, field for field: the cumulative token counts, the latest request's
 cache hit rate, the cost and its `(sub)` marker, the auto-compaction marker, the warning and error
-colours as the context fills, the right-aligned model with its thinking level and provider, the
-working directory with its git branch and session name, and the line other extensions'
-`setStatus` text appears on.
+colours as the context fills, the right-aligned model with its thinking level and provider, and the
+working directory with its git branch and session name. What other extensions report through
+`setStatus` is the one field drawn differently, below.
+
+**Extension statuses.** Pi gives an extension one line of plain text through `ctx.ui.setStatus`, and
+prints every such line under the footer: `Safety: auto` in the terminal's own colour, under a row of
+numbers, saying nothing at a glance. Here each status is a badge — a glyph, a short label, and a
+colour for how much the session is being held back — right-aligned against the working directory,
+which is the emptiest line the footer has:
+
+```text
+~/Code/pi-extensions (main) • spike                  ▤ plan  ◆ read-only  ◉ sub ×2
+```
+
+The badges come from the shared registry in `shared/status-registry.ts`. An extension publishes an
+icon, a label, a tone, and a sort order alongside the plain text it already gave pi, so a session
+without this extension — or with `footer.enabled false` — keeps exactly the line it always had. This
+package publishes three:
+
+| Key | Badge | Tone | Meaning |
+| --- | --- | --- | --- |
+| `plan-mode` | `▤ plan` | warning | Plan mode is active; editing tools are withdrawn |
+| `safety` | `◆ auto`, `◆ safe`, `◆ read-only` | accent, warning, error | The safety mode in force; `yolo` publishes nothing |
+| `subagent` | `◉ sub`, `◉ sub ×3` | accent | Children running right now |
+
+The tone is named for weight rather than for meaning — `muted`, `info`, `active`, `notice`, `alert` —
+and the footer owns which theme colour each one is, so a badge reads against the same palette as the
+fields beside it. Which statuses appear is still pi's decision: the row is built from pi's own status
+map and the registry only decorates it, so a badge left behind by a torn-down session decorates
+nothing, and an extension that publishes no badge at all — outside this package, or on an older
+version of it — is drawn as its own text in the neutral tone. A badge is never truncated to make room
+for the path: a shortened path is still recognisable, where a shortened mode indicator is a lie about
+the session.
+
+`footer.status line` puts the badges back on a line of their own, under the stats, still styled;
+`footer.status off` draws none of them.
 
 **The rate.** `61t/s` is the last finished message's tokens per second, from the provider's own
 `output` count. While a message is streaming the number is a `~61t/s` estimate in the accent
@@ -311,7 +345,8 @@ own. These are the complete defaults:
     "enabled": true,
     "context": "tokens",
     "tokensPerSecond": true,
-    "sparkline": false
+    "sparkline": false,
+    "status": "inline"
   },
   "autocomplete": {
     "chainArguments": true
@@ -336,6 +371,7 @@ own. These are the complete defaults:
 | `footer.context` | `"tokens"` | `tokens` shows the context in use over the window; `percent` is what pi's own footer shows |
 | `footer.tokensPerSecond` | `true` | Show the generation rate, live while a message streams |
 | `footer.sparkline` | `false` | Show the recent rate samples as blocks beside it; a grey smear in most terminal fonts |
+| `footer.status` | `"inline"` | Where extension status badges go: `inline` right-aligns them against the path, `line` gives them pi's own line under the stats, `off` draws none |
 | `autocomplete.chainArguments` | `true` | Offer a slash command's arguments as soon as its name is completed, and on a forced Tab in argument position |
 | `notifications.enabled` | `true` | Master switch. Nothing is sent while this is false |
 | `notifications.backend` | `"auto"` | `auto`, `notify-send`, `osascript`, `terminal`, or `command` |
@@ -360,12 +396,13 @@ own. These are the complete defaults:
 | `ui-tweaks/src/config.ts` | Configuration loading, validation, and the merging write behind every `/ui-tweaks` change |
 | `ui-tweaks/src/editor.ts` | The `CustomEditor` subclass that asks for the next suggestions, and the request pi has no public call for |
 | `ui-tweaks/src/excerpt.ts` | Flattening a Markdown reply into the one plain-text line a notification carries |
-| `ui-tweaks/src/footer.ts` | The footer's layout: the usage totals, the context field, the rate and its sparkline, and the component pi mounts |
+| `ui-tweaks/src/footer.ts` | The footer's layout: the usage totals, the context field, the rate and its sparkline, the status badges and their placement, and the component pi mounts |
 | `ui-tweaks/src/rate.ts` | Generation-rate tracking: exact rates per finished message, the streaming estimate over the interval each fragment was generated in, the ratio it calibrates, and the half-second publication hold |
 | `ui-tweaks/src/auto-compact.ts` | The one pi setting the footer needs that the extension API does not carry |
 | `ui-tweaks/src/notify.ts` | Backend resolution, argv construction, escapes, sanitization |
 | `ui-tweaks/src/scroll.ts` | Borrowing the TUI handle and writing the wheel step |
 | `shared/attention.ts` | The process-wide channel confirmations are raised on |
+| `shared/status-registry.ts` | The process-wide channel status badges are published on, and the helper that writes both halves of a status |
 
 `footer.ts` imports nothing from pi beyond the width helpers any terminal line needs — the theme
 arrives as a structural argument and the state as a plain object — so the whole layout is tested

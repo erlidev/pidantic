@@ -17,7 +17,7 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 | [`confirm-bash`](docs/extensions/confirm-bash.md) | Optional model-requested approval before a Bash command runs | Implemented |
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` to interrupt a run and record why it was interrupted | Implemented |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
-| [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, a footer with context in tokens and a generation-rate readout, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
+| [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, a footer with context in tokens, a generation-rate readout, and extension statuses as badges, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
 | [`subagent`](docs/extensions/subagent.md) | Blocking `spawn` tool with isolated child context, configurable parallelism, read-only exploration, reports, budgets, and live progress | Implemented |
 | [`scratchpad`](docs/extensions/scratchpad.md) | A per-session directory outside the workspace the model can write to without a confirmation | Implemented |
 | [`smart-compaction`](docs/extensions/smart-compaction.md) | Reserved extension entry point | Scaffold; no behavior |
@@ -72,6 +72,7 @@ fetch({"url":"https://docs.example.com/guide"})
 /stop stop after the current tool call
 /ui-tweaks scroll 5
 /ui-tweaks footer.context percent
+/ui-tweaks footer.status line
 /scratchpad
 ```
 
@@ -310,6 +311,11 @@ rather than an automatic dialog. `auto` is selectable only while
 the configured OpenAI-compatible endpoint is available. `yolo` is the default and has no safety hook
 effects or status indicator.
 
+The mode in force is shown in the footer as a `◆` badge — accent for `auto`, warning for `safe`, error
+for `read-only` — beside the working directory where [`ui-tweaks`](docs/extensions/ui-tweaks.md) draws
+the footer, and as Pi's own `Safety: <mode>` line where it does not. A subagent child inherits its
+parent's mode but never writes that indicator, since it is looking at the parent's own footer.
+
 `read-only` is the one mode that never asks. A call runs only when it is verifiably read-only: the
 read-only tools, and a Bash command whose every segment passes the strict plan-mode allowlist, where
 any redirection at all — even `> out.txt` in the workspace — is a refusal. `write`, `edit`, unknown
@@ -530,6 +536,7 @@ Four changes to Pi's interactive terminal UI, all inert outside the TUI:
 /ui-tweaks scroll 5         # 1-20 lines per mouse-wheel notch
 /ui-tweaks footer.enabled off               # give pi its own footer back
 /ui-tweaks footer.context percent           # or tokens, the default
+/ui-tweaks footer.status line               # or inline, the default, or off
 /ui-tweaks notify on        # or off
 /ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
 /ui-tweaks test             # send one notification now and report which backend answered
@@ -556,8 +563,7 @@ The footer replaces Pi's own. It shows the context as the tokens in use over the
 
 Every other field is Pi's own, field for field: cumulative tokens, the latest cache hit rate, cost and
 its `(sub)` marker, the warning and error colours as the context fills, the right-aligned model with
-its thinking level and provider, the working directory with its branch and session name, and the line
-other extensions' status text appears on. The tokens in use are printed one step finer than the
+its thinking level and provider, and the working directory with its branch and session name. The tokens in use are printed one step finer than the
 counts beside them, so a few hundred tokens of tool result visibly move them. The sparkline is the same
 number over time, sampled once a second while output is being measured and once more at each
 message's end, so it moves with the readout beside it rather than gaining one bar per reply; it is
@@ -572,6 +578,23 @@ as the throughput that pass actually had instead of sliding to zero and then spi
 changes at most twice a second, since a rate redrawn on every frame is flicker rather than a reading.
 `/ui-tweaks footer.enabled off` hands the slot back to Pi's own footer, and
 `/ui-tweaks footer.context percent` keeps this footer with Pi's percentage.
+
+The one place this footer says more than Pi's is what other extensions report. Pi prints their status
+text plainly on a line of its own; here each one is an icon-and-label badge, coloured by how much it
+is holding the session back, right-aligned against the working directory — the emptiest line the
+footer has:
+
+```text
+~/Code/pi-extensions (main) • spike                  ▤ plan  ◆ read-only  ◉ sub ×2
+```
+
+`▤ plan` is plan mode, `◆` is the safety mode in force — accent for `auto`, warning for `safe`, error
+for `read-only`, and nothing at all for `yolo` — and `◉` counts the subagent children running now.
+An extension that publishes no badge, inside this package or outside it, still appears: its own text
+is drawn in the neutral tone, so this footer never shows less than Pi's would. A path too long to
+share the line is truncated before a badge is, since a shortened path is still recognisable and a
+shortened mode indicator is a lie about the session. `/ui-tweaks footer.status line` puts the badges
+back on a line of their own, and `off` draws none of them.
 
 Notifications are raised when a confirmation dialog from `safety`, `plan-mode`, or `confirm-bash`
 blocks a run, and when a run settles after at least `minRunSeconds` (6 by default; a reply that fast
@@ -615,7 +638,8 @@ Missing or invalid configuration uses these defaults:
     "enabled": true,
     "context": "tokens",
     "tokensPerSecond": true,
-    "sparkline": false
+    "sparkline": false,
+    "status": "inline"
   },
   "autocomplete": {
     "chainArguments": true

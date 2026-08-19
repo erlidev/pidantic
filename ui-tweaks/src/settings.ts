@@ -9,7 +9,7 @@
  */
 
 import type { SettingCompletion, SettingSpec } from "../../shared/settings.ts";
-import { BACKENDS, CONTEXT_DISPLAYS, DEFAULTS, MAX_WHEEL_LINES, type UiTweaksConfig } from "./config.ts";
+import { BACKENDS, CONTEXT_DISPLAYS, DEFAULTS, MAX_WHEEL_LINES, STATUS_DISPLAYS, type UiTweaksConfig } from "./config.ts";
 
 export const SETTINGS: readonly SettingSpec[] = [
 	{
@@ -36,6 +36,13 @@ export const SETTINGS: readonly SettingSpec[] = [
 	},
 	{ key: "footer.tokensPerSecond", group: "Footer", kind: "boolean", description: "Show the rate the model is generating at, live while it streams" },
 	{ key: "footer.sparkline", group: "Footer", kind: "boolean", description: "Show the recent rate samples as blocks beside the rate; a smear in most terminal fonts" },
+	{
+		key: "footer.status",
+		group: "Footer",
+		kind: "string",
+		values: STATUS_DISPLAYS,
+		description: "Where extension status badges go: right-aligned beside the path, on their own line, or nowhere",
+	},
 
 	{
 		key: "autocomplete.chainArguments",

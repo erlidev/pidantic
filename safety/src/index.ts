@@ -24,6 +24,7 @@ import {
 } from "../../shared/mode-registry.ts";
 import { isInScratchpad, scratchpadRoots } from "../../shared/scratchpad-registry.ts";
 import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
+import { publishStatusBadge, setStatusBadge, type StatusBadge, type StatusTone } from "../../shared/status-registry.ts";
 import { clearToolNotes, recordToolNote, rendersToolNotes } from "../../shared/tool-notes.ts";
 import { SafetyAudit } from "./audit.ts";
 import { CheckpointStore } from "./checkpoint.ts";
@@ -58,8 +59,23 @@ function headlessReason(action: string): string {
 	return `${action} requires confirmation, but no interactive UI is available. Set ${HEADLESS_ENV}=allow to auto-approve, or run in TUI mode.`;
 }
 
-function setStatus(ctx: Pick<ExtensionContext, "ui">, mode: SafetyMode): void {
-	ctx.ui.setStatus("safety", mode === "yolo" ? undefined : `Safety: ${mode}`);
+/**
+ * How loudly each mode is drawn in the footer: the ramp is how much the session is being held back,
+ * so a glance at the badge answers "what will this refuse" without reading the word. `yolo` shows
+ * nothing at all, which is the honest indicator for a mode that changes nothing.
+ */
+const MODE_TONE: Record<Exclude<SafetyMode, "yolo">, StatusTone> = {
+	auto: "active",
+	safe: "notice",
+	"read-only": "alert",
+};
+
+/** One glyph for every mode: the badge says "safety", and its colour says which mode is in force. */
+const SAFETY_ICON = "◆";
+
+function statusBadgeFor(mode: SafetyMode): StatusBadge | undefined {
+	if (mode === "yolo") return undefined;
+	return { icon: SAFETY_ICON, label: mode, tone: MODE_TONE[mode], order: 20, plain: `Safety: ${mode}` };
 }
 
 const MODE_SUMMARY: Record<SafetyMode, string> = {
@@ -78,8 +94,20 @@ const MODE_HELP: Record<SafetyMode | "log", string> = {
 	log: "classifier decisions for this session",
 };
 
+/**
+ * The transcript notice is painted from the badge's own ramp, so a mode change and the badge it
+ * leaves in the footer are the same colour. `yolo` publishes no badge and reads as success.
+ */
+const TONE_COLOR: Record<StatusTone, Parameters<Theme["fg"]>[0]> = {
+	muted: "dim",
+	info: "muted",
+	active: "accent",
+	notice: "warning",
+	alert: "error",
+};
+
 function transitionContent(mode: SafetyMode, theme: Pick<Theme, "fg" | "bold">): string {
-	const color = mode === "yolo" ? "success" : mode === "read-only" ? "error" : "warning";
+	const color = mode === "yolo" ? "success" : TONE_COLOR[MODE_TONE[mode]];
 	return `${theme.fg(color, theme.bold(`◆ Safety: ${mode}`))}${theme.fg("muted", MODE_SUMMARY[mode] ?? "")}`;
 }
 
@@ -241,6 +269,16 @@ export default function safety(pi: ExtensionAPI): void {
 	/** The call whose gate created this request's snapshot; its note carries the fact. */
 	let checkpointNoteCallId: string | undefined;
 	const audit = new SafetyAudit();
+
+	/**
+	 * A subagent child shares its parent's UI context, so a child writing this line would replace the
+	 * parent's own indicator with the mode it inherited from it. The footer belongs to the session
+	 * the user is looking at.
+	 */
+	function setStatus(ctx: Pick<ExtensionContext, "ui">, mode: SafetyMode): void {
+		if (subagentSession) return;
+		setStatusBadge(ctx, "safety", statusBadgeFor(mode));
+	}
 
 	/**
 	 * The note channel carries one line per call, so the snapshot is appended to whatever that call
@@ -666,6 +704,8 @@ export default function safety(pi: ExtensionAPI): void {
 		// Released before the next session starts, so a session that loads without safety does not
 		// leave confirm-bash reading this one's mode.
 		releaseSafetyMode(owner);
+		// The badge would outlive pi's own status line otherwise: the registry is process-wide.
+		if (!subagentSession) publishStatusBadge("safety", undefined);
 		// Quit, reload, or session replacement all end this run's checkpoints; /undo does not span runs.
 		await checkpoints?.dispose().catch(() => undefined);
 	});

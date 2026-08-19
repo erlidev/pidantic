@@ -32,6 +32,16 @@ Alt+S                            # cycle yolo → auto → safe → read-only; u
 pi --safety safe                 # select the starting mode
 ```
 
+The mode in force is shown as a `◆` badge in the footer where [`ui-tweaks`](ui-tweaks.md) draws one —
+accent for `auto`, warning for `safe`, error for `read-only` — and as `Safety: <mode>` in Pi's own
+status line where it does not. `yolo` publishes nothing, since it changes nothing. The badge travels
+on `shared/status-registry.ts` and is withdrawn at `session_shutdown` alongside the mode claim. The
+transcript notice a mode change prints is painted from that same ramp, so the `◆ Safety: auto` line
+and the badge it leaves behind are one colour rather than two; `yolo`, which has no badge, reads as
+success. A
+subagent child inherits its parent's mode but writes neither half of this status: it shares the
+parent's UI context, so the line it would write over belongs to the session the user is looking at.
+
 `auto` can be entered only when `classifier.enabled` is true and `GET <url>/models` succeeds within
 the configured timeout. The probe runs on every attempted entry. If the endpoint later fails, the
 session remains in `auto`, but classifier requests fail closed into confirmation. `safe` never calls

@@ -53,6 +53,15 @@ export type ContextDisplay = "tokens" | "percent";
 
 export const CONTEXT_DISPLAYS: readonly ContextDisplay[] = ["tokens", "percent"];
 
+/**
+ * Where extension statuses go. `inline` right-aligns them against the working directory, which is
+ * the one line of the footer that is usually mostly empty; `line` keeps pi's own layout, a line of
+ * its own under the stats; `off` draws none of them.
+ */
+export type StatusDisplay = "inline" | "line" | "off";
+
+export const STATUS_DISPLAYS: readonly StatusDisplay[] = ["inline", "line", "off"];
+
 export interface FooterConfig {
 	/** Replace pi's footer. Off restores pi's own, and with it pi's context display and no rate. */
 	enabled: boolean;
@@ -64,6 +73,8 @@ export interface FooterConfig {
 	 * size five block glyphs read as one grey smear rather than as a chart.
 	 */
 	sparkline: boolean;
+	/** Where the icon-and-label badges for extension statuses are drawn. */
+	status: StatusDisplay;
 }
 
 export interface UiTweaksConfig {
@@ -78,7 +89,7 @@ export const MAX_WHEEL_LINES = 20;
 
 export const DEFAULTS: UiTweaksConfig = {
 	scroll: { wheelLines: 3 },
-	footer: { enabled: true, context: "tokens", tokensPerSecond: true, sparkline: false },
+	footer: { enabled: true, context: "tokens", tokensPerSecond: true, sparkline: false, status: "inline" },
 	autocomplete: { chainArguments: true },
 	notifications: {
 		enabled: true,
@@ -145,6 +156,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 			context: CONTEXT_DISPLAYS.includes(footer.context as ContextDisplay) ? (footer.context as ContextDisplay) : DEFAULTS.footer.context,
 			tokensPerSecond: boolean(footer.tokensPerSecond, DEFAULTS.footer.tokensPerSecond),
 			sparkline: boolean(footer.sparkline, DEFAULTS.footer.sparkline),
+			status: STATUS_DISPLAYS.includes(footer.status as StatusDisplay) ? (footer.status as StatusDisplay) : DEFAULTS.footer.status,
 		},
 		autocomplete: { chainArguments: boolean(autocomplete.chainArguments, DEFAULTS.autocomplete.chainArguments) },
 		notifications: {

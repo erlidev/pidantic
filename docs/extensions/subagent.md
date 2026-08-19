@@ -171,8 +171,10 @@ Use `/subagent-config` to inspect or change persistent scheduling and budgets in
 The file is read for every spawn, so changes apply to the next child without `/reload`. `spawn` uses
 Pi's parallel tool scheduling, then atomically reserves one of the configured slots. Calls beyond the
 limit wait in FIFO order and abort without starting if the parent turn is cancelled. Reducing the limit
-does not abort children already running; new calls use the value in force when they arrive. The status
-line shows `SUB ×N` while multiple children are active.
+does not abort children already running; new calls use the value in force when they arrive. While
+children are active the status shows `◉ sub ×N` in the footer where [`ui-tweaks`](ui-tweaks.md) draws
+one, and `SUB ×N` in Pi's own status line where it does not; it is published and withdrawn by the same
+slot bookkeeping, so it disappears when the last child exits.
 
 Parallel children must have independent tasks. All children share the project filesystem, so
 concurrent `implement` runs that edit overlapping files can overwrite or invalidate each other's

@@ -1,10 +1,12 @@
 /**
  * ui-tweaks' replacement for pi's footer.
  *
- * Two changes; everything else is pi's own footer, line for line. Context is shown as the tokens in
- * use over the window rather than as a percentage of it — `84k/200k` answers "how much room is
- * left" without arithmetic, and reads against the same scale as the `↑`/`↓` counts beside it — and
- * the rate the model is generating at is shown next to it, live while it streams.
+ * Three changes; everything else is pi's own footer, line for line. Context is shown as the tokens
+ * in use over the window rather than as a percentage of it — `84k/200k` answers "how much room is
+ * left" without arithmetic, and reads against the same scale as the `↑`/`↓` counts beside it — the
+ * rate the model is generating at is shown next to it, live while it streams, and extension statuses
+ * are drawn as icon-and-label badges right-aligned against the path rather than as a third line of
+ * plain text under everything else.
  *
  * Pi's footer offers no seam to hook, so `ctx.ui.setFooter` replaces it wholesale and every field
  * is rebuilt from the extension context. Two of pi's own reach state extensions cannot see and are
@@ -16,6 +18,7 @@
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { StatusTone } from "../../shared/status-registry.ts";
 import type { RateSnapshot } from "./rate.ts";
 
 export interface FooterTheme {
@@ -58,7 +61,18 @@ export interface FooterState {
 	/** Pi names the provider only when more than one has usable models. */
 	showProvider: boolean;
 	rate: RateSnapshot;
-	statuses: readonly string[];
+	statuses: readonly FooterStatus[];
+}
+
+/**
+ * One extension's status, already resolved: the badge its extension published, or pi's plain status
+ * text wearing the neutral tone, so an extension that never heard of this package still appears.
+ */
+export interface FooterStatus {
+	key: string;
+	icon?: string;
+	label: string;
+	tone: StatusTone;
 }
 
 export interface FooterOptions {
@@ -66,6 +80,8 @@ export interface FooterOptions {
 	context: "tokens" | "percent";
 	tokensPerSecond: boolean;
 	sparkline: boolean;
+	/** Where extension statuses go: right-aligned beside the path, on pi's own line, or nowhere. */
+	status: "inline" | "line" | "off";
 }
 
 /** Minimum gap pi keeps between the stats and the right-aligned model name. */
@@ -239,6 +255,51 @@ function sanitize(text: string): string {
 	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
 }
 
+/**
+ * A tone is how much a state should stand out; which colour that is belongs to the footer, so a
+ * badge reads against the same palette as the fields beside it.
+ */
+const TONE_COLORS: Record<StatusTone, string> = {
+	muted: "dim",
+	info: "muted",
+	active: "accent",
+	notice: "warning",
+	alert: "error",
+};
+
+/** Two spaces, not one: an icon and its label are one badge, and the gap has to say so. */
+const BADGE_GAP = "  ";
+
+/**
+ * `◆ safe  ▤ plan` — each badge its extension's glyph and short label, painted by tone. A status
+ * with no badge behind it is still drawn, in the dim every unremarkable field on the line wears.
+ */
+export function renderStatuses(statuses: readonly FooterStatus[], theme: FooterTheme): string {
+	return statuses
+		.map((status) => {
+			const label = sanitize(status.label);
+			const icon = status.icon ? sanitize(status.icon) : "";
+			return { text: icon ? `${icon} ${label}`.trim() : label, tone: status.tone };
+		})
+		// Painted after the empties are dropped: a colour is never empty once it carries its escapes.
+		.filter((badge) => badge.text.length > 0)
+		.map((badge) => theme.fg(TONE_COLORS[badge.tone] ?? "dim", badge.text))
+		.join(BADGE_GAP);
+}
+
+/**
+ * The path on the left, the badges right-aligned against it. The badges win a fight for room: a
+ * truncated path is still recognisable, where a truncated mode indicator is a lie about the session.
+ */
+function locationLine(location: string, badges: string, width: number, theme: FooterTheme): string {
+	const dots = theme.fg("dim", "...");
+	if (!badges) return truncateToWidth(theme.fg("dim", location), width, dots);
+	const badgeWidth = visibleWidth(badges);
+	if (badgeWidth + MIN_PADDING >= width) return truncateToWidth(badges, width, dots);
+	const left = truncateToWidth(theme.fg("dim", location), width - badgeWidth - MIN_PADDING, dots);
+	return left + " ".repeat(Math.max(MIN_PADDING, width - visibleWidth(left) - badgeWidth)) + badges;
+}
+
 export function renderFooter(state: FooterState, options: FooterOptions, width: number, theme: FooterTheme): string[] {
 	let location = formatCwd(state.cwd, state.home);
 	if (state.branch) location = `${location} (${state.branch})`;
@@ -267,10 +328,10 @@ export function renderFooter(state: FooterState, options: FooterOptions, width: 
 		statsLine = stats;
 	}
 
-	const lines = [truncateToWidth(theme.fg("dim", location), width, theme.fg("dim", "...")), statsLine];
-	if (state.statuses.length > 0) {
-		lines.push(truncateToWidth(state.statuses.map(sanitize).join(" "), width, theme.fg("dim", "...")));
-	}
+	const badges = options.status === "off" ? "" : renderStatuses(state.statuses, theme);
+	const inline = options.status === "inline" ? badges : "";
+	const lines = [locationLine(location, inline, width, theme), statsLine];
+	if (badges && !inline) lines.push(truncateToWidth(badges, width, theme.fg("dim", "...")));
 	return lines;
 }
 

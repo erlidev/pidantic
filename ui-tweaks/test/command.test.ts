@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { publishStatusBadge, resetStatusRegistry } from "../../shared/status-registry.ts";
 import uiTweaks from "../src/index.ts";
 
 interface Driver {
@@ -237,17 +238,30 @@ test("the footer replaces pi's own, and hands the slot back when it is turned of
 	const ui = await driver(t, { interactive: true });
 
 	const lines = ui.footer();
-	assert.equal(lines?.length, 3);
-	assert.match(lines?.[0] ?? "", /\(main\)$/);
+	assert.equal(lines?.length, 2);
+	// The status shares the path's line, and an extension with no badge keeps pi's own text.
+	assert.match(lines?.[0] ?? "", /\(main\) +safety: safe$/);
 	// The context in tokens, the marker read from pi's own settings, and the model on the right.
 	assert.match(lines?.[1] ?? "", /↑900 ↓120 R300 CH25\.0% \$0\.020 84\.2k\/200k \(auto\)\s+some-model$/);
-	assert.equal(lines?.[2], "safety: safe");
 
 	await ui.run("footer.enabled off");
 	assert.equal(ui.footer(), undefined);
 
 	await ui.run("footer.enabled on");
 	assert.match(ui.footer()?.[1] ?? "", /84\.2k\/200k/);
+});
+
+test("a published badge decides how a status is drawn, and the setting decides where", async (t) => {
+	const ui = await driver(t, { interactive: true });
+	t.after(() => resetStatusRegistry());
+	publishStatusBadge("safety", { icon: "◆", label: "safe", tone: "notice", order: 20, plain: "Safety: safe" });
+
+	assert.match(ui.footer()?.[0] ?? "", /\(main\) +◆ safe$/);
+	await ui.run("footer.status line");
+	assert.equal(ui.footer()?.[2], "◆ safe");
+	await ui.run("footer.status off");
+	assert.equal(ui.footer()?.length, 2);
+	assert.doesNotMatch(ui.footer()?.[0] ?? "", /safe/);
 });
 
 test("a footer setting changes what the mounted footer draws, without remounting it", async (t) => {

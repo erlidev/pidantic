@@ -49,6 +49,7 @@ pidantic/
 │   ├── read-only-tools.ts
 │   ├── scratchpad-registry.ts
 │   ├── settings.ts
+│   ├── status-registry.ts
 │   ├── tool-notes.ts
 │   └── test/
 │       ├── attention.test.ts
@@ -58,6 +59,7 @@ pidantic/
 │       ├── scratchpad-registry.test.ts
 │       ├── settings.test.ts
 │       ├── settings-coverage.test.ts
+│       ├── status-registry.test.ts
 │       └── tool-notes.test.ts
 ├── confirm-bash/
 │   ├── index.ts
@@ -290,7 +292,16 @@ not expressible in a schema remain in `promptGuidelines`.
   package is covered without any of them knowing who is listening, and with no listener the call does
   nothing. A listener belongs to the session that registered it and is dropped at `session_shutdown`,
   for the same reason mode writes are owned.
-  `scratchpad-registry.ts` is the fourth, and the only one whose state is not a single value: the
+  `status-registry.ts` is the fourth, and the one the footer reads: pi's status channel carries a
+  single line of plain text per extension, so an extension that wants its state legible at a glance
+  publishes an icon, a short label, a tone, and a sort order here alongside the text it already gave
+  pi. `setStatusBadge` writes both halves, which is what keeps a session without `ui-tweaks` — or with
+  its footer switched off — on exactly the line it always had. Entries are keyed as pi keys its
+  statuses and the renderer draws only the keys pi's own map still holds, so the registry decorates
+  the status row rather than deciding it, and a badge left behind by a torn-down session decorates
+  nothing. Tones are named for weight rather than for meaning; which theme colour each one is belongs
+  to `ui-tweaks/src/footer.ts`, so a badge reads against the same palette as the fields beside it.
+  `scratchpad-registry.ts` is the fifth, and the only one whose state is not a single value: the
   scratchpad extension publishes the disposable per-session directory it created, and safety reads
   those roots on every call to decide that a write there needs neither a dialog nor a checkpoint.
   Ownership works differently here for a reason — subagent children load this package too, so a
@@ -321,7 +332,8 @@ not expressible in a schema remain in `promptGuidelines`.
   the claim between the two extensions is pinned end to end rather than assumed on either side.
 - `stop/` registers `/stop`, aborts an active run, and annotates the interrupted conversation.
 - `plan-mode/` provides a read-only investigation mode with policy-guarded Bash and an approval
-  workflow that writes the finished plan and restores the prior tool set.
+  workflow that writes the finished plan and restores the prior tool set. Its mode indicator is
+  published as a status badge and withdrawn with the mode claim at `session_shutdown`.
 - `safety/` provides `yolo`, `safe`, classifier-backed `auto`, and `read-only` session modes. Its
   modules isolate
   irreversible-action policy, tool tiers, configuration, mode persistence, temporary-index Git
@@ -342,7 +354,11 @@ not expressible in a schema remain in `promptGuidelines`.
   of asking for. `footer.ts` holds the replacement's whole layout and imports nothing from pi beyond
   the width helpers a terminal line needs — the theme is a structural argument and the state a plain
   object, the same convention as `localsearch/src/render.ts` — because pi's footer offers no seam and
-  `setFooter` replaces it wholesale, so every field pi drew has to be rebuilt and stay covered.
+  `setFooter` replaces it wholesale, so every field pi drew has to be rebuilt and stay covered. One of
+  those fields is rebuilt rather than reproduced: pi's plain line of extension status text becomes a
+  row of icon-and-label badges right-aligned against the path, resolved in `src/index.ts` by reading
+  pi's own status map and decorating each key from `shared/status-registry.ts`, so an extension that
+  publishes no badge is still drawn and the footer never shows less than pi's would.
   `rate.ts` is the one piece of state behind it: the provider reports a token count only when a
   message is finished, so the rate shown while one streams is a character estimate whose
   chars-per-token ratio is calibrated by each finished message rather than assumed. Its window is
@@ -580,7 +596,11 @@ rather than in a session.
 `footer.test.ts` pins the layout on its own: both context displays and the unknown one after
 compaction, the colours as the context fills, the rate with and without its sparkline and its live
 marker, the fields pi's own footer draws and this one must not lose, the right-aligned model and the
-provider dropped when it does not fit, and the usage totals summed on pi's rules. `rate.test.ts` pins
+provider dropped when it does not fit, and the usage totals summed on pi's rules. The status badges
+are pinned there too, since placement is the whole feature: the row right-aligned against the path on
+its line, the tone each badge is painted in, a status with no badge behind it still drawn as its own
+flattened text, the path truncated before a badge is and the badges themselves truncated only when
+they no longer fit alone, and both of the other placements the setting offers. `rate.test.ts` pins
 the tracker: an exact rate measured from the first streamed fragment rather than from the request, the
 estimate that appears only once there is enough of it to read, the ratio a finished message
 calibrates, the messages too short or too empty to record, and an aborted run that stops claiming a
@@ -600,6 +620,9 @@ session takes the editor slot and adds one provider wrapper, the setting withdra
 the wrapper stays and passes requests through, and an editor another extension installed is left
 alone. The footer is covered there too, since pi mounts it nowhere else: the component pi
 builds is rendered against a fake session, `footer.enabled` hands the slot back and takes it again, a
-setting change reaches the mounted component without remounting it, and a streamed message drives the
-rate through the real event hooks. `shared/test/attention.test.ts` pins the channel itself, including
-delivery across a second evaluation of the module.
+setting change reaches the mounted component without remounting it, a badge published on the shared
+registry decides how pi's status for that key is drawn while `footer.status` decides where, and a
+streamed message drives the rate through the real event hooks. `shared/test/attention.test.ts` pins the channel itself, including
+delivery across a second evaluation of the module, and `shared/test/status-registry.test.ts` does the
+same for the badges: both halves of a status written together, the plain text falling back to the
+label, a cleared status withdrawing its badge with it, and a key whose newest publisher wins.

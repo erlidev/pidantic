@@ -6,8 +6,9 @@
  *    or a run finished and the reply is waiting to be read.
  * 3. Slash-command argument suggestions offered as soon as the command name is completed, which pi
  *    leaves to the next keystroke.
- * 4. A footer that shows the context in use over the window rather than as a percentage of it, and
- *    the rate the model is generating at.
+ * 4. A footer that shows the context in use over the window rather than as a percentage of it, the
+ *    rate the model is generating at, and other extensions' statuses as icon-and-label badges
+ *    right-aligned against the path rather than as a plain line under everything else.
  *
  * All are inert outside the interactive TUI. Which notification backend works is host-specific, so
  * every path fails soft: a backend that cannot deliver says so once per session and is then quiet,
@@ -19,12 +20,13 @@ import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ReadonlyFooterDataProvider } from "@earendil-works/pi-coding-agent";
 import { type AttentionRequest, onAttention } from "../../shared/attention.ts";
 import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
+import { statusBadge } from "../../shared/status-registry.ts";
 import { autoCompactEnabled } from "./auto-compact.ts";
 import { withArgumentCompletions } from "./completion.ts";
 import { clampWheelLines, type ConfigPatch, configPath, DEFAULTS, loadConfig, MAX_WHEEL_LINES, type UiTweaksConfig, updateConfig } from "./config.ts";
 import { createEditorFactory, type EditorFactory } from "./editor.ts";
 import { excerpt } from "./excerpt.ts";
-import { collectUsage, createFooter, type FooterState, type UsageEntry } from "./footer.ts";
+import { collectUsage, createFooter, type FooterState, type FooterStatus, type UsageEntry } from "./footer.ts";
 import { createNotifier, type Notification } from "./notify.ts";
 import { TokenRate } from "./rate.ts";
 import { applyWheelLines, captureTui, type WheelTui } from "./scroll.ts";
@@ -43,6 +45,26 @@ const FOOTER_REFRESH_MS = 250;
 
 function isInteractive(ctx: Pick<ExtensionContext, "mode" | "hasUI">): boolean {
 	return ctx.mode === "tui" && ctx.hasUI;
+}
+
+/** Where a badge that names no order sorts: after anything that asked to be first, before the rest. */
+const DEFAULT_STATUS_ORDER = 50;
+
+/**
+ * Pi's status map decides which extensions appear; the shared badge registry decides how each one
+ * looks. A status with no badge behind it — an extension outside this package, or one on an older
+ * version of it — is still drawn, as pi's own text in a neutral tone, so this footer never shows
+ * less than pi's own would. Order is the badge's own, then the key, so the row does not reshuffle
+ * as modes change.
+ */
+function resolveStatuses(statuses: ReadonlyMap<string, string>): FooterStatus[] {
+	return [...statuses.entries()]
+		.map(([key, text]) => {
+			const badge = statusBadge(key);
+			return { key, icon: badge?.icon, label: badge?.label ?? text, tone: badge?.tone ?? "info", order: badge?.order ?? DEFAULT_STATUS_ORDER };
+		})
+		.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key))
+		.map(({ key, icon, label, tone }) => ({ key, icon, label, tone }));
 }
 
 /**
@@ -163,7 +185,7 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 			thinkingLevel: ctx.thinkingLevel,
 			showProvider: footerData.getAvailableProviderCount() > 1,
 			rate: rate.snapshot(Date.now()),
-			statuses: [...footerData.getExtensionStatuses().entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text),
+			statuses: resolveStatuses(footerData.getExtensionStatuses()),
 		};
 	}
 
@@ -493,6 +515,11 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 				? [
 					config.footer.context === "tokens" ? "context in tokens" : "context in percent",
 					config.footer.tokensPerSecond ? (config.footer.sparkline ? "rate with sparkline" : "rate") : "no rate",
+					config.footer.status === "inline"
+						? "status badges beside the path"
+						: config.footer.status === "line"
+							? "status badges on their own line"
+							: "no status badges",
 				].join(" · ")
 				: "off · pi's own footer";
 			ctx.ui.notify(
