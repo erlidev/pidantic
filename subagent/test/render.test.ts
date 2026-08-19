@@ -21,3 +21,10 @@ test("context usage includes used tokens, capacity, and percentage", () => {
 	);
 	assert.equal(formatContextUsage(undefined), undefined);
 });
+
+test("context usage can use the enforced subagent budget as its capacity", () => {
+	assert.equal(
+		formatContextUsage({ tokens: 64_000, contextWindow: 160_000, percent: 40 }, 128_000),
+		"ctx 64k/128k (50.0%)",
+	);
+});

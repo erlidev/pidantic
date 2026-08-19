@@ -12,6 +12,8 @@ import { DEFAULTS as LOCALSEARCH_DEFAULTS } from "../../localsearch/src/config.t
 import { SETTINGS as LOCALSEARCH_SETTINGS } from "../../localsearch/src/settings.ts";
 import { DEFAULTS as SAFETY_DEFAULTS } from "../../safety/src/config.ts";
 import { SETTINGS as SAFETY_SETTINGS } from "../../safety/src/settings.ts";
+import { DEFAULTS as SUBAGENT_DEFAULTS } from "../../subagent/src/config.ts";
+import { SETTINGS as SUBAGENT_SETTINGS } from "../../subagent/src/settings.ts";
 import { DEFAULTS as UI_TWEAKS_DEFAULTS } from "../../ui-tweaks/src/config.ts";
 import { SETTINGS as UI_TWEAKS_SETTINGS } from "../../ui-tweaks/src/settings.ts";
 import { getPath, type SettingSpec } from "../settings.ts";
@@ -31,6 +33,7 @@ function leaves(value: unknown, stop: ReadonlySet<string>, prefix = ""): string[
 const CASES: [string, readonly SettingSpec[], Record<string, unknown>][] = [
 	["localsearch", LOCALSEARCH_SETTINGS, LOCALSEARCH_DEFAULTS as unknown as Record<string, unknown>],
 	["safety", SAFETY_SETTINGS, SAFETY_DEFAULTS as unknown as Record<string, unknown>],
+	["subagent", SUBAGENT_SETTINGS, SUBAGENT_DEFAULTS as unknown as Record<string, unknown>],
 	["ui-tweaks", UI_TWEAKS_SETTINGS, UI_TWEAKS_DEFAULTS as unknown as Record<string, unknown>],
 ];
 

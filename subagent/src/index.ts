@@ -5,13 +5,17 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
 import { briefForMode, buildBudgetReportMessage, buildOpeningMessage, type SubagentMode } from "./brief.ts";
-import { createBudget, resolveBudgetOptions, type BudgetReason } from "./budget.ts";
+import { createBudget, isReportProgress, resolveBudgetOptions, type BudgetReason } from "./budget.ts";
+import { configPath, DEFAULTS as CONFIG_DEFAULTS, loadConfig } from "./config.ts";
+import { ConcurrencyGate } from "./concurrency.ts";
 import { loadCustomPrompt } from "./custom-prompt.ts";
 import { createProgress, reduceProgress, snapshotProgress } from "./progress.ts";
 import { renderCall, renderResult, type SpawnDetails, type SpawnRenderState } from "./render.ts";
 import { resolveReport, type SpawnStatus } from "./report.ts";
-import { createChildSession, type ChildSessionHandle } from "./session.ts";
+import { createChildSession, createChildSessionGroup, type ChildSessionHandle } from "./session.ts";
+import { SETTINGS } from "./settings.ts";
 
 const parameters = Type.Object({
 	instructions: Type.String({
@@ -52,11 +56,38 @@ function assistantWasAborted(messages: readonly unknown[]): boolean {
 }
 
 export default function subagent(pi: ExtensionAPI): void {
-	let active = false;
+	const concurrency = new ConcurrencyGate();
+	const childGroup = createChildSessionGroup();
+
+	const updateStatus = (ctx: ExtensionContext) => {
+		ctx.ui.setStatus("subagent", concurrency.active === 0 ? undefined : concurrency.active === 1 ? "SUB" : `SUB ×${concurrency.active}`);
+	};
 
 	pi.registerFlag("subagent-prompt", {
 		description: "Replace the subagent custom-prompt cascade with this file",
 		type: "string",
+	});
+
+	pi.registerCommand("subagent-config", {
+		description: "Show or change subagent scheduling and budget configuration",
+		getArgumentCompletions: async (prefix) =>
+			settingCompletions(SETTINGS, prefix, {
+				current: (await loadConfig()) as unknown as Record<string, unknown>,
+				defaults: CONFIG_DEFAULTS as unknown as Record<string, unknown>,
+			}),
+		handler: async (args, ctx) => {
+			const result = await runSettingsCommand({
+				args,
+				command: "/subagent-config",
+				title: "subagent",
+				specs: SETTINGS,
+				current: (await loadConfig()) as unknown as Record<string, unknown>,
+				defaults: CONFIG_DEFAULTS as unknown as Record<string, unknown>,
+				path: configPath(),
+				env: process.env,
+			});
+			ctx.ui.notify(result.message, result.level);
+		},
 	});
 
 	pi.registerTool<typeof parameters, SpawnDetails, SpawnRenderState>({
@@ -67,23 +98,23 @@ export default function subagent(pi: ExtensionAPI): void {
 		promptGuidelines: [
 			"Use spawn when the child can consume substantial project context and return a much smaller report; do not spawn for trivial work.",
 			"Make instructions self-contained. The child does not know this conversation, so do not refer to files, decisions, or requirements only as things previously discussed.",
+			"Multiple spawn calls may run concurrently when the user configured more than one slot. Parallelize only independent tasks; implement children share the same filesystem and must not edit overlapping files.",
 			"After spawn returns, read the report path with read, using offsets or grep for a large report.",
 		],
 		parameters,
-		executionMode: "sequential",
+		executionMode: "parallel",
 		renderCall,
 		renderResult,
 		async execute(_toolCallId, params: SpawnParams, signal, onUpdate, ctx) {
-			if (active) {
-				throw new Error("A subagent is already running. Wait for it to finish before spawning another.");
-			}
 			if (!ctx.model) throw new Error("Cannot spawn a subagent without an active model.");
-			active = true;
-			ctx.ui.setStatus("subagent", "SUB");
-			const mode = params.mode as SubagentMode;
-			let progress = createProgress();
-			let child: ChildSessionHandle;
+			const config = await loadConfig();
+			const releaseConcurrency = await concurrency.acquire(config.concurrency, signal);
+			updateStatus(ctx);
+			let disposeChild: (() => Promise<void>) | undefined;
 			try {
+				const mode = params.mode as SubagentMode;
+				let progress = createProgress();
+				let child: ChildSessionHandle;
 				const promptFlag = pi.getFlag("subagent-prompt");
 				const custom = loadCustomPrompt({
 					cwd: ctx.cwd,
@@ -107,116 +138,152 @@ export default function subagent(pi: ExtensionAPI): void {
 					appendSystemPrompt: custom.content || undefined,
 					ui: ctx.ui,
 					extensionMode: ctx.mode,
+					group: childGroup,
 				});
-			} catch (error) {
-				ctx.ui.setStatus("subagent", undefined);
-				active = false;
-				throw error;
-			}
-			const budgetOptions = resolveBudgetOptions(ctx.model.contextWindow);
-			const budget = createBudget(budgetOptions);
-			let budgetReason: BudgetReason | undefined;
-			let abortedByParent = signal?.aborted ?? false;
-			let promptError: unknown;
-			let abortStarted = false;
-			let transcriptRevision = 0;
-			let reportOnly = false;
-			let budgetReportMessage: string | undefined;
+				disposeChild = () => child.dispose();
+				const budgetOptions = resolveBudgetOptions(ctx.model.contextWindow, config);
+				const budget = createBudget(budgetOptions);
+				let budgetReason: BudgetReason | undefined;
+				let abortedByParent = signal?.aborted ?? false;
+				let promptError: unknown;
+				let transcriptRevision = 0;
+				let reportOnly = false;
+				let budgetReportMessage: string | undefined;
+				let armReportDeadline: (() => void) | undefined;
 
-			const abortChild = (reason?: BudgetReason) => {
-				if (abortStarted) return;
-				abortStarted = true;
-				if (reason) budgetReason = reason;
-				void child.session.abort();
-			};
-			const abortListener = () => {
-				abortedByParent = true;
-				abortStarted = true;
-				void child.session.abort();
-			};
-			signal?.addEventListener("abort", abortListener, { once: true });
-			if (signal?.aborted) abortListener();
-			const timeout = setTimeout(() => abortChild("timeout"), budgetOptions.timeoutMs);
+				/**
+				 * `abort()` only cancels an active agent run, so it does nothing during auto-compaction
+				 * or prompt preflight. Cancelling compaction too, and never latching, keeps a repeated
+				 * budget or parent abort effective in those windows instead of leaving the child
+				 * running with every later check short-circuited.
+				 */
+				const stopChild = () => {
+					child.session.abortCompaction();
+					void child.session.abort().catch(() => undefined);
+				};
+				const abortChild = (reason: BudgetReason) => {
+					if (!budgetReason && !abortedByParent) budgetReason = reason;
+					stopChild();
+				};
+				const abortListener = () => {
+					abortedByParent = true;
+					stopChild();
+				};
+				signal?.addEventListener("abort", abortListener, { once: true });
+				if (signal?.aborted) abortListener();
+				const timeout = setTimeout(() => abortChild("timeout"), budgetOptions.timeoutMs);
 
-			const publish = () => {
-				onUpdate?.({
-					content: text("Subagent running."),
-					details: {
-						mode,
-						progress: snapshotProgress(progress),
-						contextUsage: child.session.getContextUsage(),
-						transcriptRevision,
-						sessionFile: child.sessionFile,
-						reportPath: child.reportPath,
-					},
-				});
-			};
-			const listener = (event: AgentSessionEvent) => {
-				progress = reduceProgress(progress, event);
-				if (event.type === "message_end" || event.type === "compaction_end") transcriptRevision += 1;
-				if (event.type === "compaction_end" && !event.aborted) {
-					void child.session.steer(reportOnly ? budgetReportMessage ?? buildBudgetReportMessage(budgetReason ?? "timeout") : briefForMode(mode)).catch((error: unknown) => {
-						ctx.ui.notify(`Could not restore the subagent brief after compaction: ${String(error)}`, "warning");
+				const publish = () => {
+					onUpdate?.({
+						content: text("Subagent running."),
+						details: {
+							mode,
+							progress: snapshotProgress(progress),
+							contextUsage: child.session.getContextUsage(),
+							tokenBudget: budgetOptions.maxTokens,
+							transcriptRevision,
+							sessionFile: child.sessionFile,
+							reportPath: child.reportPath,
+						},
 					});
-				}
-				if (!reportOnly) {
-					const checked = budget.check({ tokens: child.session.getContextUsage()?.tokens });
-					if (checked.exceeded) abortChild(checked.reason);
-				}
-				publish();
-			};
-			const unsubscribe = child.session.subscribe(listener);
+				};
+				const listener = (event: AgentSessionEvent) => {
+					progress = reduceProgress(progress, event);
+					if (event.type === "message_end" || event.type === "compaction_end") transcriptRevision += 1;
+					if (event.type === "compaction_end" && !event.aborted) {
+						void child.session.steer(reportOnly && budgetReportMessage ? budgetReportMessage : briefForMode(mode)).catch((error: unknown) => {
+							ctx.ui.notify(`Could not restore the subagent brief after compaction: ${String(error)}`, "warning");
+						});
+					}
+					if (reportOnly) {
+						if (isReportProgress(event)) armReportDeadline?.();
+					} else {
+						const checked = budget.check({ tokens: child.session.getContextUsage()?.tokens });
+						if (checked.exceeded) abortChild(checked.reason);
+					}
+					publish();
+				};
+				const unsubscribe = child.session.subscribe(listener);
 
-			let statusHint: Exclude<SpawnStatus, "ok" | "report-missing-fallback"> | undefined;
-			try {
-				publish();
-				await child.session.prompt(buildOpeningMessage(params.instructions, mode), {
-					expandPromptTemplates: false,
-					source: "extension",
-				});
-			} catch (error) {
-				if (!budgetReason && !abortedByParent) promptError = error;
-			} finally {
-				clearTimeout(timeout);
-			}
-
-			if (budgetReason && !abortedByParent) {
-				reportOnly = true;
-				budgetReportMessage = buildBudgetReportMessage(budgetReason);
-				child.enforceBudgetReportOnly();
-				const reportTimeout = setTimeout(() => { void child.session.abort(); }, budgetOptions.reportTimeoutMs);
+				let statusHint: Exclude<SpawnStatus, "ok" | "report-missing-fallback"> | undefined;
 				try {
-					await child.session.prompt(budgetReportMessage, {
-						expandPromptTemplates: false,
-						source: "extension",
-					});
-				} catch {
-					// The report resolver prefers a submitted report, then useful partial assistant text.
+					publish();
+					// Child creation takes seconds, so the parent can abort before there is a run to
+					// cancel. Prompting anyway would run the whole task for a cancelled tool call.
+					if (!abortedByParent && !signal?.aborted) {
+						await child.session.prompt(buildOpeningMessage(params.instructions, mode), {
+							expandPromptTemplates: false,
+							source: "extension",
+						});
+					}
+				} catch (error) {
+					if (!budgetReason && !abortedByParent) promptError = error;
 				} finally {
-					clearTimeout(reportTimeout);
+					clearTimeout(timeout);
 				}
-			}
 
-			signal?.removeEventListener("abort", abortListener);
-			unsubscribe();
+				if (budgetReason && !abortedByParent && !signal?.aborted) {
+					reportOnly = true;
+					budgetReportMessage = buildBudgetReportMessage(budgetReason);
+					child.enforceBudgetReportOnly();
+					// A slow model writing a long report is the one thing this turn is for, so the
+					// deadline restarts while report content is streaming and only the absolute
+					// ceiling ends a child that keeps producing it.
+					const reportCeiling = Date.now() + budgetOptions.reportMaxMs;
+					let reportTimeout: ReturnType<typeof setTimeout> | undefined;
+					armReportDeadline = () => {
+						clearTimeout(reportTimeout);
+						const remaining = Math.min(budgetOptions.reportTimeoutMs, reportCeiling - Date.now());
+						reportTimeout = setTimeout(() => {
+							armReportDeadline = undefined;
+							stopChild();
+						}, Math.max(0, remaining));
+					};
+					armReportDeadline();
+					try {
+						await child.session.prompt(budgetReportMessage, {
+							expandPromptTemplates: false,
+							source: "extension",
+						});
+					} catch {
+						// The report resolver prefers a submitted report, then a streamed write_report
+						// argument, then useful partial assistant text.
+					} finally {
+						armReportDeadline = undefined;
+						clearTimeout(reportTimeout);
+					}
+				}
 
-			if (budgetReason) statusHint = "budget-truncated";
-			else if (abortedByParent || assistantWasAborted(child.session.messages)) statusHint = "aborted";
-			const completedAt = Date.now();
-			const contextUsage = child.session.getContextUsage();
-			const messages = promptError
-				? [
-					...child.session.messages,
-					{ role: "assistant", content: [{ type: "text", text: `Subagent failed: ${String(promptError)}` }] },
-				]
-				: child.session.messages;
+				signal?.removeEventListener("abort", abortListener);
+				unsubscribe();
 
-			try {
-				const report = await resolveReport({ reportPath: child.reportPath, messages, statusHint });
+				if (budgetReason) statusHint = "budget-truncated";
+				else if (abortedByParent || assistantWasAborted(child.session.messages)) statusHint = "aborted";
+				const completedAt = Date.now();
+				const contextUsage = child.session.getContextUsage();
+				// A child that never produced an assistant message did not run at all: an auth or model
+				// failure is the parent's error, not a subagent result with an empty report.
+				if (promptError && !child.session.messages.some((message) => message.role === "assistant")) {
+					throw promptError instanceof Error ? promptError : new Error(String(promptError));
+				}
+				const messages = promptError
+					? [
+						...child.session.messages,
+						{ role: "assistant", content: [{ type: "text", text: `Subagent failed: ${String(promptError)}` }] },
+					]
+					: child.session.messages;
+
+				const report = await resolveReport({
+					reportPath: child.reportPath,
+					messages,
+					statusHint,
+					afterMarker: budgetReportMessage,
+				});
 				const details: SpawnDetails = {
 					mode,
 					progress: snapshotProgress(progress, completedAt),
 					contextUsage,
+					tokenBudget: budgetOptions.maxTokens,
 					transcriptRevision,
 					sessionFile: child.sessionFile,
 					reportPath: report.reportPath,
@@ -225,15 +292,19 @@ export default function subagent(pi: ExtensionAPI): void {
 					...(budgetReason ? { budgetReason } : {}),
 				};
 				return {
-					content: text(`report: ${report.reportPath}\nstatus: ${report.status}`),
+					content: text([
+						`report: ${report.reportPath}`,
+						`status: ${report.status}`,
+						...(report.error ? [`note: ${report.error}`, `session: ${child.sessionFile}`] : []),
+					].join("\n")),
 					details,
 				};
 			} finally {
 				try {
-					await child.dispose();
+					await disposeChild?.();
 				} finally {
-					ctx.ui.setStatus("subagent", undefined);
-					active = false;
+					releaseConcurrency();
+					updateStatus(ctx);
 				}
 			}
 		},

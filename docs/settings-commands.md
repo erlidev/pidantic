@@ -1,12 +1,13 @@
 # Editing configuration from inside pi
 
-Three extensions keep a JSON configuration file, and all three can be edited from the session they
+Four extensions keep a JSON configuration file, and all four can be edited from the session they
 affect rather than by leaving pi to hand-edit the file:
 
 | Command | File | Environment override |
 | --- | --- | --- |
 | [`/search-config`](extensions/localsearch.md#configuration) | `~/.pi/agent/localsearch.json` | `LOCALSEARCH_CONFIG` |
 | [`/safety-config`](extensions/safety.md#configuration) | `~/.pi/agent/safety.json` | `SAFETY_CONFIG` |
+| [`/subagent-config`](extensions/subagent.md#budgets-and-interruption) | `~/.pi/agent/subagent.json` | `PI_SUBAGENT_CONFIG` |
 | [`/ui-tweaks`](extensions/ui-tweaks.md#configuration) | `~/.pi/agent/ui-tweaks.json` | `UI_TWEAKS_CONFIG` |
 
 They share one grammar and one implementation, `shared/settings.ts`. Each extension declares its
@@ -21,6 +22,8 @@ listing, the per-setting detail, value parsing, validation, and the argument men
 /search-config fetchTimeoutMs               # one setting: value, default, and what it accepts
 /search-config fetchTimeoutMs 45s           # change it
 /search-config reset fetchTimeoutMs         # drop it from the file, restoring the default
+/subagent-config contextPercent 70          # give children 70% of the inherited context
+/subagent-config concurrency 3              # allow three independent children at once
 /safety-config denyBinaries add curl        # list fields also take add and remove
 /safety-config denyBinaries remove curl
 /safety-config denyBinaries none            # empty the list
@@ -110,6 +113,7 @@ opens on the next keystroke, as pi does on its own.
 Most changes are in force for the next tool call:
 
 - `localsearch` reads its file on every `search` and `fetch`, so nothing has to be re-applied.
+- `subagent` reads its file for every `spawn`, so a new budget applies to the next child.
 - `safety` re-reads the file after each change and rebuilds the two pieces of live state that are
   not read per call — the classifier instance, so a new endpoint or model does not answer from the
   previous one's cache, and checkpoint retention.

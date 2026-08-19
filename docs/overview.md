@@ -131,19 +131,28 @@ pidantic/
 │   ├── src/
 │   │   ├── brief.ts
 │   │   ├── budget.ts
+│   │   ├── config.ts
+│   │   ├── concurrency.ts
 │   │   ├── custom-prompt.ts
 │   │   ├── index.ts
 │   │   ├── progress.ts
 │   │   ├── render.ts
 │   │   ├── report.ts
-│   │   └── session.ts
+│   │   ├── session.ts
+│   │   ├── settings.ts
+│   │   └── transcript.ts
 │   └── test/
 │       ├── brief.test.ts
 │       ├── budget.test.ts
+│       ├── config.test.ts
+│       ├── concurrency.test.ts
 │       ├── custom-prompt.test.ts
 │       ├── progress.test.ts
+│       ├── render.test.ts
 │       ├── report.test.ts
-│       └── smoke.ts
+│       ├── session.test.ts
+│       ├── smoke.ts
+│       └── transcript.test.ts
 ├── smart-compaction/
 │   └── index.ts
 └── localsearch/
@@ -356,12 +365,30 @@ not expressible in a schema remain in `promptGuidelines`.
 - `subagent/` registers the blocking `spawn` tool and constructs an in-process child `AgentSession`
   with its own persistent JSONL session and fixed report file. `session.ts` owns loader filtering,
   tool selection, report submission, inherited safety startup, and explicit child-extension
-  shutdown; `brief.ts` and `custom-prompt.ts` assemble the user and system guidance without mixing
-  the two precedence channels. `budget.ts`, `report.ts`, and `progress.ts` keep limit evaluation,
-  fallback resolution, and event folding independent of Pi registration. `render.ts` owns the
+  shutdown. Sibling startup sections are serialized around their temporary environment override,
+  while shared mode snapshots are restored only after the final concurrent child exits. `brief.ts`
+  and `custom-prompt.ts` assemble the user and system guidance without mixing
+  the two precedence channels. `config.ts` and `settings.ts` expose scheduling and the percentage-based
+  child budget through `/subagent-config`; `concurrency.ts` queues and reserves parallel child slots.
+  `budget.ts`, `report.ts`, and `progress.ts` keep limit
+  evaluation, fallback resolution, and event folding independent of Pi registration. `budget.ts`
+  also decides what counts as report progress, since the grace turn's deadline is a stall timer
+  rather than a total budget, and leaves the token limit out entirely when the model reports no
+  usable context window rather than deriving a NaN that compares false against every usage.
+  `report.ts` resolves the report from the file, then from a streamed `write_report` argument that
+  was never executed — an aborted turn keeps those arguments, and they are the report the child was
+  submitting — and only then from assistant text, which it takes from after the budget prompt so a
+  mid-investigation fragment is not passed off as a report. `render.ts` owns the
   width-aware progress row and lazy report/transcript reads, so no child transcript is serialized
-  into the parent's tool result. `src/index.ts` coordinates one child at a time, forwards aborts,
+  into the parent's tool result. `transcript.ts` bounds narrative text and reduces tool calls,
+  successful outputs, reasoning, and compaction entries to compact diagnostic summaries while
+  retaining the raw JSONL path. `src/index.ts` coordinates configured parallel children, forwards aborts,
   restores the brief after compaction, and returns only the report pointer and status to the model.
+  Its aborts are applied rather than latched: `AgentSession.abort()` cancels an active agent run
+  only, so it is inert during auto-compaction and prompt preflight, and a one-shot latch there would
+  disable both budgets for the rest of the run. Compaction is cancelled alongside the run, later
+  checks may abort again, and a parent abort that lands while the child is still being created stops
+  the task prompt from being sent at all.
 - `smart-compaction/` currently exposes a valid no-op entry point while its implementation is
   developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
@@ -380,10 +407,13 @@ not expressible in a schema remain in `promptGuidelines`.
 ## Subagent tests
 
 The `subagent/test/` unit suites cover brief composition, the custom-prompt cascade and cap, both
-  budget limits, progress event folding with unique file counters, and every report source/status
-combination. `smoke.ts` constructs and binds a real file-backed explore child in a temporary session
-directory without making a model request; it verifies prompt layering, tool restriction, and the
-recursion guard against a locally loaded package configuration.
+budget limits and configuration, the unusable context window that yields no token limit, what counts
+as report progress for the grace turn's stall timer, progress event folding with unique file
+counters, every report source/status combination — including a `write_report` argument recovered from
+an aborted turn, the fallback boundary that keeps pre-stop text out of the report, and a fallback
+that cannot be written — and bounded transcript rendering. `smoke.ts` constructs and binds a real file-backed
+explore child in a temporary session directory without making a model request; it verifies prompt
+layering, tool restriction, and the recursion guard against a locally loaded package configuration.
 
 ## Localsearch tests
 

@@ -12,9 +12,7 @@ import {
 	type EditorTheme,
 	Key,
 	matchesKey,
-	ScrollView,
 	visibleWidth,
-	VStack,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { requestAttention } from "./attention.ts";
@@ -52,6 +50,15 @@ export interface ConfirmationOptions {
 
 const APPROVE = 0;
 const DENY = 1;
+const DEFAULT_VIEWPORT_RATIO = 0.7;
+const WHEEL_SCROLL_LINES = 3;
+// Four header rows, seven normal control rows, and two rows of command details.
+const MIN_NORMAL_DIALOG_HEIGHT = 13;
+
+function dialogHeight(terminalRows: number): number {
+	const rows = Math.max(1, Math.floor(terminalRows));
+	return Math.min(rows, Math.max(MIN_NORMAL_DIALOG_HEIGHT, Math.floor(rows * DEFAULT_VIEWPORT_RATIO)));
+}
 
 /**
  * Block until the user approves or denies the requested action.
@@ -77,10 +84,14 @@ export async function askConfirmation(
 	// "you are needed" wants to know about. With no listener registered this is a no-op.
 	if (notifyAttention) requestAttention({ kind: "confirmation", title, detail: reason, urgent: true });
 
+	let terminalRows = MIN_NORMAL_DIALOG_HEIGHT;
 	return ctx.ui.custom<ConfirmDecision>((tui, theme, keybindings, done) => {
+		terminalRows = tui.terminal.rows;
 		let optionIndex = APPROVE;
 		let denyMode = false;
 		let settled = false;
+		let detailsScrollTop = 0;
+		let detailsViewportHeight = 1;
 
 		const editorTheme: EditorTheme = {
 			borderColor: (s: string) => theme.fg("border", s),
@@ -120,33 +131,32 @@ export async function askConfirmation(
 		}
 		onRefresh?.(refresh);
 
-		const detailsComponent = {
-			render(width: number): string[] {
-				const lines: string[] = [];
-				const w = Math.max(1, width);
+		function renderDetails(width: number): string[] {
+			const lines: string[] = [];
+			const w = Math.max(1, width);
 
-				// A renderer already styles every part of its text; a plain string is coloured here.
-				const rendered = typeof body === "function" ? body(theme) : undefined;
-				for (const bodyLine of (rendered ?? (body as string)).split("\n")) {
-					addWrapped(lines, w, "   ", rendered === undefined ? theme.fg("text", bodyLine) : bodyLine);
-				}
+			// A renderer already styles every part of its text; a plain string is coloured here.
+			const rendered = typeof body === "function" ? body(theme) : undefined;
+			for (const bodyLine of (rendered ?? (body as string)).split("\n")) {
+				addWrapped(lines, w, "   ", rendered === undefined ? theme.fg("text", bodyLine) : bodyLine);
+			}
 
-				if (reason) {
-					lines.push("");
-					addWrapped(lines, w, " ", theme.fg("muted", reason));
-				}
+			if (reason) {
+				lines.push("");
+				addWrapped(lines, w, " ", theme.fg("muted", reason));
+			}
 
-				return lines;
-			},
-			invalidate() {},
-		};
-		const details = new ScrollView(detailsComponent, {
-			scrollbar: "auto",
-			overscroll: "contain",
-			scrollbarStyle: (text: string) => theme.fg("muted", text),
-		});
+			return lines;
+		}
 
 		function handleInput(data: string) {
+			const wheelDirection = parseWheelDirection(data);
+			if (wheelDirection !== undefined) {
+				detailsScrollTop = Math.max(0, detailsScrollTop + wheelDirection * WHEEL_SCROLL_LINES);
+				refresh();
+				return;
+			}
+
 			if (denyMode) {
 				// Escape backs out to the option list rather than cancelling outright.
 				if (matchesKey(data, Key.escape)) {
@@ -161,12 +171,12 @@ export async function askConfirmation(
 			}
 
 			if (keybindings.matches(data, "tui.select.pageUp") || matchesKey(data, Key.pageUp)) {
-				details.scrollBy(-Math.max(1, details.viewportHeight - 1));
+				detailsScrollTop = Math.max(0, detailsScrollTop - Math.max(1, detailsViewportHeight - 1));
 				refresh();
 				return;
 			}
 			if (keybindings.matches(data, "tui.select.pageDown") || matchesKey(data, Key.pageDown)) {
-				details.scrollBy(Math.max(1, details.viewportHeight - 1));
+				detailsScrollTop += Math.max(1, detailsViewportHeight - 1);
 				refresh();
 				return;
 			}
@@ -250,14 +260,61 @@ export async function askConfirmation(
 			invalidate() {},
 		};
 
-		const dialog = Object.assign(new VStack([
-			{ component: header, shrink: 0 },
-			{ component: details, shrink: 1, minSize: 1 },
-			{ component: controls, shrink: 0 },
-		]), { handleInput, dispose: cleanup });
+		const dialog = {
+			render(width: number): string[] {
+				const w = Math.max(1, width);
+				const maxHeight = dialogHeight(tui.terminal.rows);
+				const headerLines = header.render(w);
+				const controlLines = controls.render(w);
+				const detailLines = renderDetails(w);
+
+				// Extension custom components are normally mounted below a legacy Container, which hides
+				// viewport constraints from nested layout components. This dialog is an overlay instead, so
+				// bound its output directly to the terminal and reserve the tail for the decision controls.
+				detailsViewportHeight = Math.max(0, maxHeight - headerLines.length - controlLines.length);
+				const maxScrollTop = Math.max(0, detailLines.length - detailsViewportHeight);
+				detailsScrollTop = Math.min(detailsScrollTop, maxScrollTop);
+				const visibleDetails = detailLines.slice(detailsScrollTop, detailsScrollTop + detailsViewportHeight);
+
+				// On pathologically short terminals, keep the controls—the actionable part—rather than
+				// allowing the overlay compositor to truncate them from the bottom.
+				const fixedLines = [...headerLines, ...visibleDetails, ...controlLines];
+				return fixedLines.length <= maxHeight ? fixedLines : fixedLines.slice(-maxHeight);
+			},
+			handleInput,
+			invalidate() {},
+			dispose: cleanup,
+		};
 
 		return dialog;
+	}, {
+		overlay: true,
+		overlayOptions: () => ({
+			anchor: "bottom-center",
+			width: "100%",
+			maxHeight: dialogHeight(terminalRows),
+		}),
 	});
+}
+
+/** Pi forwards raw wheel input to a focused overlay instead of scrolling the transcript. */
+function parseWheelDirection(data: string): -1 | 1 | undefined {
+	const sgr = /^\x1b\[<(\d+);\d+;\d+[Mm]$/.exec(data);
+	if (sgr) {
+		const button = Number.parseInt(sgr[1], 10);
+		if ((button & 64) === 0) return undefined;
+		const direction = button & 3;
+		return direction === 0 ? -1 : direction === 1 ? 1 : undefined;
+	}
+
+	if (data.length === 6 && data.startsWith("\x1b[M")) {
+		const button = data.charCodeAt(3) - 32;
+		if ((button & 64) === 0) return undefined;
+		const direction = button & 3;
+		return direction === 0 ? -1 : direction === 1 ? 1 : undefined;
+	}
+
+	return undefined;
 }
 
 function addWrapped(lines: string[], width: number, prefix: string, text: string) {

@@ -22,9 +22,11 @@ Choosing **Deny…** opens an inline editor for a one-line reason, which is fed 
 the tool's error result — so you can redirect it ("wrong directory", "do a dry run first") instead of
 just refusing.
 
-The title and decision controls remain visible when a command or explanation is taller than the
-available terminal area. The detail section scrolls independently with **Page Up** and **Page Down**;
-the same behavior applies to the shared safety and plan-mode confirmation dialogs.
+The dialog is a viewport-bound overlay capped at 70% of the terminal height. The cap expands when
+needed to retain at least two command-detail rows alongside the normal title and decision controls;
+on terminals too short to fit both, the controls take priority. Longer details scroll independently
+with the **mouse wheel**, **Page Up**, and **Page Down**. The same behavior applies to the shared
+safety and plan-mode confirmation dialogs.
 
 This is **not** a permission system. There is no allowlist and no pattern matching: the model decides
 which of its own calls warrant a human, and unflagged calls run exactly as before. Steering lives in

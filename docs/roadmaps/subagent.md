@@ -8,16 +8,21 @@ internally inconsistent with D1's side-effect-free guarantee. `confirm-bash` reg
 override, so that construction re-enables commands. The implementation uses the package's existing
 known-read-only registry (`search` and `fetch`) and excludes unknown extension tools in explore mode.
 
+Later concurrency extension: the original serial-only decision below has been superseded by
+`/subagent-config concurrency`, defaulting to `1`. `spawn` now opts into Pi's parallel scheduling and
+uses an extension-level FIFO slot gate. The original behavior remains the default; higher values allow
+only sibling calls whose tasks are independent, especially for filesystem-writing implement runs.
+
 ## The problem this solves
 
 A local model with a 32k–128k window cannot hold a large project's investigation *and* its
 implementation. The fix is not a bigger window, it is **context laundering**: a child agent burns
 100k tokens reading forty files, and the parent pays only for the 500-token report that comes back.
 
-The constraint the user set — the parent is suspended while the child runs — is not a limitation to
-work around. It is the feature. Concurrent agents multiply the number of live transcripts the host
-must interleave, and their results all land in the parent's window at once. One at a time keeps the
-parent's context growth strictly linear in *reports*, never in *transcripts*.
+The parent remains suspended until every tool call in its turn settles. Child transcripts stay out of
+the parent context regardless of concurrency; only report pointers return. The default concurrency of
+one preserves the original serial behavior, while an explicit higher value trades more simultaneous
+resources and report results for lower wall-clock latency on independent work.
 
 ## The shape of the change
 
@@ -32,8 +37,9 @@ parent continues, reads the report file
 ```
 
 Suspension is free. A `ToolDefinition.execute()` is awaited by the agent loop, so
-`await child.prompt(instructions)` inside it blocks the parent for the child's entire lifetime with
-no scheduling work at all. `executionMode: "sequential"` keeps it from racing sibling tool calls.
+`await child.prompt(instructions)` inside it blocks the parent for the child's entire lifetime.
+`executionMode: "parallel"` lets sibling spawn calls enter the extension, whose configured slot
+gate admits up to the requested concurrency and queues excess calls until a slot opens.
 
 ### Why in-process, not `pi -p` as a subprocess
 
@@ -409,7 +415,7 @@ Pure, testable, no pi imports.
 
 ## Phase 4 — `subagent/src/index.ts`, the tool
 
-- [ ] `pi.registerTool({name: "spawn", executionMode: "sequential", ...})`, parameters
+- [ ] `pi.registerTool({name: "spawn", executionMode: "parallel", ...})`, parameters
       `{instructions: string, mode: "explore" | "implement", thinking?: ThinkingLevel,
       description?: string}` — `description` is a short label for the UI row, not for the child.
 - [ ] `thinking` sets the child's reasoning effort (Phase 1 already threads it into
@@ -424,7 +430,7 @@ Pure, testable, no pi imports.
       **investigation** is large but whose **answer** is small. Explicitly warn that the child starts
       with zero knowledge of this conversation, so `instructions` must be self-contained — no "the file
       we discussed". This is the mistake every model makes with a subagent tool.
-- [ ] `execute()`: refuse a concurrent spawn (belt-and-braces on `executionMode`) → build the child
+- [ ] `execute()`: atomically reserve a configured concurrency slot → build the child
       (report path, `write_report` tool, `thinking` — Phase 1) → subscribe for progress →
       `await child.prompt(buildOpeningMessage(instructions))` → resolve the report per D3 (file
       first; if missing, write the final assistant text to the file and set the status to

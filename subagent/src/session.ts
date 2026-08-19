@@ -81,6 +81,8 @@ export interface CreateChildSessionOptions {
 	appendSystemPrompt?: string;
 	ui: ExtensionContext["ui"];
 	extensionMode: ExtensionContext["mode"];
+	/** Shared by sibling children so process-wide extension state is restored after the last one. */
+	group?: ChildSessionGroup;
 }
 
 export interface ChildSessionHandle {
@@ -89,6 +91,64 @@ export interface ChildSessionHandle {
 	reportPath: string;
 	enforceBudgetReportOnly(): void;
 	dispose(): Promise<void>;
+}
+
+export interface ChildSessionGroup {
+	acquire(mode: ExtensionContext["mode"]): { inheritedSafetyMode: ReturnType<typeof getSafetyMode>; release(): void };
+	withStartup<T>(task: () => Promise<T>): Promise<T>;
+}
+
+/**
+ * Coordinate process-wide mode and environment state across sibling child sessions. Child startup
+ * is serialized because extension binding temporarily communicates inherited safety through an
+ * environment variable; the model runs themselves remain parallel.
+ */
+export function createChildSessionGroup(): ChildSessionGroup {
+	let active = 0;
+	let inheritedSafetyMode: ReturnType<typeof getSafetyMode> = "yolo";
+	let safetySnapshot: ReturnType<typeof snapshotSafetyMode> | undefined;
+	let planSnapshot: ReturnType<typeof snapshotPlanMode> | undefined;
+	let restoreHeadless: (() => void) | undefined;
+	let startupTail = Promise.resolve();
+
+	return {
+		acquire(mode) {
+			if (active === 0) {
+				safetySnapshot = snapshotSafetyMode();
+				planSnapshot = snapshotPlanMode();
+				inheritedSafetyMode = getSafetyMode();
+				restoreHeadless = applyHeadlessOverrides(mode);
+			}
+			active += 1;
+			let released = false;
+			return {
+				inheritedSafetyMode,
+				release() {
+					if (released) return;
+					released = true;
+					active = Math.max(0, active - 1);
+					if (active !== 0) return;
+					if (safetySnapshot) restoreSafetyModeSnapshot(safetySnapshot);
+					if (planSnapshot) restorePlanModeSnapshot(planSnapshot);
+					restoreHeadless?.();
+					safetySnapshot = undefined;
+					planSnapshot = undefined;
+					restoreHeadless = undefined;
+				},
+			};
+		},
+		async withStartup(task) {
+			const previous = startupTail;
+			let release!: () => void;
+			startupTail = new Promise<void>((resolve) => { release = resolve; });
+			await previous;
+			try {
+				return await task();
+			} finally {
+				release();
+			}
+		},
+	};
 }
 
 const reportParameters = Type.Object({
@@ -127,9 +187,6 @@ async function shutdownExtensions(session: AgentSession): Promise<void> {
 
 export async function createChildSession(options: CreateChildSessionOptions): Promise<ChildSessionHandle> {
 	const agentDir = options.agentDir ?? getAgentDir();
-	const planSnapshot = snapshotPlanMode();
-	const safetySnapshot = snapshotSafetyMode();
-	const inheritedSafetyMode = getSafetyMode();
 	const sessionManager = SessionManager.create(
 		options.cwd,
 		options.sessionDir,
@@ -167,47 +224,53 @@ export async function createChildSession(options: CreateChildSessionOptions): Pr
 			"write_report",
 		]
 		: undefined;
-	const restoreHeadlessOverrides = applyHeadlessOverrides(options.extensionMode);
+	const group = options.group ?? createChildSessionGroup();
+	const lease = group.acquire(options.extensionMode);
 
 	let session: AgentSession | undefined;
 	try {
-		({ session } = await createAgentSession({
-			cwd: options.cwd,
-			agentDir,
-			model: options.model,
-			thinkingLevel: options.thinkingLevel,
-			...(tools ? { tools } : {}),
-			excludeTools: ["spawn"],
-			customTools: [reportTool(reportPath)],
-			resourceLoader: loader,
-			sessionManager,
-		}));
-		const previous = process.env[CHILD_SAFETY_MODE_ENV];
-		process.env[CHILD_SAFETY_MODE_ENV] = inheritedSafetyMode;
-		try {
-			await session.bindExtensions({
-				uiContext: options.ui,
-				mode: options.extensionMode,
-				abortHandler: () => { void session?.abort(); },
-			});
-		} finally {
-			if (previous === undefined) delete process.env[CHILD_SAFETY_MODE_ENV];
-			else process.env[CHILD_SAFETY_MODE_ENV] = previous;
-		}
+		await group.withStartup(async () => {
+			({ session } = await createAgentSession({
+				cwd: options.cwd,
+				agentDir,
+				model: options.model,
+				thinkingLevel: options.thinkingLevel,
+				...(tools ? { tools } : {}),
+				excludeTools: ["spawn"],
+				customTools: [reportTool(reportPath)],
+				resourceLoader: loader,
+				sessionManager,
+			}));
+			const previous = process.env[CHILD_SAFETY_MODE_ENV];
+			process.env[CHILD_SAFETY_MODE_ENV] = lease.inheritedSafetyMode;
+			try {
+				await session.bindExtensions({
+					uiContext: options.ui,
+					mode: options.extensionMode,
+					abortHandler: () => { void session?.abort(); },
+				});
+			} finally {
+				if (previous === undefined) delete process.env[CHILD_SAFETY_MODE_ENV];
+				else process.env[CHILD_SAFETY_MODE_ENV] = previous;
+			}
+		});
 	} catch (error) {
 		if (session) {
 			await shutdownExtensions(session).catch(() => undefined);
 			session.dispose();
 		}
-		restoreSafetyModeSnapshot(safetySnapshot);
-		restorePlanModeSnapshot(planSnapshot);
-		restoreHeadlessOverrides();
+		lease.release();
 		throw error;
 	}
+	if (!session) {
+		lease.release();
+		throw new Error("The child session was not created.");
+	}
+	const childSession = session;
 
 	let disposed = false;
 	return {
-		session,
+		session: childSession,
 		sessionFile,
 		reportPath,
 		enforceBudgetReportOnly() {
@@ -217,12 +280,10 @@ export async function createChildSession(options: CreateChildSessionOptions): Pr
 			if (disposed) return;
 			disposed = true;
 			try {
-				await shutdownExtensions(session).catch(() => undefined);
+				await shutdownExtensions(childSession).catch(() => undefined);
 			} finally {
-				session.dispose();
-				restoreSafetyModeSnapshot(safetySnapshot);
-				restorePlanModeSnapshot(planSnapshot);
-				restoreHeadlessOverrides();
+				childSession.dispose();
+				lease.release();
 			}
 		},
 	};

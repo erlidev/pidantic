@@ -17,7 +17,7 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` to interrupt a run and record why it was interrupted | Implemented |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
 | [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, a footer with context in tokens and a generation-rate readout, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
-| [`subagent`](docs/extensions/subagent.md) | Blocking `spawn` tool with isolated child context, read-only exploration, reports, budgets, and live progress | Implemented |
+| [`subagent`](docs/extensions/subagent.md) | Blocking `spawn` tool with isolated child context, configurable parallelism, read-only exploration, reports, budgets, and live progress | Implemented |
 | [`smart-compaction`](docs/extensions/smart-compaction.md) | Reserved extension entry point | Scaffold; no behavior |
 
 ## Install

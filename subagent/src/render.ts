@@ -18,11 +18,13 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { SubagentMode } from "./brief.ts";
 import type { ProgressSnapshot } from "./progress.ts";
 import type { ReportSource, SpawnStatus } from "./report.ts";
+import { formatTranscript } from "./transcript.ts";
 
 export interface SpawnDetails {
 	mode: SubagentMode;
 	progress: ProgressSnapshot;
 	contextUsage?: ContextUsage;
+	tokenBudget?: number;
 	transcriptRevision?: number;
 	sessionFile?: string;
 	reportPath?: string;
@@ -71,11 +73,13 @@ function formatTokens(count: number): string {
 	return `${Math.round(count / 1_000_000)}M`;
 }
 
-export function formatContextUsage(usage: ContextUsage | undefined): string | undefined {
+export function formatContextUsage(usage: ContextUsage | undefined, tokenBudget?: number): string | undefined {
 	if (!usage) return undefined;
 	const used = usage.tokens === null ? "?" : formatTokens(usage.tokens);
-	const percent = usage.percent === null ? "?" : `${usage.percent.toFixed(1)}%`;
-	return `ctx ${used}/${formatTokens(usage.contextWindow)} (${percent})`;
+	const capacity = tokenBudget ?? usage.contextWindow;
+	const percentage = tokenBudget && usage.tokens !== null ? usage.tokens / tokenBudget * 100 : usage.percent;
+	const percent = percentage === null ? "?" : `${percentage.toFixed(1)}%`;
+	return `ctx ${used}/${formatTokens(capacity)} (${percent})`;
 }
 
 function elapsed(startedAt: number, completedAt = Date.now()): string {
@@ -112,7 +116,7 @@ function summary(details: SpawnDetails, partial: boolean, theme: Theme): string 
 		count(progress.turns, "turn"),
 		elapsed(progress.startedAt, progress.completedAt),
 	];
-	const context = formatContextUsage(details.contextUsage);
+	const context = formatContextUsage(details.contextUsage, details.tokenBudget);
 	if (context) pieces.push(context);
 	if (progress.filesEdited.length) pieces.push(count(progress.filesEdited.length, "file edited", "files edited"));
 	if (progress.commands) pieces.push(count(progress.commands, "command"));
@@ -126,36 +130,6 @@ function summary(details: SpawnDetails, partial: boolean, theme: Theme): string 
 			? theme.fg("success", "✓")
 			: theme.fg(statusColor(details.status), "▲");
 	return `${marker} ${pieces.join(" · ")}`;
-}
-
-function formatTranscript(raw: string): string {
-	const output: string[] = [];
-	for (const line of raw.split("\n")) {
-		if (!line.trim()) continue;
-		try {
-			const entry = JSON.parse(line) as Record<string, unknown>;
-			if (entry.type === "compaction" && typeof entry.summary === "string") {
-				output.push(`COMPACTION\n${entry.summary}`);
-				continue;
-			}
-			if (entry.type !== "message" || typeof entry.message !== "object" || entry.message === null) continue;
-			const message = entry.message as { role?: unknown; content?: unknown; toolName?: unknown };
-			const role = typeof message.role === "string" ? message.role.toUpperCase() : "MESSAGE";
-			if (!Array.isArray(message.content)) continue;
-			const parts = message.content.flatMap((part) => {
-				if (typeof part !== "object" || part === null) return [];
-				const block = part as Record<string, unknown>;
-				if (block.type === "text" && typeof block.text === "string") return [block.text];
-				if (block.type === "thinking" && typeof block.thinking === "string") return [`[thinking]\n${block.thinking}`];
-				if (block.type === "toolCall") return [`→ ${String(block.name)} ${JSON.stringify(block.arguments)}`];
-				return [];
-			});
-			if (parts.length) output.push(`${role}${message.toolName ? ` (${String(message.toolName)})` : ""}\n${parts.join("\n")}`);
-		} catch {
-			// A partially written final JSONL line is normal while the child is live.
-		}
-	}
-	return output.join("\n\n") || "(transcript unavailable or empty)";
 }
 
 class SpawnComponent implements Component {
@@ -209,7 +183,8 @@ class SpawnComponent implements Component {
 			} else lines.push(this.theme.fg("muted", "loading…"));
 		}
 		if (this.details.sessionFile) {
-			lines.push("", this.theme.fg("toolTitle", this.theme.bold("TRANSCRIPT")));
+			lines.push("", this.theme.fg("toolTitle", this.theme.bold("TRANSCRIPT (CONDENSED)")));
+			lines.push(this.theme.fg("muted", `full JSONL: ${this.details.sessionFile}`));
 			if (this.state.transcript?.path === this.details.sessionFile) {
 				lines.push(...new Text(this.state.transcript.content, 0, 0).render(width));
 			} else lines.push(this.theme.fg("muted", "loading…"));
