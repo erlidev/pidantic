@@ -196,26 +196,6 @@ The plan should contain:
 The model chooses the path after checking repository conventions such as `docs/plans/`,
 `docs/roadmaps/`, `.agent/`, or a root `TODO.md`.
 
-## Running standalone
-
-Plan mode is complete alone. `/plan`, `Alt+P`, and `--plan` toggle it, the tool set narrows to the
-read-only builtins plus `write_plan`, the Bash policy holds anything outside the allowlist at a
-one-shot dialog, and `write_plan` writes the approved plan and restores the prior tools. Its
-`shared/` imports are the Bash policy, the finding renderer, the confirmation dialog, and the
-read-only tool list — all library code that imports no extension.
-
-Three registry links exist, each additive:
-
-| Also loaded | Effect |
-| --- | --- |
-| `localsearch` | `search` and `fetch` join the plan-mode tool set, so an investigation can read documentation as well as the repository. Without it the set is `read`, `grep`, `find`, `ls`, `bash`, and `write_plan` |
-| `ui-tweaks` | The mode is drawn as a `▤ plan` badge in the replacement footer. Without it, pi prints the same state as its own plain status line, which is what `setStatusBadge` writes alongside the badge |
-| `safety` | The two modes arbitrate through `shared/mode-registry.ts` so plan mode takes precedence and a call is not gated twice. Without `safety` nothing contends and plan mode simply owns the flag |
-
-The tool set is resolved by filtering the known read-only names against pi's live registry rather
-than by asking whether `localsearch` is installed, so an absent tool is an absent name and never an
-error.
-
 ## Known quirks
 
 - **Tool restoration is next-turn only.** After `/plan` exits or `write_plan` is approved, the

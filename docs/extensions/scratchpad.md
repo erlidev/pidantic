@@ -139,29 +139,6 @@ uninteresting, so the confirmations that remain are about paths that genuinely d
 A shared `/tmp` is also a place other processes on the host can read: the directory is created
 `0700`, but that is a permission bit, not a guarantee about what the model puts in it.
 
-## Running standalone
-
-The directory is the feature, and it does not need a sibling. Loaded alone, `scratchpad` creates the
-per-session directory, names it in the system prompt, keeps it `0700`, deletes it at shutdown unless
-`retainOnExit` is set, and answers `/scratchpad` with all of its verbs. A model that has been told
-where to put temporary files puts them there, whatever else is loaded.
-
-What a sibling adds is the exemption. This extension gates nothing; it publishes its root on
-`shared/scratchpad-registry.ts`, and `safety` reads that registry live.
-
-| Also loaded | Effect |
-| --- | --- |
-| `safety` | In `safe` and `auto`, a `write` or `edit` inside the root runs with no dialog and takes no checkpoint, and a Bash path argument or redirection target inside it stops being a finding |
-| Nothing else | The root is published and nobody reads it. Writes to it are judged exactly as any other path outside the workspace |
-
-So without `safety`, `scratchpad` still solves "where do temporary files go"; it just no longer also
-solves "and without a confirmation", because there is no confirmation to avoid. The reverse case —
-`safety` without `scratchpad` — is an empty root list, which is the state safety shipped in before
-this extension existed.
-
-`read-only` mode and `plan-mode` ignore the registry whether or not this extension is loaded. Their
-contract is that the session writes nothing, not that it writes nothing important.
-
 ## Implementation
 
 | Module | Responsibility |

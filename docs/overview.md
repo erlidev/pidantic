@@ -241,44 +241,36 @@ pidantic/
   roadmap is not a statement of current behavior; implemented behavior belongs in the relevant
   extension manual.
 
-## Standalone extensions and cross-extension links
+## Cross-extension links
 
-Pi loads a subset of a package on request — `pi config` toggles individual resources, and a
-`packages` entry in settings can carry an `extensions` filter — so any one of these entry points may
-be the only one in a session. Every extension is therefore built to be complete alone, and the links
-between them are additions layered on top.
+Pidantic installs whole, so its extensions may rely on each other being present. They still do not
+import each other: the only cross-directory imports in this repository land in `shared/`, which
+imports pi and nothing else here. Runtime communication goes through five registries in `shared/`,
+each carrying one kind of fact between a producer and a consumer:
 
-Two structural rules make that hold. No extension imports another: the only cross-directory imports
-in this repository land in `shared/`, which imports pi and nothing else here. And every runtime link
-goes through one of the five publish/listen registries in `shared/`, each of which reads empty and
-writes nowhere when its counterpart is absent:
-
-| Registry | Publishers | Consumers | Absent counterpart |
+| Registry | Publishers | Consumers | What it carries |
 | --- | --- | --- | --- |
-| `mode-registry.ts` | `safety`, `plan-mode` | `safety`, `plan-mode`, `confirm-bash`, `subagent` | No mode is claimed; arbitration is trivially satisfied and no approval is ever recorded |
-| `status-registry.ts` | `safety`, `plan-mode`, `subagent` | `ui-tweaks` | Badges are published and unread, or the footer draws pi's statuses with no badge behind them |
-| `tool-notes.ts` | `safety` | `confirm-bash` | No renderer claims `bash`, so safety falls back to `ctx.ui.notify` or skips the note |
-| `attention.ts` | `shared/confirm-dialog.ts`, for every dialog in the package | `ui-tweaks` | Requests are raised to no listener |
-| `scratchpad-registry.ts` | `scratchpad` | `safety` | The root list is empty and every path is judged on its own merits |
+| `mode-registry.ts` | `safety`, `plan-mode` | `safety`, `plan-mode`, `confirm-bash`, `subagent` | The safety and plan-mode flags, their ownership, and the one-shot record of a user-approved Bash call |
+| `status-registry.ts` | `safety`, `plan-mode`, `subagent` | `ui-tweaks` | The icon, label, and tone that decorate a status the extension already gave pi |
+| `tool-notes.ts` | `safety` | `confirm-bash` | One-line annotations under a tool call, plus the row's repaint callback for a note that lands late |
+| `attention.ts` | `shared/confirm-dialog.ts`, for every dialog in the package | `ui-tweaks` | That a run is now waiting on a person |
+| `scratchpad-registry.ts` | `scratchpad` | `safety` | The live per-session scratch directories a write may go to without a dialog |
 
-Capability is detected rather than assumed. `availableReadOnlyTools` filters `search` and `fetch`
-against pi's live tool registry, so `plan-mode`, `safety`'s tiers, and `subagent`'s explore children
-gain them when `localsearch` is loaded and never name it otherwise. `rendersToolNotes` asks whether
-anything will draw a note before one is composed. `scratchpadRoots` reads whatever is published at
-the moment of the call. No extension checks for another by name.
+All five live in `Symbol.for` slots via `process-registry.ts` rather than in module scope, because pi
+evaluates a shared module once per importing extension; see that file for the detail. Keys carry the
+`pidantic.` prefix so they cannot collide with another package's state.
 
-The degradation target is the plainer path, not silence. `setStatusBadge` writes pi's own status text
-alongside the badge, so a session without `ui-tweaks` sits on exactly the line it always had. Safety's
-notes become notices. Where a feature genuinely has nowhere to go — a background command explanation
-with no note renderer — that one request is skipped and everything around it keeps working.
+Two of these still resolve capability by inspection rather than by name, because pi's own registry is
+the authority on what a session actually has. `availableReadOnlyTools` filters `search` and `fetch`
+against pi's live tool list, which is what a user-disabled tool or a `--tools` allowlist changes.
+`rendersToolNotes` asks whether anything claims a tool's row before a note is composed, so safety
+falls back to `ctx.ui.notify` instead of composing one nobody draws.
 
-Each extension manual carries a `## Running standalone` section stating what the extension does alone
-and what each sibling adds; those sections are the user-facing half of this contract.
-
-The one seam that is not cooperative is pi's own: `ctx.ui.setFooter` is a single slot with no getter
-and no stacking, so `ui-tweaks`' footer and a third-party footer cannot coexist or detect each other.
-`footer.enabled` is the documented escape. The editor slot does have a getter and is handled
-correctly — `ui-tweaks` installs its subclass only when the slot is empty.
+The links that matter to somebody else's extension are pi's shared UI seams, not these registries.
+`ctx.ui.setFooter` is a single slot with no getter and no stacking, so `ui-tweaks`' footer and a
+third-party footer cannot coexist or detect each other; `footer.enabled` is the documented escape.
+The editor slot does have a getter and is handled accordingly — `ui-tweaks` installs its subclass only
+when the slot is empty. Autocomplete providers stack, and the wheel-step write is feature-detected.
 
 ## Extension directories
 

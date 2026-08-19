@@ -49,29 +49,15 @@ pi -e /absolute/path/to/pi-extensions
 `confirm-bash` requires a Pi version that exports `createBashToolDefinition` (Pi 0.84 or newer).
 The other extensions use the same package and do not require a separate build or install command.
 
-### Loading only some of them
+Pidantic is meant to be installed whole. The nine extensions share the registries in `shared/` and
+build on each other — `safety` draws its annotations under `confirm-bash`'s Bash rows, exempts
+`scratchpad`'s directories, and shows its mode as a badge in `ui-tweaks`' footer — so the package is
+one thing rather than a menu.
 
-Every extension here works on its own, so installing the package does not commit to all nine. Use
-`pi config` to toggle them interactively, or filter the package in settings:
-
-```json
-{
-  "packages": [{
-    "source": "/absolute/path/to/pi-extensions",
-    "extensions": ["localsearch/index.ts", "stop/index.ts"]
-  }]
-}
-```
-
-Cross-extension features are additions on top of each extension's own behavior, never prerequisites:
-`safety` gates the same calls without `scratchpad`, `plan-mode` investigates without `localsearch`,
-and `ui-tweaks` draws its footer without any of them. Each manual has a `## Running standalone`
-section stating exactly what is gained and lost, and
-[the repository overview](docs/overview.md#standalone-extensions-and-cross-extension-links) describes
-how the links are wired.
-
-If another extension you use replaces pi's footer, `/ui-tweaks footer.enabled off` hands that slot
-back — pi's footer draws every status this package publishes.
+Its only interaction with extensions from outside the package is pi's footer slot, which pi allows
+just one extension to hold. If another extension you use draws its own footer,
+`/ui-tweaks footer.enabled off` hands the slot back and keeps every other tweak; pi's own footer
+draws every status this package publishes.
 
 ## Quick start
 

@@ -626,54 +626,6 @@ does the same for its own argument: each mode is listed with what it does, and t
 marked. The full grammar is in
 [Editing configuration from inside pi](../settings-commands.md#the-argument-menu).
 
-## Running standalone
-
-`safety` is self-sufficient. Every mode, the deterministic Bash policy, the tool tiers, the
-checkpoints and `/undo`, the classifier, and `/safety-config` are decided inside this extension. No
-sibling is consulted before a call is allowed, gated, or refused, and no absent one can weaken a
-policy — the failure direction throughout is toward the dialog, never past it.
-
-What siblings change is how much a session is told and how few dialogs it needs to raise.
-
-| Also loaded | Effect |
-| --- | --- |
-| `confirm-bash` | Verdicts, explanations, checkpoint notices, and the account of what held a call are drawn under the Bash call itself; safety also records approvals so an approved call raises no second dialog |
-| `scratchpad` | A `write` or `edit` inside a live scratch root runs with no dialog and takes no checkpoint, and a Bash path or redirection target inside one stops being a finding |
-| `localsearch` | `search` and `fetch` are classified `read-only`, so they run ungated in `safe` and `auto` and are permitted in `read-only` |
-| `ui-tweaks` | The mode is drawn as a `◆` badge — accent for `auto`, warning for `safe`, error for `read-only` — and confirmation dialogs raise desktop notifications |
-| `plan-mode` | The two modes arbitrate so plan mode takes precedence and a call is not gated twice |
-
-### Without `confirm-bash`
-
-This is the one absence a user notices, because the annotations lose their best surface. `safety`
-composes a note only when something will draw it, asking `rendersToolNotes` rather than looking for
-the extension, and each path has its own answer:
-
-| Annotation | With a note renderer | Without one |
-| --- | --- | --- |
-| Classifier auto-approval | `◆ classifier: safe · <explanation>` under the call | `ctx.ui.notify` notice: `Safety classifier allowed <identity> (<explanation>)` |
-| Checkpoint taken | `checkpoint taken · /undo restores this request` under the call | `ctx.ui.notify` notice saying the same |
-| What held a gated call | Kept in the transcript under the call | Shown in the dialog only, which is where it matters most |
-| Background explanation of a rule-allowed command | Fills in under the finished row | Not requested at all — there is nowhere for it to land, and the request is skipped rather than wasted |
-
-Confirmation dialogs are unaffected: they carry their own provenance line and explanation whatever
-else is loaded. The model-requested `confirm` and `reason` Bash parameters are `confirm-bash`'s own
-schema and simply do not exist without it, so `safety`'s policy is the only gate.
-
-### Without `scratchpad`
-
-The scratch-root list is empty and a write to a temporary directory is judged like any other path
-outside the workspace: it confirms in `safe` and `auto`. That is the behavior `safety` had before
-`scratchpad` existed, and nothing about the exemption is load-bearing — it removes dialogs, it never
-adds permission. `read-only` and plan mode ignore the registry either way.
-
-### Without `ui-tweaks`
-
-The mode is published through `setStatusBadge`, which writes pi's own status text alongside the
-badge, so a session without the replacement footer shows `Safety: <mode>` on pi's status line exactly
-as it always did. Confirmation dialogs still open and still block; they just raise no desktop
-notification, since nothing is listening on the attention channel.
-
 ## Bundled classifier service
 
 The Compose `ling-tiny` service exposes the default OpenAI-compatible endpoint on loopback port

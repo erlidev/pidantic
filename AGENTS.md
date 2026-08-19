@@ -12,28 +12,20 @@
 - Match existing file structure, naming, and style. Don't introduce a new pattern when an established one already covers the case.
 - Documenting changes and quirks with short and concise comments is fine, but keep them straight to the point, and remove any old and outdated comments.
 
-## Standalone First
-Pi lets a user load one extension from this package and leave the rest out, through `pi config` or a
-`packages` filter. Every extension must therefore be useful on its own, and every cross-extension
-link is an addition on top of that, never a prerequisite.
+## Playing Well With Others
+Pidantic installs as one package and its extensions are free to depend on each other. Extensions from
+outside the package are not, so the rule is only about them: don't break somebody else's extension.
 
-- An extension's core feature works with no sibling loaded. Nothing that defines what the extension
-  is for may depend on another one being present.
-- Extensions never import each other. Shared code lives in `shared/`, which imports no extension.
-  A cross-extension link goes through a registry in `shared/`, and every one of those is
-  publish/listen: a missing publisher is an empty read, a missing listener is a dropped write, and
-  neither is an error.
-- Detect capability, never assume it. `availableReadOnlyTools` filters by what pi actually
-  registered, `rendersToolNotes` asks whether anything will draw a note before composing one, and
-  `scratchpadRoots` reads whatever is published now. Follow that pattern rather than checking for an
-  extension by name.
-- Degrade to the plainer path, not to nothing. Safety's notes fall back to `ctx.ui.notify` when no
-  renderer claims them; badges fall back to pi's own status line. Where a feature genuinely cannot
-  degrade — a background command explanation has nowhere to go without a note renderer — drop that
-  one feature silently and leave the rest working.
-- Document both halves in the extension's manual under `## Running standalone`: what the extension
-  does alone, and what each sibling adds. Update that section whenever a cross-extension link is
-  added, removed, or changed.
+- Prefer pi seams that stack or that can be checked before claiming. Where pi offers a getter for a
+  single slot, call it and don't take the slot if something is already there — `ui-tweaks` does this
+  for the editor component. Where pi offers no getter, `ctx.ui.setFooter` being the one that matters,
+  say so in the manual and give the user a setting that hands the slot back.
+- Anything written outside our own state — a field on a pi object, a global — is feature-detected and
+  survives not being there.
+- Keep cross-extension state under the `pidantic.` symbol prefix in `shared/process-registry.ts` so
+  it cannot collide with another package's.
+- A third-party extension's own output stays visible. The footer draws statuses it has no badge for
+  as plain text rather than dropping them.
 
 ## Engineering Approach
 - Before implementing, think through the pragmatic approach — not the cleverest one, not the most generic one. Solve the actual problem.

@@ -98,31 +98,6 @@ Two pieces, both in `index.ts`:
   reaches this dialog. A flagged command is never silently run because another extension found it
   harmless.
 
-## Running standalone
-
-`confirm-bash` alone is the whole feature as documented above: the Bash schema carries `confirm` and
-`reason`, a flagged call opens the approval dialog, and an unflagged call is untouched. Nothing about
-that path involves another extension.
-
-Two links exist, both with `safety`, and both are additions rather than requirements.
-
-**Suppressing the second dialog.** When `safety` gates a Bash command and the user approves it at
-that dialog, `safety` records the approval on `shared/mode-registry.ts` and this extension's
-`wasSafetyApproved` check skips its own dialog for that one call — the model asked for a person, and
-a person already answered. Without `safety` loaded nothing is ever recorded, the check is always
-false, and every flagged call raises its dialog. That is the correct standalone behavior, not a
-degraded one.
-
-**Drawing safety's annotations.** The Bash result renderer wraps pi's own and appends a one-line note
-from `shared/tool-notes.ts` when one exists — `safety`'s classifier verdicts, command explanations,
-checkpoint notice, and the account of what held a gated call. Registration calls
-`markToolNoteRenderer("bash")` so `safety` knows the row can carry them. Without `safety` no note is
-ever recorded and the renderer is a pass-through. The dependency is one-directional and detected, so
-loading `confirm-bash` alone costs nothing.
-
-Losing `confirm-bash` while keeping `safety` costs `safety` more than it costs this extension; see
-the [safety manual](safety.md#running-standalone).
-
 ## Known limitations
 
 - **Only `bash` is gated.** `write` and `edit` have no `confirm` parameter.
