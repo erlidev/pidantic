@@ -58,6 +58,12 @@ recovery, which aborts a turn and retries it — are never labelled as user inte
 | While tools are executing | Note as a standalone custom message (the assistant message was already finalized before the tools ran) |
 | While the agent is idle | Nothing happens; `/stop` warns and returns |
 
+## Running standalone
+
+`stop` is fully self-contained. It imports nothing from `shared/`, publishes on no registry, and
+reads none. Loading it alone gives the complete feature, and no other extension in this package adds
+anything to it or takes anything away.
+
 ## Known limitations
 
 - **Queued messages are not cleared.** Steering and follow-up messages you typed before `/stop`

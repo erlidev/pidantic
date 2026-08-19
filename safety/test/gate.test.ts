@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { claimPlanMode, createModeOwner, getSafetyMode, setPlanModeActive, wasSafetyApproved } from "../../shared/mode-registry.ts";
+import { claimPlanMode, createModeOwner, getSafetyMode, resetModeRegistry, setPlanModeActive, wasSafetyApproved } from "../../shared/mode-registry.ts";
 import { claimScratchpad, createScratchpadOwner, resetScratchpadRegistry } from "../../shared/scratchpad-registry.ts";
 import { resetStatusRegistry, statusBadge } from "../../shared/status-registry.ts";
 import { markToolNoteRenderer, toolNote } from "../../shared/tool-notes.ts";
@@ -693,6 +693,31 @@ test("plan mode hides safety's indicator while it is active and gives it back on
 	await gate.shutdown();
 	setPlanModeActive(planOwner, true);
 	assert.equal(statusBadge("safety"), undefined);
+});
+
+/**
+ * `pi --plan`, and a resumed session that was planning, both have plan mode active before safety's
+ * own `session_start` runs. The configured mode still has to be established there: it is the mode the
+ * session is in the moment planning ends, and refusing to enter it left the session in yolo for good.
+ */
+test("a session that starts inside plan mode still settles into its configured mode", async (t) => {
+	const cwd = await repository(t);
+	resetStatusRegistry();
+	resetModeRegistry();
+	t.after(resetStatusRegistry);
+	const planOwner = createModeOwner("test-plan");
+	claimPlanMode(planOwner);
+	setPlanModeActive(planOwner, true);
+
+	const gate = await harness(t, { cwd, config: { mode: "auto", classifier: CLASSIFIER }, fetch: endpoint("safe"), keepRegistry: true });
+	assert.equal(getSafetyMode(), "auto");
+	// Plan mode owns the session for now, so safety says nothing and gates nothing.
+	assert.equal(gate.status(), undefined);
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "allowed");
+
+	setPlanModeActive(planOwner, false);
+	assert.equal(gate.status(), "Safety: auto");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "gated");
 });
 
 /**

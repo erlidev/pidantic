@@ -49,6 +49,30 @@ pi -e /absolute/path/to/pi-extensions
 `confirm-bash` requires a Pi version that exports `createBashToolDefinition` (Pi 0.84 or newer).
 The other extensions use the same package and do not require a separate build or install command.
 
+### Loading only some of them
+
+Every extension here works on its own, so installing the package does not commit to all nine. Use
+`pi config` to toggle them interactively, or filter the package in settings:
+
+```json
+{
+  "packages": [{
+    "source": "/absolute/path/to/pi-extensions",
+    "extensions": ["localsearch/index.ts", "stop/index.ts"]
+  }]
+}
+```
+
+Cross-extension features are additions on top of each extension's own behavior, never prerequisites:
+`safety` gates the same calls without `scratchpad`, `plan-mode` investigates without `localsearch`,
+and `ui-tweaks` draws its footer without any of them. Each manual has a `## Running standalone`
+section stating exactly what is gained and lost, and
+[the repository overview](docs/overview.md#standalone-extensions-and-cross-extension-links) describes
+how the links are wired.
+
+If another extension you use replaces pi's footer, `/ui-tweaks footer.enabled off` hands that slot
+back — pi's footer draws every status this package publishes.
+
 ## Quick start
 
 For the complete local-search feature set, start only the service used by implemented extensions:
@@ -377,8 +401,10 @@ and a resumed session starts with none, so `/undo` never reverts to a snapshot f
 run. The restore confirmation lists the paths it is about to rewrite and says so when another Pi run
 has checkpoints in the same repository and may be working there now. Since `/undo` is user-initiated,
 that confirmation raises no attention notification and `Cancel` asks for no denial reason. Outside a
-Git worktree, writes continue with a one-time warning. Plan mode takes precedence over
-safety, and a Bash call the user approved at a safety dialog does not produce a second
+Git worktree, writes continue with a one-time warning. Plan mode takes precedence over safety, so
+`/safety <mode>` refuses while it is active — though a session that starts or resumes inside plan
+mode still enters its configured mode, which is what it will be in once planning ends. A Bash call
+the user approved at a safety dialog does not produce a second
 `confirm-bash` dialog. A command safety allowed on its own — by rule, by classifier, by read-only
 policy, or through `PI_SAFETY_HEADLESS` — asked nobody anything, so a `confirm: true` on it is still
 raised by `confirm-bash`. Safety

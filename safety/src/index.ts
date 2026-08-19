@@ -335,11 +335,13 @@ export default function safety(pi: ExtensionAPI): void {
 		return checkpointProtectedForRequest;
 	}
 
+	/**
+	 * Establishes the mode this session is in. Refusing while plan mode is active belongs to the user
+	 * asking for a change, not here: a session that starts — or resumes — inside plan mode still has to
+	 * settle into its configured mode, since that is the mode it will be in the moment planning ends.
+	 * The indicator stays hidden until then, which `statusBadgeFor` decides on its own.
+	 */
 	async function enter(mode: SafetyMode, ctx: ExtensionContext, persist = true): Promise<boolean> {
-		if (isPlanModeActive()) {
-			ctx.ui.notify("Plan mode is active and already controls tool access. Exit plan mode before changing safety mode.", "info");
-			return false;
-		}
 		if (mode === "auto") {
 			const probe = await probeClassifier(config.classifier);
 			if (!probe.available) {
@@ -503,6 +505,10 @@ export default function safety(pi: ExtensionAPI): void {
 			}
 			if (!isSafetyMode(action)) {
 				ctx.ui.notify(`Usage: /safety [${SAFETY_MODES.join("|")}|log]. Everything else lives in /safety-config.`, "error");
+				return;
+			}
+			if (isPlanModeActive()) {
+				ctx.ui.notify("Plan mode is active and already controls tool access. Exit plan mode before changing safety mode.", "info");
 				return;
 			}
 			await enter(action, ctx);

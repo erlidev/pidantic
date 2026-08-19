@@ -386,6 +386,46 @@ own. These are the complete defaults:
 | --- | --- | --- |
 | `UI_TWEAKS_CONFIG` | `~/.pi/agent/ui-tweaks.json` | Overrides the configuration path |
 
+## Running standalone
+
+Every tweak here is about pi itself, so all four work with no sibling loaded: the fullscreen wheel
+step, the replacement footer with its context readout, rate, and sparkline, the completion chain, and
+notifications. `ui-tweaks` is a consumer on both registries it touches — it publishes on neither —
+so a session with nothing else loaded simply reads empty ones.
+
+| Also loaded | Effect |
+| --- | --- |
+| `safety` | The mode in force is drawn as a `◆` badge, and its confirmation dialogs raise notifications |
+| `plan-mode` | Plan mode is drawn as a `▤ plan` badge, and its Bash and `write_plan` dialogs raise notifications |
+| `subagent` | Running children are drawn as a `◉ sub ×2` badge |
+| `confirm-bash` | Its approval dialogs raise notifications |
+| Nothing else | The footer draws no badges, and only the run-settled notification fires |
+
+Neither absence is a missing feature. The status row is built by reading pi's own status map and
+decorating each key from `shared/status-registry.ts`, so a key with no badge behind it is drawn as
+its own flattened text in the neutral tone — including one published by an extension outside this
+package. The footer therefore never shows less than pi's would, whatever else is installed.
+Notifications are raised from `shared/attention.ts`, which any extension using the shared dialog
+feeds; with no raiser the `onConfirmation` path is simply never taken and `onResponse` is unaffected.
+
+### Coexisting with other extensions
+
+Three of pi's UI seams are shared, and this extension treats them differently because pi's API does:
+
+- **Footer.** `ctx.ui.setFooter` is a single slot with no getter and no stacking, so a third-party
+  extension that also sets a footer either replaces this one or is replaced by it, depending on load
+  order, and neither side can detect the other. This is the one place `ui-tweaks` can collide with an
+  extension outside this package. Set `/ui-tweaks footer.enabled off` to hand the slot back
+  permanently and keep everything else; the setting is written to the config file, and pi's own
+  footer draws every status this extension would have badged.
+- **Editor.** The editor is also a single slot, and here pi does expose a getter, so the completion
+  chain calls `getEditorComponent()` first and installs its subclass only when the slot is empty. An
+  editor another extension installed is left alone, and the autocomplete wrapper — which stacks
+  properly — keeps working on its own. `autocomplete.chainArguments off` withdraws both.
+- **Wheel step.** `scroll` writes `wheelScrollLines` onto pi's live fullscreen renderer, which is
+  process-wide but a single scalar on a pi-owned object with no other realistic writer. It is
+  feature-detected and skipped on a renderer that lacks the field.
+
 ## Implementation
 
 | File | Contents |

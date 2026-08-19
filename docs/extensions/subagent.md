@@ -224,3 +224,17 @@ missing-report failures use red. Collapsed rows show Pi's configured tool-expans
 Expanded live rows also lazy-read completed child messages; no transcript is copied into the parent
 session's tool-result details. The live transcript refreshes after each completed child message or
 compaction rather than on streaming-token redraws.
+
+## Running standalone
+
+`spawn` works alone. Child construction, loader filtering, the report file and its fallbacks, both
+budgets, the concurrency queue, progress rendering, and `/subagent-config` involve no other
+extension. Children load the same package the parent did, so a child inherits whatever the parent's
+configuration enables and nothing more.
+
+| Also loaded | Effect |
+| --- | --- |
+| `safety` | A child inherits its parent's safety mode through `shared/mode-registry.ts`, and the snapshot is restored only after the last concurrent child exits. Without `safety`, children run with no mode, which is what a session without `safety` does anyway |
+| `localsearch` | Explore children get `search` and `fetch`; the list is filtered against the tools pi actually registered. Without it, explore children have `read`, `grep`, `find`, and `ls` |
+| `scratchpad` | Each child publishes and withdraws its own scratch directory, so a child neither strands nor inherits its parent's. Without it, children have no scratch directory, like the parent |
+| `ui-tweaks` | Running children are drawn as a `◉ sub ×2` badge in the replacement footer. Without it, pi prints the same count as its own status line |

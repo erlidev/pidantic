@@ -488,6 +488,27 @@ so each key is listed with the type it accepts and each value with whether it is
 the default — a quota offers `2000/month` rather than an abstract "json". The full grammar is in
 [Editing configuration from inside pi](../settings-commands.md#the-argument-menu).
 
+## Running standalone
+
+`localsearch` needs no sibling. It publishes on no registry and reads none; its only `shared/` import
+is the settings engine behind `/search-config`, which is a library rather than a link to another
+extension. `search`, `fetch`, `/search-status`, and `/search-config` are complete on their own, and
+nothing in this package can reduce them.
+
+The traffic runs the other way: `localsearch` is the extension the read-only workflows gain from.
+`shared/read-only-tools.ts` names `search` and `fetch` as known read-only extension tools and filters
+that list against pi's live registry, so loading `localsearch` alongside another extension adds
+research capability to it without either side knowing the other exists.
+
+| Also loaded | What it gains from `localsearch` |
+| --- | --- |
+| `plan-mode` | `search` and `fetch` join the plan-mode tool set, so investigation can read documentation as well as the repository |
+| `safety` | Both tools are classified `read-only`, so they run without a gate in `safe` and `auto` and are permitted in `read-only` mode |
+| `subagent` | Explore children get both tools; without `localsearch` they are limited to `read`, `grep`, `find`, and `ls` |
+
+Without `localsearch`, each of those falls back to the built-in read-only tools alone. None of them
+errors, asks for it, or mentions it.
+
 ## Development
 
 ```bash

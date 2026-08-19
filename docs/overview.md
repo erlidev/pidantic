@@ -241,6 +241,45 @@ pidantic/
   roadmap is not a statement of current behavior; implemented behavior belongs in the relevant
   extension manual.
 
+## Standalone extensions and cross-extension links
+
+Pi loads a subset of a package on request — `pi config` toggles individual resources, and a
+`packages` entry in settings can carry an `extensions` filter — so any one of these entry points may
+be the only one in a session. Every extension is therefore built to be complete alone, and the links
+between them are additions layered on top.
+
+Two structural rules make that hold. No extension imports another: the only cross-directory imports
+in this repository land in `shared/`, which imports pi and nothing else here. And every runtime link
+goes through one of the five publish/listen registries in `shared/`, each of which reads empty and
+writes nowhere when its counterpart is absent:
+
+| Registry | Publishers | Consumers | Absent counterpart |
+| --- | --- | --- | --- |
+| `mode-registry.ts` | `safety`, `plan-mode` | `safety`, `plan-mode`, `confirm-bash`, `subagent` | No mode is claimed; arbitration is trivially satisfied and no approval is ever recorded |
+| `status-registry.ts` | `safety`, `plan-mode`, `subagent` | `ui-tweaks` | Badges are published and unread, or the footer draws pi's statuses with no badge behind them |
+| `tool-notes.ts` | `safety` | `confirm-bash` | No renderer claims `bash`, so safety falls back to `ctx.ui.notify` or skips the note |
+| `attention.ts` | `shared/confirm-dialog.ts`, for every dialog in the package | `ui-tweaks` | Requests are raised to no listener |
+| `scratchpad-registry.ts` | `scratchpad` | `safety` | The root list is empty and every path is judged on its own merits |
+
+Capability is detected rather than assumed. `availableReadOnlyTools` filters `search` and `fetch`
+against pi's live tool registry, so `plan-mode`, `safety`'s tiers, and `subagent`'s explore children
+gain them when `localsearch` is loaded and never name it otherwise. `rendersToolNotes` asks whether
+anything will draw a note before one is composed. `scratchpadRoots` reads whatever is published at
+the moment of the call. No extension checks for another by name.
+
+The degradation target is the plainer path, not silence. `setStatusBadge` writes pi's own status text
+alongside the badge, so a session without `ui-tweaks` sits on exactly the line it always had. Safety's
+notes become notices. Where a feature genuinely has nowhere to go — a background command explanation
+with no note renderer — that one request is skipped and everything around it keeps working.
+
+Each extension manual carries a `## Running standalone` section stating what the extension does alone
+and what each sibling adds; those sections are the user-facing half of this contract.
+
+The one seam that is not cooperative is pi's own: `ctx.ui.setFooter` is a single slot with no getter
+and no stacking, so `ui-tweaks`' footer and a third-party footer cannot coexist or detect each other.
+`footer.enabled` is the documented escape. The editor slot does have a getter and is handled
+correctly — `ui-tweaks` installs its subclass only when the slot is empty.
+
 ## Extension directories
 
 Tool registrations omit `promptSnippet`: Pi already includes each literal tool schema in the model
@@ -540,7 +579,9 @@ exactly once while later calls in the turn stay silent, and
 `"checkpoints": false` produces none while restoring the write dialog in both gated modes. Plan-mode
 precedence is pinned from both ends: the calls it leaves to plan mode's own gate, and the status
 badge safety withdraws while it is active, restores when it ends, and no longer writes at all once
-the session that registered the listener has shut down. Suites that pin note text
+the session that registered the listener has shut down. A session that starts inside plan mode is
+pinned there too, since the refusal belongs to a user asking for a change and not to establishing the
+mode the session will be in when planning ends. Suites that pin note text
 for other reasons set `checkpoints: false` so the assertions stay about one thing.
 `risk-policy.test.ts` pins the `mutates` flag that decides this separately from the verdict.
 `settings.test.ts` drives `/safety-config` through the same harness, since what matters about a
