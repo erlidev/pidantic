@@ -10,7 +10,7 @@
 ## Conventions
 - Follow the idioms and best practices of the libraries/frameworks actually in use in this repo.
 - Match existing file structure, naming, and style. Don't introduce a new pattern when an established one already covers the case.
-- Documenting changes and quirks with comments is fine, but keep them straight to the point, and remove any old and outdated comments.
+- Documenting changes and quirks with short and concise comments is fine, but keep them straight to the point, and remove any old and outdated comments.
 
 ## Engineering Approach
 - Before implementing, think through the pragmatic approach — not the cleverest one, not the most generic one. Solve the actual problem.
