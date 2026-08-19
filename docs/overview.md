@@ -322,7 +322,11 @@ not expressible in a schema remain in `promptGuidelines`.
   slow one — and would otherwise set a mode for a session that never asked for it. Releasing on
   shutdown also means a session that loads without safety or plan-mode does not inherit the previous
   session's mode, and safety no longer depends on plan-mode being registered ahead of it to see a
-  correct plan flag. The safety-approval claim it also carries is the narrowest of the three: safety
+  correct plan flag. Plan mode's flag also announces itself: `onPlanModeChange` fires on a real
+  transition only, which is how safety withdraws its status badge for as long as plan mode is holding
+  the session and publishes it again afterwards — pi emits no event for another extension's toggle,
+  and two badges would claim two things are gating when plan mode has made safety inert.
+  The safety-approval claim it also carries is the narrowest of the three: safety
   records a Bash call only after the user themselves approved it at a dialog, which is what lets
   `confirm-bash` skip a second dialog for that one call without ever swallowing a `confirm: true` on a
   call safety allowed by rule, by classifier, by read-only policy, or through its headless escape
@@ -520,7 +524,9 @@ commands, and the tool-note suite pins the repaint callback a late note fires.
 under different query strings, which re-evaluates it, and asserts that notes and mode arbitration
 still cross between the two copies — including that an owner minted by one copy is honoured by the
 other. Its ownership cases pin the session-switch rules: a claim resets the field, a write or a
-release from the superseded instance changes nothing, and a release clears the mode outright.
+release from the superseded instance changes nothing, and a release clears the mode outright. The
+plan-mode listeners are pinned there too: they fire on a real transition and on a release, never on a
+repeated or unowned write, and an unsubscribed listener hears nothing.
 
 `harness.ts` and `gate.test.ts` cover the registration wiring the unit suites cannot reach. The
 harness loads the real extension against a fake `ExtensionAPI`, captures the registered hooks, and
@@ -531,7 +537,10 @@ ends — a gated command, a classifier-approved one, a rule-allowed one that wri
 unknown tool, and a write outside the workspace each take a snapshot, a read-only command takes none,
 and a turn mixing Bash, writes, and unknown tools still produces exactly one, whose note reports it
 exactly once while later calls in the turn stay silent, and
-`"checkpoints": false` produces none while restoring the write dialog in both gated modes. Suites that pin note text
+`"checkpoints": false` produces none while restoring the write dialog in both gated modes. Plan-mode
+precedence is pinned from both ends: the calls it leaves to plan mode's own gate, and the status
+badge safety withdraws while it is active, restores when it ends, and no longer writes at all once
+the session that registered the listener has shut down. Suites that pin note text
 for other reasons set `checkpoints: false` so the assertions stay about one thing.
 `risk-policy.test.ts` pins the `mutates` flag that decides this separately from the verdict.
 `settings.test.ts` drives `/safety-config` through the same harness, since what matters about a

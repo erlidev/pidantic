@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { promisify } from "node:util";
 import { claimPlanMode, createModeOwner, getSafetyMode, setPlanModeActive, wasSafetyApproved } from "../../shared/mode-registry.ts";
 import { claimScratchpad, createScratchpadOwner, resetScratchpadRegistry } from "../../shared/scratchpad-registry.ts";
+import { resetStatusRegistry, statusBadge } from "../../shared/status-registry.ts";
 import { markToolNoteRenderer, toolNote } from "../../shared/tool-notes.ts";
 import { CHECKPOINT_NAMESPACE } from "../src/checkpoint.ts";
 import { DEFAULT_TOOLS, harness, outcome, repository } from "./harness.ts";
@@ -665,6 +666,33 @@ test("plan mode takes precedence and leaves every call to plan mode's own gate",
 	setPlanModeActive(planOwner, true);
 	assert.equal(await outcome(() => gate.toolCall("bash", { command: "rm tracked.txt" })), "allowed");
 	assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "allowed");
+});
+
+test("plan mode hides safety's indicator while it is active and gives it back on exit", async (t) => {
+	const cwd = await repository(t);
+	resetStatusRegistry();
+	t.after(resetStatusRegistry);
+	const gate = await harness(t, { cwd, config: { mode: "safe" } });
+	assert.equal(gate.status(), "Safety: safe");
+	assert.equal(statusBadge("safety")?.label, "safe");
+
+	const planOwner = createModeOwner("test-plan");
+	claimPlanMode(planOwner);
+	// Safety gates nothing while plan mode is active, so it claims nothing on the status line either.
+	setPlanModeActive(planOwner, true);
+	assert.equal(gate.status(), undefined);
+	assert.equal(statusBadge("safety"), undefined);
+
+	// The mode itself was kept, so leaving plan mode restores it rather than dropping to yolo.
+	setPlanModeActive(planOwner, false);
+	assert.equal(gate.status(), "Safety: safe");
+	assert.equal(statusBadge("safety")?.label, "safe");
+	assert.equal(getSafetyMode(), "safe");
+
+	// The listener belongs to the session: a toggle after shutdown writes nothing.
+	await gate.shutdown();
+	setPlanModeActive(planOwner, true);
+	assert.equal(statusBadge("safety"), undefined);
 });
 
 /**

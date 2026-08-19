@@ -42,8 +42,10 @@ After the user confirms the approach, the model must submit the plan through `wr
 in plan mode until the file is written or the user explicitly exits.
 
 Plan mode's active flag is also published to safety through the process-wide mode registry, which
-is how safety knows to stand aside. That flag is owned by the extension instance the current session
-loaded: it is claimed at `session_start` and released at `session_shutdown`, so leaving a planning
+is how safety knows to stand aside — and, through that registry's `onPlanModeChange` listeners, to
+withdraw its own status badge for as long as plan mode owns the session and restore it afterwards.
+That flag is owned by the extension instance the current session loaded: it is claimed at
+`session_start` and released at `session_shutdown`, so leaving a planning
 session for another one never carries the flag into it, and an exit that was waiting at the
 `write_plan` approval dialog when the session was switched does not clear a flag that now belongs to
 the next session.

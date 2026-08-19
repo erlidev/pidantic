@@ -33,6 +33,7 @@ export interface ModeOwner {
 type ModeRegistry = {
 	planOwner: ModeOwner | undefined;
 	planActive: boolean;
+	planListeners: Set<() => void>;
 	safetyOwner: ModeOwner | undefined;
 	safetyMode: SafetyMode;
 	safetyApprovedBash: WeakSet<object>;
@@ -42,6 +43,7 @@ function initial(): ModeRegistry {
 	return {
 		planOwner: undefined,
 		planActive: false,
+		planListeners: new Set(),
 		safetyOwner: undefined,
 		safetyMode: "yolo",
 		safetyApprovedBash: new WeakSet(),
@@ -60,14 +62,14 @@ export function createModeOwner(label: string): ModeOwner {
  */
 export function claimPlanMode(owner: ModeOwner): void {
 	registry.planOwner = owner;
-	registry.planActive = false;
+	setPlanActive(false);
 }
 
 /** A release from an instance that no longer owns the field is a late teardown; it changes nothing. */
 export function releasePlanMode(owner: ModeOwner): void {
 	if (registry.planOwner !== owner) return;
 	registry.planOwner = undefined;
-	registry.planActive = false;
+	setPlanActive(false);
 }
 
 export function ownsPlanMode(owner: ModeOwner): boolean {
@@ -77,8 +79,30 @@ export function ownsPlanMode(owner: ModeOwner): boolean {
 /** Returns whether the write applied, so a caller resuming after an `await` can stop there. */
 export function setPlanModeActive(owner: ModeOwner, active: boolean): boolean {
 	if (registry.planOwner !== owner) return false;
-	registry.planActive = active;
+	setPlanActive(active);
 	return true;
+}
+
+/**
+ * Announces plan mode taking over and handing back. Safety is the caller that needs it: plan mode
+ * suppresses safety's gates entirely, so safety's indicator has to go while plan mode is active and
+ * come back when it ends — and neither extension sees a pi event for the other's toggle. The
+ * listener belongs to the session that registered it and is dropped with the returned function at
+ * `session_shutdown`, for the same reason mode writes are owned.
+ */
+export function onPlanModeChange(listener: () => void): () => void {
+	registry.planListeners.add(listener);
+	return () => { registry.planListeners.delete(listener); };
+}
+
+/** Writes the flag and announces it, but only on a real transition: a repeated write is not news. */
+function setPlanActive(active: boolean): void {
+	if (registry.planActive === active) return;
+	registry.planActive = active;
+	for (const listener of [...registry.planListeners]) {
+		// A listener that throws is the listener's problem; the write has already applied.
+		try { listener(); } catch { /* ignore */ }
+	}
 }
 
 export function isPlanModeActive(): boolean {
@@ -97,7 +121,7 @@ export function snapshotPlanMode(): PlanModeSnapshot {
 
 export function restorePlanModeSnapshot(snapshot: PlanModeSnapshot): void {
 	registry.planOwner = snapshot.owner;
-	registry.planActive = snapshot.active;
+	setPlanActive(snapshot.active);
 }
 
 export function claimSafetyMode(owner: ModeOwner): void {

@@ -14,6 +14,7 @@ import {
 	claimSafetyMode,
 	createModeOwner,
 	isPlanModeActive,
+	onPlanModeChange,
 	isSafetyMode,
 	markSafetyApproved,
 	ownsSafetyMode,
@@ -73,8 +74,13 @@ const MODE_TONE: Record<Exclude<SafetyMode, "yolo">, StatusTone> = {
 /** One glyph for every mode: the badge says "safety", and its colour says which mode is in force. */
 const SAFETY_ICON = "◆";
 
+/**
+ * Plan mode suppresses safety's gates outright, so an indicator beside plan's own would claim a
+ * session is being held by two things when only one of them can refuse anything. The mode is kept —
+ * it is what the session returns to — but it says nothing until it is back in force.
+ */
 function statusBadgeFor(mode: SafetyMode): StatusBadge | undefined {
-	if (mode === "yolo") return undefined;
+	if (mode === "yolo" || isPlanModeActive()) return undefined;
 	return { icon: SAFETY_ICON, label: mode, tone: MODE_TONE[mode], order: 20, plain: `Safety: ${mode}` };
 }
 
@@ -268,6 +274,9 @@ export default function safety(pi: ExtensionAPI): void {
 	let subagentSession = false;
 	/** The call whose gate created this request's snapshot; its note carries the fact. */
 	let checkpointNoteCallId: string | undefined;
+	/** The context the status was last written through, so plan mode toggling can redraw it. */
+	let statusCtx: Pick<ExtensionContext, "ui"> | undefined;
+	let unsubscribePlanMode: (() => void) | undefined;
 	const audit = new SafetyAudit();
 
 	/**
@@ -277,6 +286,7 @@ export default function safety(pi: ExtensionAPI): void {
 	 */
 	function setStatus(ctx: Pick<ExtensionContext, "ui">, mode: SafetyMode): void {
 		if (subagentSession) return;
+		statusCtx = ctx;
 		setStatusBadge(ctx, "safety", statusBadgeFor(mode));
 	}
 
@@ -704,6 +714,9 @@ export default function safety(pi: ExtensionAPI): void {
 		// Released before the next session starts, so a session that loads without safety does not
 		// leave confirm-bash reading this one's mode.
 		releaseSafetyMode(owner);
+		unsubscribePlanMode?.();
+		unsubscribePlanMode = undefined;
+		statusCtx = undefined;
 		// The badge would outlive pi's own status line otherwise: the registry is process-wide.
 		if (!subagentSession) publishStatusBadge("safety", undefined);
 		// Quit, reload, or session replacement all end this run's checkpoints; /undo does not span runs.
@@ -723,6 +736,12 @@ export default function safety(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		// Claimed before the first await: from here on this instance is the one allowed to write.
 		claimSafetyMode(owner);
+		// Plan mode hides this session's indicator for as long as it is active; nothing else tells
+		// safety it went in or came back out.
+		unsubscribePlanMode?.();
+		unsubscribePlanMode = onPlanModeChange(() => {
+			if (statusCtx) setStatus(statusCtx, state.mode);
+		});
 		config = await loadConfig();
 		classifier = new ResidualClassifier(config.classifier);
 		// Checkpoints never outlive the run that took them: drop this runtime's previous store and

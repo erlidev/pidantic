@@ -137,3 +137,32 @@ test("a nested plan claim can restore the exact parent owner and state", async (
 	assert.equal(registry.setPlanModeActive(parent, true), true);
 	assert.equal(registry.isPlanModeActive(), true);
 });
+
+test("plan-mode listeners fire on a transition, not on a repeated write", async (t) => {
+	const registry = await import(MODES_A);
+	t.after(() => { registry.resetModeRegistry(); });
+	registry.resetModeRegistry();
+
+	const owner = registry.createModeOwner("plan-mode");
+	registry.claimPlanMode(owner);
+	let changes = 0;
+	const unsubscribe = registry.onPlanModeChange(() => { changes += 1; });
+
+	registry.setPlanModeActive(owner, true);
+	registry.setPlanModeActive(owner, true);
+	assert.equal(changes, 1);
+
+	// A write from an instance that no longer owns the field changes nothing, so it announces nothing.
+	const stranded = registry.createModeOwner("stranded");
+	registry.setPlanModeActive(stranded, false);
+	assert.equal(changes, 1);
+
+	// Releasing is the other way plan mode ends, and the badge that listens has to see it.
+	registry.releasePlanMode(owner);
+	assert.equal(changes, 2);
+
+	unsubscribe();
+	registry.claimPlanMode(owner);
+	registry.setPlanModeActive(owner, true);
+	assert.equal(changes, 2);
+});

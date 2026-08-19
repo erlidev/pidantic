@@ -313,8 +313,10 @@ effects or status indicator.
 
 The mode in force is shown in the footer as a `◆` badge — accent for `auto`, warning for `safe`, error
 for `read-only` — beside the working directory where [`ui-tweaks`](docs/extensions/ui-tweaks.md) draws
-the footer, and as Pi's own `Safety: <mode>` line where it does not. A subagent child inherits its
-parent's mode but never writes that indicator, since it is looking at the parent's own footer.
+the footer, and as Pi's own `Safety: <mode>` line where it does not. Plan mode suppresses safety's
+gates entirely, so while it is active safety shows nothing at all rather than a second badge beside
+`▤ plan`; the mode is kept and its indicator returns when plan mode ends. A subagent child inherits
+its parent's mode but never writes that indicator, since it is looking at the parent's own footer.
 
 `read-only` is the one mode that never asks. A call runs only when it is verifiably read-only: the
 read-only tools, and a Bash command whose every segment passes the strict plan-mode allowlist, where

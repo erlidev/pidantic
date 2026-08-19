@@ -42,6 +42,14 @@ success. A
 subagent child inherits its parent's mode but writes neither half of this status: it shares the
 parent's UI context, so the line it would write over belongs to the session the user is looking at.
 
+While plan mode is active, safety publishes neither half either. Plan mode takes precedence and
+safety's tool hook is inert, so an indicator beside plan's own would say two things are holding the
+session back when only one of them can refuse anything. The mode itself is untouched — it is what the
+session returns to — and both halves are written again the moment plan mode ends. Safety learns of
+that transition from `onPlanModeChange` in `shared/mode-registry.ts`, since pi emits no event for
+another extension's toggle; the listener is registered at `session_start` and dropped at
+`session_shutdown`, like the mode claim beside it.
+
 `auto` can be entered only when `classifier.enabled` is true and `GET <url>/models` succeeds within
 the configured timeout. The probe runs on every attempted entry. If the endpoint later fails, the
 session remains in `auto`, but classifier requests fail closed into confirmation. `safe` never calls
