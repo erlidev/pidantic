@@ -43,6 +43,24 @@ test("configured read directories reject traversal through symlinks", async (t) 
 	assert.equal(classifyRisk(`cat ${join(docs, "escape", "secret.md")}`, { cwd: workspace, allowReadPaths: [docs] }).verdict, "ask");
 });
 
+test("a configured write root is as ordinary as the workspace, for writes as well as reads", () => {
+	// The scratchpad publishes one of these. Unlike allowReadPaths it also covers what a command puts
+	// there, since what makes it safe is that the directory is disposable, not that nothing is written.
+	const options = { cwd, allowWritePaths: ["/tmp/pi-scratchpad-1000/project-abc/session-1"] };
+	for (const command of [
+		"cat /tmp/pi-scratchpad-1000/project-abc/session-1/notes.md",
+		"cp src/a.ts /tmp/pi-scratchpad-1000/project-abc/session-1/a.ts",
+		"echo result > /tmp/pi-scratchpad-1000/project-abc/session-1/out.txt",
+		"mkdir /tmp/pi-scratchpad-1000/project-abc/session-1/nested",
+	]) {
+		assert.equal(classifyRisk(command, options).verdict, "allow", command);
+	}
+	// Nothing about the root softens the behaviour rules, and a neighbouring path is still outside.
+	assert.equal(classifyRisk("rm /tmp/pi-scratchpad-1000/project-abc/session-1/out.txt", options).verdict, "ask");
+	assert.equal(classifyRisk("echo x > /tmp/pi-scratchpad-1000/project-abc/session-12/out.txt", options).verdict, "ask");
+	assert.equal(classifyRisk("echo x > /tmp/out.txt", options).verdict, "ask");
+});
+
 test("returns residual only for unrecognized binaries and honors overrides", () => {
 	assert.equal(verdict("just test"), "residual");
 	assert.equal(classifyRisk("just test", { cwd, allowBinaries: ["just"] }).verdict, "allow");

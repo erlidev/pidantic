@@ -23,6 +23,12 @@ export interface RiskOptions {
 	allowBinaries?: readonly string[];
 	denyBinaries?: readonly string[];
 	allowReadPaths?: readonly string[];
+	/**
+	 * Roots where writing is as unremarkable as writing in the workspace — the scratchpad extension's
+	 * per-session directory. Unlike `allowReadPaths` these cover writes as well as reads, because what
+	 * makes them safe is that the directory is disposable, not that the command only looks at it.
+	 */
+	allowWritePaths?: readonly string[];
 }
 
 const DELETE_BINARIES = new Set(["rm", "rmdir", "shred", "truncate"]);
@@ -81,9 +87,15 @@ function pathArgumentsAllowed(tokens: string[], options: RiskOptions, readOnly: 
 		if (!path || path === "/dev/null" || path.includes("://")) continue;
 		if (path === "~" || path.startsWith("~/")) return false;
 		if (inside(options.cwd, path)) continue;
-		if (!readOnly || !(options.allowReadPaths ?? []).some((root) => inside(root, resolve(options.cwd, path)))) return false;
+		if (reaches(options.allowWritePaths, options.cwd, path)) continue;
+		if (!readOnly || !reaches(options.allowReadPaths, options.cwd, path)) return false;
 	}
 	return true;
+}
+
+/** Whether a path argument resolves inside one of the configured roots. */
+function reaches(roots: readonly string[] | undefined, cwd: string, path: string): boolean {
+	return (roots ?? []).some((root) => inside(root, resolve(cwd, path)));
 }
 
 function binaryName(token: string): string {
@@ -98,8 +110,9 @@ function redirectionFinding(redirection: Redirection, options: RiskOptions, segm
 	const target = redirection.target;
 	if (target.startsWith("&") || target === "/dev/null") return undefined;
 	if (inside(options.cwd, target)) return undefined;
+	if (reaches(options.allowWritePaths, options.cwd, target)) return undefined;
 	const read = redirection.operator.endsWith("<");
-	if (read && (options.allowReadPaths ?? []).some((root) => inside(root, resolve(options.cwd, target)))) return undefined;
+	if (read && reaches(options.allowReadPaths, options.cwd, target)) return undefined;
 	return {
 		reason: `redirection ${read ? "source" : "target"} resolves outside workspace: ${target}`,
 		severity: read ? "advisory" : "violation",

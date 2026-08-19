@@ -30,6 +30,7 @@ pidantic/
 │   │   ├── localsearch.md
 │   │   ├── plan-mode.md
 │   │   ├── safety.md
+│   │   ├── scratchpad.md
 │   │   ├── smart-compaction.md
 │   │   ├── stop.md
 │   │   ├── subagent.md
@@ -46,6 +47,7 @@ pidantic/
 │   ├── mode-registry.ts
 │   ├── process-registry.ts
 │   ├── read-only-tools.ts
+│   ├── scratchpad-registry.ts
 │   ├── settings.ts
 │   ├── tool-notes.ts
 │   └── test/
@@ -53,6 +55,7 @@ pidantic/
 │       ├── bash-policy.test.ts
 │       ├── command-findings.test.ts
 │       ├── process-registry.test.ts
+│       ├── scratchpad-registry.test.ts
 │       ├── settings.test.ts
 │       ├── settings-coverage.test.ts
 │       └── tool-notes.test.ts
@@ -153,6 +156,18 @@ pidantic/
 │       ├── session.test.ts
 │       ├── smoke.ts
 │       └── transcript.test.ts
+├── scratchpad/
+│   ├── index.ts
+│   ├── src/
+│   │   ├── config.ts
+│   │   ├── index.ts
+│   │   ├── paths.ts
+│   │   ├── prompt.ts
+│   │   └── settings.ts
+│   └── test/
+│       ├── config.test.ts
+│       ├── paths.test.ts
+│       └── session.test.ts
 ├── smart-compaction/
 │   └── index.ts
 └── localsearch/
@@ -275,6 +290,14 @@ not expressible in a schema remain in `promptGuidelines`.
   package is covered without any of them knowing who is listening, and with no listener the call does
   nothing. A listener belongs to the session that registered it and is dropped at `session_shutdown`,
   for the same reason mode writes are owned.
+  `scratchpad-registry.ts` is the fourth, and the only one whose state is not a single value: the
+  scratchpad extension publishes the disposable per-session directory it created, and safety reads
+  those roots on every call to decide that a write there needs neither a dialog nor a checkpoint.
+  Ownership works differently here for a reason — subagent children load this package too, so a
+  parent and its in-process children hold scratchpads at the same time. A claim that replaced the
+  previous one would strand the parent's root the moment a child started, and a release would
+  withdraw a root the releasing session never owned, so each instance holds its own entry and
+  membership is a question about every live root.
   All cross-extension channels keep their state in `process-registry.ts`, not in module scope: pi
   loads every extension entry point through its own jiti instance with module caching disabled, so a
   module two extensions import is evaluated once per extension. A module-level map would give each
@@ -389,6 +412,18 @@ not expressible in a schema remain in `promptGuidelines`.
   disable both budgets for the rest of the run. Compaction is cancelled alongside the run, later
   checks may abort again, and a parent abort that lands while the child is still being created stops
   the task prompt from being sent at all.
+- `scratchpad/` creates one disposable directory per session under the system temp directory,
+  publishes it on the shared scratchpad registry, and names it in the system prompt, so the model has
+  somewhere to put temporary files that is neither the user's project nor a path safety must ask
+  about. It gates nothing itself: the exemption is safety's, which is what keeps the policy in the
+  extension that owns policy and this one down to a directory and a claim. `paths.ts` decides where
+  that directory is and sanitizes the two names that become path components — the project and the
+  session id — neither of which this extension controls. `prompt.ts` holds the model-facing text, on
+  the same convention as `localsearch/src/prompt.ts` and `safety/src/prompt.ts`. `config.ts` and
+  `settings.ts` are split the same way safety's are: loading is what every session does, editing is
+  what one command does. Failure is soft throughout — a directory that cannot be created is reported
+  once and the session runs without one, which leaves safety asking about temp-directory writes
+  exactly as it did before.
 - `smart-compaction/` currently exposes a valid no-op entry point while its implementation is
   developed.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
@@ -403,6 +438,20 @@ not expressible in a schema remain in `promptGuidelines`.
   of `index.ts` so registration stays separable from logic. Pi's packages are also devDependencies,
   so an `index.ts` can be imported by a test and driven through a fake `ExtensionAPI` when the
   registration wiring itself is worth covering; `safety/test/harness.ts` does this.
+
+## Scratchpad tests
+
+`scratchpad/test/` covers the path shape and the sanitization of what names it, the independent
+per-field configuration fallbacks including a relative `baseDir` that is refused rather than
+resolved, and `session.test.ts`, which drives the real extension against a fake `ExtensionAPI`: the
+directory, the published root, the prompt fragment appended rather than substituted, deletion at
+shutdown and retention instead, a base directory that cannot be created, and the command's verbs
+alongside its settings fallthrough. The registry has its own suite in `shared/test/`, covering the
+prefix-trap sibling, the parent/child pair, and delivery across a second evaluation of the module.
+Safety's half of the feature is pinned where the rest of safety is: `risk-policy.test.ts` for the
+write root as a path rule, and `gate.test.ts` for what it means in a session — no dialog and no
+checkpoint for a scratchpad write, a checkpoint still taken for a Bash command that writes there, and
+a refusal in read-only mode.
 
 ## Subagent tests
 

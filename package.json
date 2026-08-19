@@ -20,6 +20,7 @@
 			"./stop/index.ts",
 			"./ui-tweaks/index.ts",
 			"./subagent/index.ts",
+			"./scratchpad/index.ts",
 			"./smart-compaction/index.ts"
 		]
 	},

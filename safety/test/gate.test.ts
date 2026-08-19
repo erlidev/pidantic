@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { claimPlanMode, createModeOwner, getSafetyMode, setPlanModeActive, wasSafetyApproved } from "../../shared/mode-registry.ts";
+import { claimScratchpad, createScratchpadOwner, resetScratchpadRegistry } from "../../shared/scratchpad-registry.ts";
 import { markToolNoteRenderer, toolNote } from "../../shared/tool-notes.ts";
 import { CHECKPOINT_NAMESPACE } from "../src/checkpoint.ts";
 import { DEFAULT_TOOLS, harness, outcome, repository } from "./harness.ts";
@@ -421,6 +422,65 @@ for (const mode of ["safe", "auto"] as const) {
 		assert.equal(gate.classifierCalls, 0);
 	});
 }
+
+/** A published scratch root, as the scratchpad extension publishes one at its own session_start. */
+async function scratchpad(t: Parameters<typeof repository>[0]): Promise<string> {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "safety-scratchpad-")));
+	claimScratchpad(createScratchpadOwner("test"), root);
+	t.after(async () => {
+		resetScratchpadRegistry();
+		await rm(root, { force: true, recursive: true });
+	});
+	return root;
+}
+
+for (const mode of ["safe", "auto"] as const) {
+	test(`${mode} writes into a published scratchpad without a dialog or a checkpoint`, async (t) => {
+		const cwd = await repository(t);
+		const root = await scratchpad(t);
+		const gate = await harness(t, { cwd, config: { mode, classifier: CLASSIFIER }, fetch: models });
+		await gate.startTurn();
+
+		assert.equal(await outcome(() => gate.toolCall("write", { path: join(root, "notes.md"), content: "scratch" })), "allowed");
+		assert.equal(await outcome(() => gate.toolCall("edit", { path: join(root, "notes.md"), newText: "more" })), "allowed");
+		// Nothing under the worktree changed, so there is nothing for a checkpoint to restore.
+		assert.equal((await checkpointRefs(cwd)).length, 0);
+		// A path that merely looks like the root is still an outside write.
+		assert.equal(await outcome(() => gate.toolCall("write", { path: `${root}-elsewhere/notes.md`, content: "x" })), "gated");
+		assert.equal(gate.classifierCalls, 0);
+
+		// The workspace write is what takes this request's checkpoint, and it takes it then.
+		assert.equal(await outcome(() => gate.toolCall("write", { path: "new.txt", content: "hello" })), "allowed");
+		assert.equal((await checkpointRefs(cwd)).length, 1);
+	});
+}
+
+test("a bash command writing into the scratchpad needs no dialog, but is still checkpointed", async (t) => {
+	const cwd = await repository(t);
+	const root = await scratchpad(t);
+	const gate = await harness(t, { cwd, config: { mode: "safe" } });
+	await gate.startTurn();
+
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: `echo result > ${root}/out.txt` })), "allowed");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: `cp tracked.txt ${root}/copy.txt` })), "allowed");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: `cat ${root}/out.txt` })), "allowed");
+	// Deletion is behaviour, not a path question: the scratchpad does not make `rm` unremarkable.
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: `rm ${root}/out.txt` })), "gated");
+	// A command cannot be shown to write only where it says it does, so recoverability is unchanged.
+	assert.equal((await checkpointRefs(cwd)).length, 1);
+});
+
+test("read-only mode refuses scratchpad writes like any other", async (t) => {
+	const cwd = await repository(t);
+	const root = await scratchpad(t);
+	const gate = await harness(t, { cwd, config: { mode: "read-only" } });
+
+	assert.equal(await outcome(() => gate.toolCall("write", { path: join(root, "notes.md"), content: "scratch" })), "denied");
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: `echo x > ${root}/out.txt` })), "denied");
+	// The mode's contract is that this session writes nothing, not that it writes nothing important.
+	assert.equal(await outcome(() => gate.toolCall("bash", { command: `cat ${root}/out.txt` })), "allowed");
+	assert.equal((await checkpointRefs(cwd)).length, 0);
+});
 
 test("checkpoints end with the run: shutdown clears them and a resumed session has none", async (t) => {
 	const cwd = await repository(t);

@@ -22,6 +22,7 @@ import {
 	setSafetyMode,
 	type SafetyMode,
 } from "../../shared/mode-registry.ts";
+import { isInScratchpad, scratchpadRoots } from "../../shared/scratchpad-registry.ts";
 import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
 import { clearToolNotes, recordToolNote, rendersToolNotes } from "../../shared/tool-notes.ts";
 import { SafetyAudit } from "./audit.ts";
@@ -540,6 +541,9 @@ export default function safety(pi: ExtensionAPI): void {
 				allowBinaries: config.allowBinaries,
 				denyBinaries: config.denyBinaries,
 				allowReadPaths: config.allowReadPaths,
+				// Read live rather than at startup: a scratchpad is published by another extension at its
+				// own session_start, and an in-process subagent child publishes its own while it runs.
+				allowWritePaths: scratchpadRoots(),
 			});
 			// Checkpointing follows recoverability, not the verdict. A held command is snapshotted before
 			// either the dialog or the classifier decides it, and a rule-allowed command that still writes
@@ -614,6 +618,11 @@ export default function safety(pi: ExtensionAPI): void {
 			const requested = writePath(event.input);
 			if (!requested) return denied("Safety could not determine the write target path.");
 			const path = await canonicalPath(ctx.cwd, requested);
+			// A scratchpad write is outside the worktree but changes nothing the user owns: the directory
+			// belongs to this session and is thrown away with it. It needs no dialog, and no checkpoint —
+			// there is nothing under the worktree for one to restore, and taking it would move the
+			// request's baseline for a file that is not part of the request's result.
+			if (isInScratchpad(path)) return undefined;
 			const external = !inside(ctx.cwd, path);
 			// The snapshot is taken even for an external write, which it cannot recover: fixing the request's
 			// baseline before anything else caused by the request moves is what makes /undo cover it all.

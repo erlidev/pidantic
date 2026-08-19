@@ -1,12 +1,13 @@
 # Editing configuration from inside pi
 
-Four extensions keep a JSON configuration file, and all four can be edited from the session they
+Five extensions keep a JSON configuration file, and all five can be edited from the session they
 affect rather than by leaving pi to hand-edit the file:
 
 | Command | File | Environment override |
 | --- | --- | --- |
 | [`/search-config`](extensions/localsearch.md#configuration) | `~/.pi/agent/localsearch.json` | `LOCALSEARCH_CONFIG` |
 | [`/safety-config`](extensions/safety.md#configuration) | `~/.pi/agent/safety.json` | `SAFETY_CONFIG` |
+| [`/scratchpad`](extensions/scratchpad.md#configuration) | `~/.pi/agent/scratchpad.json` | `SCRATCHPAD_CONFIG` |
 | [`/subagent-config`](extensions/subagent.md#budgets-and-interruption) | `~/.pi/agent/subagent.json` | `PI_SUBAGENT_CONFIG` |
 | [`/ui-tweaks`](extensions/ui-tweaks.md#configuration) | `~/.pi/agent/ui-tweaks.json` | `UI_TWEAKS_CONFIG` |
 
@@ -31,7 +32,9 @@ listing, the per-setting detail, value parsing, validation, and the argument men
 
 `/ui-tweaks` keeps its own verbs — `scroll`, `notify on|off`, `notify after`, `test` — and accepts
 the same key/value grammar for everything else. `/ui-tweaks config` prints the listing, since a bare
-`/ui-tweaks` prints its shorter status summary instead.
+`/ui-tweaks` prints its shorter status summary instead. `/scratchpad` is arranged the same way: its
+verbs are `list` and `clean`, `/scratchpad config` prints the listing, and a bare `/scratchpad`
+reports where the directory is and what is in it.
 
 A change is written to the file as it is made. There is no separate save step, and the write merges
 only the changed leaf, so hand-edited fields and fields the command does not know about survive it. A

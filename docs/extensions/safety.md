@@ -84,6 +84,9 @@ Consequences of that contract:
   them; `allowBinaries: ["rm"]` does not make `rm` run.
 - **`allowReadPaths` is not consulted.** The mode asks what a call can change, not what it can see,
   so a read is judged by its binary alone and a path outside the workspace is not itself a refusal.
+- **Scratch roots are not consulted either.** A [`scratchpad`](scratchpad.md) write is refused like
+  any other: the mode's contract is that this session writes nothing, not that it writes nothing
+  important. Reading a file already in a scratchpad is allowed, as any other read is.
 
 Like the rest of the extension, this is an approval workflow rather than a sandbox: user-entered `!`
 and `!!` commands still use pi's own path, and the allowlist bounds recognized binaries, not what a
@@ -106,6 +109,13 @@ dialog. The following classes confirm:
   separator, a here-document, or a redirection with no target;
 - paths or redirection targets outside the workspace; and
 - unrecognized binaries, unless an `auto` classifier verdict or configuration override allows them.
+
+A path — argument or redirection target, read or write — inside a live scratch root published by the
+[`scratchpad`](scratchpad.md) extension is not a finding at all. Those roots are read from the shared
+registry on every call rather than from configuration, since a scratchpad is per session and an
+in-process subagent child publishes its own while it runs. Nothing else about the command is
+softened: `rm` inside a scratch root is still a deletion command, an unrecognized binary is still
+residual, and a path outside both the workspace and every scratch root still confirms.
 
 Deterministically read-only commands may access path arguments outside the workspace when the path
 is inside an absolute directory listed in `allowReadPaths`. In `auto` mode an external read that is
@@ -221,6 +231,12 @@ the working directory, or when the checkpoint could not be created (no Git workt
 snapshot) — an unrecoverable write is never silently allowed. Paths outside the working directory are
 never checkpoint-protected, so they always confirm; the snapshot is still taken before such a write,
 because it fixes the baseline for everything the rest of the turn does.
+
+A write into a scratch root is the one outside-the-workspace path that neither confirms nor
+snapshots. The directory belongs to the session and is thrown away with it, so there is nothing under
+the worktree for a checkpoint to restore, and taking one would move the request's baseline for a file
+that is not part of the request's result. A Bash command that writes there is still snapshotted,
+because a command cannot be shown to write only where it appears to.
 
 No approval is remembered: when a write does reach a dialog, a second write to a file already
 approved earlier in the session prompts again, so each dialog reflects that specific call's target

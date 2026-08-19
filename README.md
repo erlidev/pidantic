@@ -1,7 +1,8 @@
 # Pidantic
 
-Pidantic is a Pi package containing eight extensions for web research, command approval, safety, planning,
-blocking subagents, interruption handling, terminal UI tweaks, and (currently) a smart-compaction placeholder. Pi loads the package's
+Pidantic is a Pi package containing nine extensions for web research, command approval, safety, planning,
+blocking subagents, interruption handling, disposable scratch space, terminal UI tweaks, and (currently) a
+smart-compaction placeholder. Pi loads the package's
 TypeScript entry points directly; there is no build step.
 
 The package is intended for interactive Pi sessions. `localsearch` can also run with hosted search
@@ -18,6 +19,7 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation mode ending in an approved Markdown implementation plan | Implemented |
 | [`ui-tweaks`](docs/extensions/ui-tweaks.md) | Fullscreen mouse-wheel scroll speed, a footer with context in tokens and a generation-rate readout, desktop notifications when something needs the user, and slash-command argument completion | Implemented |
 | [`subagent`](docs/extensions/subagent.md) | Blocking `spawn` tool with isolated child context, configurable parallelism, read-only exploration, reports, budgets, and live progress | Implemented |
+| [`scratchpad`](docs/extensions/scratchpad.md) | A per-session directory outside the workspace the model can write to without a confirmation | Implemented |
 | [`smart-compaction`](docs/extensions/smart-compaction.md) | Reserved extension entry point | Scaffold; no behavior |
 
 ## Install
@@ -70,6 +72,7 @@ fetch({"url":"https://docs.example.com/guide"})
 /stop stop after the current tool call
 /ui-tweaks scroll 5
 /ui-tweaks footer.context percent
+/scratchpad
 ```
 
 The bundled `ling-tiny` service is used only when safety's optional `auto` classifier is enabled and
@@ -293,7 +296,10 @@ pi --safety safe        # select the starting mode
 
 `safe` confirms irreversible or outward-facing Bash commands and every unknown tool call. A `write`
 or `edit` inside the workspace runs without a dialog once the request's checkpoint exists, since `/undo`
-restores it; one outside the workspace, or one with no usable checkpoint, still confirms. `auto`
+restores it; one outside the workspace, or one with no usable checkpoint, still confirms. The one
+exception is a path inside a live scratch root published by [`scratchpad`](docs/extensions/scratchpad.md),
+which runs with neither a dialog nor a checkpoint, and which a Bash command may also write to without
+its path becoming a finding. `auto`
 applies the same deterministic rules but may silently
 allow a structurally restricted unknown binary or an unknown tool call classified safe, judging the
 call's own arguments rather than the tool in the abstract. It also sends a read-only command whose
@@ -635,6 +641,54 @@ Missing or invalid configuration uses these defaults:
 `{urgency}` are substituted per argv element, and the argv is spawned directly with no shell. See the
 [ui-tweaks manual](docs/extensions/ui-tweaks.md) for backend details and the notification texts.
 
+## `scratchpad`
+
+Each session gets a private directory outside the workspace, created before the first turn and named
+in the system prompt, so temporary files have somewhere to go that is neither the user's project nor
+a path safety has to ask about:
+
+```text
+/tmp/pi-scratchpad-1000/pi-extensions-3f9c1a2b/019a2c3d-…/
+
+/scratchpad                     # where it is, what is in it, and when it goes away
+/scratchpad list                # name every entry with its size
+/scratchpad clean               # delete everything in it, keeping the directory
+/scratchpad retainOnExit on     # keep the directory when the session ends
+/scratchpad config              # every setting with its current value
+```
+
+The path carries the uid, the project, and the session id, because `/tmp` is shared, two checkouts
+share a basename, and two sessions in one project must not collide. The directory is created `0700`
+and deleted at session shutdown unless `retainOnExit` is set.
+
+The extension gates nothing itself. It publishes the directory on a shared registry, and `safety`
+reads that registry live: in `safe` and `auto`, a `write` or `edit` inside a scratch root runs with
+no dialog and takes no checkpoint — nothing under the worktree changed — and a Bash path argument or
+redirection target inside one stops being a finding. Nothing else is softened: `rm` in the scratchpad
+still confirms, an unrecognized binary is still residual, and a Bash command that can write is still
+checkpointed, since a command cannot be shown to write only where it says it does. `read-only` and
+plan mode are deliberately unaffected: their contract is that the session writes nothing, not that it
+writes nothing important.
+
+A directory that cannot be created is reported once and the session simply runs without one.
+Subagent children publish their own and withdraw only their own, so a child neither strands nor
+inherits its parent's.
+
+Configuration is loaded from `~/.pi/agent/scratchpad.json`, overridable with `SCRATCHPAD_CONFIG`:
+
+```json
+{
+  "enabled": true,
+  "baseDir": "",
+  "retainOnExit": false
+}
+```
+
+`baseDir` replaces both the temp directory and its uid level, for a host where `/tmp` is too small or
+mounted `noexec`; a relative value is refused rather than resolved against the process's directory.
+See the [scratchpad manual](docs/extensions/scratchpad.md) for the prompt text, the safety rules, and
+the lifecycle.
+
 ## `smart-compaction`
 
 The extension is registered so the package has a stable entry point for future work, but it currently
@@ -645,8 +699,8 @@ observable effect.
 
 - [Repository overview](docs/overview.md) — package layout and architecture
 - [Editing configuration from inside pi](docs/settings-commands.md) — the grammar shared by
-  `/search-config`, `/safety-config`, and `/ui-tweaks`, and the argument menu that says what each
-  setting takes and what it is set to now
+  `/search-config`, `/safety-config`, `/ui-tweaks`, and `/scratchpad`, and the argument menu that
+  says what each setting takes and what it is set to now
 - [Development guide](docs/development.md) — tests, smoke checks, and extension development
 - [localsearch manual](docs/extensions/localsearch.md) — extraction, filtering, provider behavior,
   and implementation details
@@ -655,4 +709,6 @@ observable effect.
 - [plan-mode manual](docs/extensions/plan-mode.md)
 - [stop manual](docs/extensions/stop.md)
 - [ui-tweaks manual](docs/extensions/ui-tweaks.md)
+- [subagent manual](docs/extensions/subagent.md)
+- [scratchpad manual](docs/extensions/scratchpad.md)
 - [smart-compaction status](docs/extensions/smart-compaction.md)
