@@ -23,7 +23,7 @@ import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts
 import { statusBadge } from "../../shared/status-registry.ts";
 import { autoCompactEnabled } from "./auto-compact.ts";
 import { withArgumentCompletions } from "./completion.ts";
-import { clampWheelLines, type ConfigPatch, configPath, DEFAULTS, loadConfig, MAX_WHEEL_LINES, type UiTweaksConfig, updateConfig } from "./config.ts";
+import { configPath, DEFAULTS, loadConfig, type UiTweaksConfig } from "./config.ts";
 import { createEditorFactory, type EditorFactory } from "./editor.ts";
 import { excerpt } from "./excerpt.ts";
 import { collectUsage, createFooter, type FooterState, type FooterStatus, type UsageEntry } from "./footer.ts";
@@ -262,7 +262,7 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 			failureReported = true;
 			ctx.ui.notify(
 				`ui-tweaks: notification via ${outcome.backend} failed — ${outcome.error ?? "unknown error"}. ` +
-					"Silence it with /ui-tweaks notify off, or set notifications.backend.",
+					"Silence it with /ui-tweaks notifications.enabled off, or set notifications.backend.",
 				"warning",
 			);
 		});
@@ -366,87 +366,19 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 		});
 	});
 
-	/**
-	 * Apply a change and keep it. A `/ui-tweaks` setting is a preference, not a session flag, so it
-	 * is written to the config file as it is made; only the failure is worth a separate line.
-	 */
-	async function persist(ctx: ExtensionCommandContext, patch: ConfigPatch, applied: string): Promise<void> {
-		try {
-			await updateConfig(patch);
-			ctx.ui.notify(applied, "info");
-		} catch (error) {
-			ctx.ui.notify(`${applied} (not saved: ${error instanceof Error ? error.message : String(error)})`, "warning");
-		}
-	}
-
 	pi.registerCommand("ui-tweaks", {
 		description: "Show or change scroll speed and attention notifications",
-		// A verb and a key can reach the same argument — `scroll 5` is also `scroll.wheelLines 5` — so
-		// the two sources are merged by what they would insert, and the verb's own row wins.
-		getArgumentCompletions: (prefix) => {
-			const seen = new Set<string>();
-			return [
-				...verbCompletions(prefix, config),
-				...settingCompletions(SETTINGS, prefix, {
-					current: config as unknown as Record<string, unknown>,
-					defaults: DEFAULTS as unknown as Record<string, unknown>,
-				}),
-			].filter((row) => {
-				if (seen.has(row.value)) return false;
-				seen.add(row.value);
-				return true;
-			});
-		},
+		// The verbs are the two arguments that are not settings; every field is reached by key.
+		getArgumentCompletions: (prefix) => [
+			...verbCompletions(prefix),
+			...settingCompletions(SETTINGS, prefix, {
+				current: config as unknown as Record<string, unknown>,
+				defaults: DEFAULTS as unknown as Record<string, unknown>,
+			}),
+		],
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const [verb, ...rest] = args.trim().split(/\s+/).filter(Boolean);
 			const value = rest.join(" ");
-
-			if (verb === "notify") {
-				if (value === "on" || value === "off") {
-					config.notifications.enabled = value === "on";
-					// A backend that failed under the old setting deserves a fresh chance to report.
-					failureReported = false;
-					await persist(ctx, { notifications: { enabled: config.notifications.enabled } }, `Notifications ${value}.`);
-					return;
-				}
-
-				if (rest[0] === "after") {
-					const requested = Number(rest[1]);
-					if (rest.length !== 2 || !Number.isFinite(requested) || requested < 0) {
-						ctx.ui.notify("Usage: /ui-tweaks notify after <seconds>", "warning");
-						return;
-					}
-					config.notifications.minRunSeconds = Math.floor(requested);
-					await persist(
-						ctx,
-						{ notifications: { minRunSeconds: config.notifications.minRunSeconds } },
-						config.notifications.minRunSeconds === 0
-							? "Notifying after every run."
-							: `Notifying after runs longer than ${config.notifications.minRunSeconds}s.`,
-					);
-					return;
-				}
-
-				ctx.ui.notify("Usage: /ui-tweaks notify on|off, or /ui-tweaks notify after <seconds>", "warning");
-				return;
-			}
-
-			if (verb === "scroll") {
-				const requested = Number(value);
-				if (!value || !Number.isFinite(requested)) {
-					ctx.ui.notify(`Usage: /ui-tweaks scroll <1-${MAX_WHEEL_LINES}>`, "warning");
-					return;
-				}
-				config.scroll.wheelLines = clampWheelLines(requested, config.scroll.wheelLines);
-				const lines = `${config.scroll.wheelLines} line${config.scroll.wheelLines === 1 ? "" : "s"} per notch`;
-				if (!applyWheelLines(tui, config.scroll.wheelLines)) {
-					// Still worth saving: the next fullscreen session is what the user is configuring.
-					await persist(ctx, { scroll: { wheelLines: config.scroll.wheelLines } }, `Wheel scroll: ${lines}, active in fullscreen mode.`);
-					return;
-				}
-				await persist(ctx, { scroll: { wheelLines: config.scroll.wheelLines } }, `Wheel scroll: ${lines}.`);
-				return;
-			}
 
 			if (verb === "test") {
 				const backend = await notifier.resolve(config.notifications);
@@ -464,8 +396,8 @@ export default function uiTweaks(pi: ExtensionAPI): void {
 				return;
 			}
 
-			// Everything past the verbs is a setting key. The verbs cover the two changes people make
-			// most; the schema covers the rest of the file, including the fields that had no command.
+			// Everything past the verbs is a setting key: the schema covers the whole file, so no field
+			// needs a verb of its own.
 			if (verb) {
 				const result = await runSettingsCommand({
 					args: verb === "config" ? value : args.trim(),

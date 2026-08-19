@@ -422,9 +422,9 @@ not expressible in a schema remain in `promptGuidelines`.
   flattens the Markdown of a finished reply into the one plain-text line a notification can carry,
   which no backend would render otherwise. A `/ui-tweaks` change is written to the configuration file
   as it is made rather than at a save step, through the shared per-leaf writer, so hand-edited fields
-  survive it. `settings.ts` declares the same file as keys, which is what lets the command reach the
-  fields its verbs never covered — the backend, the argv escape hatch, the trigger switches, the
-  sound, and the completion chain. `completion.ts` holds that chain's two decisions and no pi
+  survive it. `settings.ts` declares the whole file as keys, which is what lets the command drop the
+  verbs that duplicated a key — the wheel step and the two notification switches — and keep only the
+  two arguments that are not settings, `test` and `config`. `completion.ts` holds that chain's two decisions and no pi
   knowledge: whether the keystroke that just ran applied something another argument follows — the
   menu was open and is now closed, the text changed, and the cursor sits where a further argument
   would start, which is the trailing space pi gives a command name and a settings key gives itself —
@@ -652,12 +652,12 @@ sliding to zero, the chunk that ends it is spread over the silence it covers, an
 reaches the footer at most twice a second. The sparkline's series is pinned there too: it is a trace
 of the number on a one-second clock rather than one bar per reply, so it moves while a message
 streams, and a finished message's exact rate is its newest sample.
-`command.test.ts` drives the command itself against a fake `ExtensionAPI`, since the verbs and the
-key/value fallthrough share one handler: a verb writes only the field it names, a field no verb ever
-covered is reachable by key, `/ui-tweaks config` lists while a bare `/ui-tweaks` still summarises,
-and an unknown argument points at the listing. The argument menu is covered from the same place,
-since a verb and a key can reach the same value — `scroll 5` is also `scroll.wheelLines 5` — and the
-two sources are merged by what they would insert. It covers installation from the same end — a tui
+`command.test.ts` drives the command itself against a fake `ExtensionAPI`, since the two verbs and
+the key/value fallthrough share one handler: a change writes only the field it names, every field is
+reachable by key including by its trailing name alone, `/ui-tweaks config` lists while a bare
+`/ui-tweaks` still summarises, and an unknown argument points at the listing. The argument menu is
+covered from the same place: what each verb and key takes, and the value in force alongside the
+default for a numeric key. It covers installation from the same end — a tui
 session takes the editor slot and adds one provider wrapper, the setting withdraws the editor while
 the wrapper stays and passes requests through, and an editor another extension installed is left
 alone. The footer is covered there too, since pi mounts it nowhere else: the component pi

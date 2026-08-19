@@ -8,7 +8,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type SettingWrite, writeSettings } from "../../shared/settings.ts";
 
 /**
  * `auto` picks a backend from the platform and what is installed. The rest force one:
@@ -172,26 +171,3 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	};
 }
 
-/** The settings `/ui-tweaks` can change, as a patch against one of the file's sections. */
-export interface ConfigPatch {
-	scroll?: Partial<ScrollConfig>;
-	footer?: Partial<FooterConfig>;
-	autocomplete?: Partial<CompletionConfig>;
-	notifications?: Partial<NotificationConfig>;
-}
-
-/**
- * Persist one change. A `/ui-tweaks` setting takes effect and is kept — there is no separate save
- * step — so the shared writer merges the changed leaves into whatever the file already holds.
- * Fields this extension does not know about, and fields the user left at a default on purpose,
- * survive the write.
- */
-export async function updateConfig(patch: ConfigPatch, env: Record<string, string | undefined> = process.env): Promise<string> {
-	const path = configPath(env);
-	const writes: SettingWrite[] = [];
-	for (const [section, values] of Object.entries(patch)) {
-		for (const [field, value] of Object.entries(values ?? {})) writes.push({ key: `${section}.${field}`, value });
-	}
-	await writeSettings(path, writes);
-	return path;
-}

@@ -30,9 +30,9 @@ listing, the per-setting detail, value parsing, validation, and the argument men
 /safety-config denyBinaries none            # empty the list
 ```
 
-`/ui-tweaks` keeps its own verbs — `scroll`, `notify on|off`, `notify after`, `test` — and accepts
-the same key/value grammar for everything else. `/ui-tweaks config` prints the listing, since a bare
-`/ui-tweaks` prints its shorter status summary instead. `/scratchpad` is arranged the same way: its
+`/ui-tweaks` sets every field of its file by key and keeps only the two arguments that are not
+settings at all: `test`, which sends one notification, and `config`, which prints the listing, since
+a bare `/ui-tweaks` prints its shorter status summary instead. `/scratchpad` is arranged the same way: its
 verbs are `list` and `clean`, `/scratchpad config` prints the listing, and a bare `/scratchpad`
 reports where the directory is and what is in it.
 
@@ -102,9 +102,8 @@ What each type offers:
 
 `current` and `default` mark the rows worth knowing before changing anything, and a value that is
 both says so. A key is matched the same way [naming a setting](#naming-a-setting) works, so `sampler`
-finds `classifier.sampler` in the menu exactly as it does on the command line. `reset` continues with
-a key, and `/ui-tweaks`'s own verbs carry the same information — `scroll ⇥` offers the current step
-and the default.
+finds `classifier.sampler` in the menu exactly as it does on the command line, and `reset` continues
+with a key.
 
 None of this depends on any other extension: the rows are ordinary pi autocomplete items, produced by
 the extension whose command is being typed. `ui-tweaks` only changes *when* the menu appears — with

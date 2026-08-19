@@ -1,6 +1,6 @@
 /**
- * `/ui-tweaks` end to end against a fake `ExtensionAPI`: the verbs and the key/value fallthrough
- * share one handler, and only this level can show that they do not collide.
+ * `/ui-tweaks` end to end against a fake `ExtensionAPI`: the two verbs and the key/value
+ * fallthrough share one handler, and only this level can show that they do not collide.
  */
 
 import assert from "node:assert/strict";
@@ -123,16 +123,16 @@ async function driver(t: TestContext, options: DriverOptions = {}): Promise<Driv
 	};
 }
 
-test("the verbs keep working and write only the field they name", async (t) => {
+test("a change writes only the field it names", async (t) => {
 	const ui = await driver(t);
 
-	await ui.run("scroll 7");
-	await ui.run("notify after 30");
+	await ui.run("scroll.wheelLines 7");
+	await ui.run("notifications.minRunSeconds 30");
 	assert.deepEqual(await ui.stored(), { scroll: { wheelLines: 7 }, notifications: { minRunSeconds: 30 } });
-	assert.match(ui.last(), /Notifying after runs longer than 30s\./);
+	assert.match(ui.last(), /notifications\.minRunSeconds: 6s → 30s/);
 });
 
-test("a setting the verbs never covered is reachable by key", async (t) => {
+test("every field is reachable by key, including by its trailing name alone", async (t) => {
 	const ui = await driver(t);
 
 	await ui.run("notifications.backend terminal");
@@ -158,7 +158,7 @@ test("bare /ui-tweaks summarises and /ui-tweaks config lists", async (t) => {
 	assert.deepEqual(await ui.stored(), { scroll: { wheelLines: 4 } });
 });
 
-test("an unknown argument points at the listing rather than the verbs", async (t) => {
+test("an unknown argument points at the listing", async (t) => {
 	const ui = await driver(t);
 
 	await ui.run("nonsense on");
@@ -169,9 +169,8 @@ test("an unknown argument points at the listing rather than the verbs", async (t
 test("completion offers the verbs and the setting keys together", async (t) => {
 	const ui = await driver(t);
 
-	const values = ui.completions("no").map((option) => option.value);
-	assert.ok(values.includes("notify on"));
-	assert.ok(values.includes("notifications.sound "));
+	assert.equal(ui.completions("te")[0]?.value, "test");
+	assert.ok(ui.completions("no").map((option) => option.value).includes("notifications.sound "));
 });
 
 test("a tui session installs the completion chain, and the setting withdraws it", async (t) => {
@@ -211,8 +210,8 @@ test("the argument menu says what each verb and key takes", async (t) => {
 	const ui = await driver(t);
 
 	const rows = new Map(ui.completions("").map((option) => [option.label, option.description]));
-	assert.equal(rows.get("scroll"), "number 1–20 · lines moved per wheel notch");
-	assert.equal(rows.get("notify after"), "seconds ≥ 0 · how long a run must last before it notifies");
+	assert.equal(rows.get("test"), "send one notification now");
+	assert.equal(rows.get("scroll.wheelLines"), "number 1–20 · Lines moved per mouse-wheel notch in fullscreen mode");
 	assert.equal(rows.get("notifications.backend"), "auto|notify-send|osascript|… · How a notification is delivered; auto picks one from the host");
 	assert.equal(rows.get("notifications.sound"), "on|off · Ask the backend for its sound, and ring the terminal bell");
 	assert.equal(
@@ -221,17 +220,15 @@ test("the argument menu says what each verb and key takes", async (t) => {
 	);
 });
 
-test("a verb that takes a number offers the value in force and the default", async (t) => {
+test("a key that takes a number offers the value in force and the default", async (t) => {
 	const ui = await driver(t);
 
-	await ui.run("scroll 7");
-	assert.deepEqual(ui.completions("scroll ").map((option) => [option.value, option.description]), [
-		["scroll 7", "current · number 1–20"],
-		["scroll 3", "default · number 1–20"],
+	await ui.run("scroll.wheelLines 7");
+	assert.deepEqual(ui.completions("scroll.wheelLines ").map((option) => [option.value, option.description]), [
+		["scroll.wheelLines 7", "current · number 1–20"],
+		["scroll.wheelLines 3", "default · number 1–20"],
 	]);
-	// The verb and the key reach the same value; the menu lists it once.
-	assert.deepEqual(ui.completions("scroll ").filter((option) => option.value === "scroll 7").length, 1);
-	assert.deepEqual(ui.completions("notify after ").map((option) => option.label), ["6"]);
+	assert.deepEqual(ui.completions("notifications.minRunSeconds ").map((option) => option.label), ["6"]);
 });
 
 test("the footer replaces pi's own, and hands the slot back when it is turned off", async (t) => {

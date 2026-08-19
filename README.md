@@ -80,7 +80,7 @@ fetch({"url":"https://docs.example.com/guide"})
 /safety-config classifier.enabled on
 /plan
 /stop stop after the current tool call
-/ui-tweaks scroll 5
+/ui-tweaks scroll.wheelLines 5
 /ui-tweaks footer.context percent
 /ui-tweaks footer.status line
 /scratchpad
@@ -546,24 +546,24 @@ decisions without an interactive user.
 Four changes to Pi's interactive terminal UI, all inert outside the TUI:
 
 ```text
-/ui-tweaks                  # scroll step, footer, notification state, resolved backend, chaining, config path
-/ui-tweaks scroll 5         # 1-20 lines per mouse-wheel notch
+/ui-tweaks                                  # scroll step, footer, notification state, resolved backend, chaining, config path
+/ui-tweaks scroll.wheelLines 5              # 1-20 lines per mouse-wheel notch
 /ui-tweaks footer.enabled off               # give pi its own footer back
 /ui-tweaks footer.context percent           # or tokens, the default
 /ui-tweaks footer.status line               # or inline, the default, or off
-/ui-tweaks notify on        # or off
-/ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
-/ui-tweaks test             # send one notification now and report which backend answered
-/ui-tweaks config           # every setting in the file, grouped, with its current value
+/ui-tweaks notifications.enabled off        # stop raising notifications
+/ui-tweaks notifications.minRunSeconds 30   # seconds a run must last before it notifies; 0 notifies for every run
 /ui-tweaks autocomplete.chainArguments off  # stop chaining slash-command argument suggestions
 /ui-tweaks notifications.backend terminal   # change any setting by key
+/ui-tweaks test                             # send one notification now and report which backend answered
+/ui-tweaks config                           # every setting in the file, grouped, with its current value
 ```
 
 Every change takes effect immediately and is written to the config file as it is made; the write
 merges into the file, so hand-edited fields the command does not touch survive it.
 
-`scroll` sets how far one wheel notch moves in Pi's fullscreen mode, which Pi itself fixes at one
-line. It has no effect on the main-screen renderer, where the terminal emulator owns scrolling. Pi
+`scroll.wheelLines` sets how far one wheel notch moves in Pi's fullscreen mode, which Pi itself
+fixes at one line. It has no effect on the main-screen renderer, where the terminal emulator owns scrolling. Pi
 exposes no setting for this, so the value is written onto the live renderer; Pi builds a new renderer
 when fullscreen mode is toggled, and the value is re-applied at the next session, turn, or tool-call
 boundary.
@@ -627,7 +627,8 @@ reports once per session and then stays quiet. `auto` picks a configured `comman
 `terminal`, which writes an OSC 9 (or OSC 777 on foot and rxvt) escape and lets the terminal emulator
 raise the notification. The terminal backend needs no D-Bus session and no binary, so it also works
 over SSH, in containers, and in WSL; a terminal that implements neither sequence swallows it. Run
-`/ui-tweaks test` to see which one this host resolved to, and `/ui-tweaks notify off` to stop them.
+`/ui-tweaks test` to see which one this host resolved to, and `/ui-tweaks notifications.enabled off`
+to stop them.
 
 Completing a slash command name with Tab also offers that command's arguments straight away. Pi
 applies the completion, closes the menu, and asks for nothing further, so `/safety-config ` — the one

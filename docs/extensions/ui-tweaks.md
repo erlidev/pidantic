@@ -14,8 +14,8 @@ Four small changes to pi's interactive terminal UI:
 
 Which notification mechanism works depends on the host — a desktop session, an SSH connection, a
 container, WSL — so every path fails soft: a backend that cannot deliver reports once per session and
-is then quiet. `/ui-tweaks test` says what the current host resolved to, and `/ui-tweaks notify off`
-turns the whole thing off.
+is then quiet. `/ui-tweaks test` says what the current host resolved to, and
+`/ui-tweaks notifications.enabled off` turns the whole thing off.
 
 All four are inert outside the interactive TUI (`pi -p`, JSON mode, RPC), where there is no
 renderer to configure, no editor to type in, and no user watching for a popup.
@@ -29,27 +29,24 @@ no build step and no service to run.
 ## The command
 
 ```text
-/ui-tweaks                  # current scroll step, footer, notification state, resolved backend, chaining, config path
-/ui-tweaks scroll 5         # 1–20 lines per wheel notch
-/ui-tweaks footer.enabled off               # give pi its own footer back
-/ui-tweaks footer.context percent           # or tokens, the default
-/ui-tweaks footer.status line               # or inline, the default, or off
-/ui-tweaks notify on        # or off
-/ui-tweaks notify after 30  # seconds a run must last before it notifies; 0 notifies for every run
-/ui-tweaks test             # send one notification now and report which backend answered
-/ui-tweaks config           # every setting in the file, grouped, with its current value
-/ui-tweaks notifications.backend terminal   # change any setting by key
+/ui-tweaks                                 # current scroll step, footer, notification state, resolved backend, chaining, config path
+/ui-tweaks scroll.wheelLines 5             # 1–20 lines per wheel notch
+/ui-tweaks footer.enabled off              # give pi its own footer back
+/ui-tweaks footer.context percent          # or tokens, the default
+/ui-tweaks footer.status line              # or inline, the default, or off
+/ui-tweaks notifications.enabled off       # stop raising notifications
+/ui-tweaks notifications.minRunSeconds 30  # seconds a run must last before it notifies; 0 notifies for every run
+/ui-tweaks notifications.backend terminal  # change any setting by key
+/ui-tweaks test                            # send one notification now and report which backend answered
+/ui-tweaks config                          # every setting in the file, grouped, with its current value
 ```
 
-Completing an argument says what it takes: `scroll` and `notify after` are listed with their range
-and offer the value in force alongside the default, and every setting key carries its type before its
-description. The verbs above cover the two changes people make most. Everything else in the file —
-the backend, the `command` argv, the two trigger switches, the sound, the timeout, and the
-completion chain — is
-set by key with the same grammar
-`/search-config` and `/safety-config` use, described in
-[Editing configuration from inside pi](../settings-commands.md). A key/value change re-reads the
-file and re-applies the wheel step, so it takes effect at once like the verbs do.
+Every field in the file is set by key with the same grammar `/search-config` and `/safety-config`
+use, described in [Editing configuration from inside pi](../settings-commands.md); `test` and
+`config` are the only arguments that are not settings. Completing an argument says what it takes:
+each key carries its type before its description, and a numeric key such as `scroll.wheelLines`
+offers the value in force alongside the default. A change re-reads the file and re-applies the wheel
+step, the footer, and the completion chain, so it takes effect at once.
 
 A change takes effect immediately and is written to `~/.pi/agent/ui-tweaks.json` as it is made —
 these are preferences, not session flags, so there is no separate save step. The write merges into
@@ -400,7 +397,7 @@ Three of pi's UI seams are shared, and this extension treats each one the way pi
   chain calls `getEditorComponent()` first and installs its subclass only when the slot is empty. An
   editor another extension installed is left alone, and the autocomplete wrapper — which stacks
   properly — keeps working on its own. `autocomplete.chainArguments off` withdraws both.
-- **Wheel step.** `scroll` writes `wheelScrollLines` onto pi's live fullscreen renderer, which is
+- **Wheel step.** `scroll.wheelLines` writes `wheelScrollLines` onto pi's live fullscreen renderer, which is
   process-wide but a single scalar on a pi-owned object with no other realistic writer. It is
   feature-detected and skipped on a renderer that lacks the field.
 

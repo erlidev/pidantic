@@ -1,15 +1,13 @@
 /**
  * The `ui-tweaks.json` fields `/ui-tweaks` can read and change by key.
  *
- * The command keeps its verbs for the two changes people make most — `notify on|off` and
- * `scroll <n>` — and falls through to this schema for everything else, so the backend, the argv
- * escape hatch, the two trigger switches, and the completion chain stop being file-only. The verbs'
- * own completions live here too, since what a verb accepts is the same kind of fact as what a key
- * accepts, and both are what the argument menu shows.
+ * Every field is edited by key, so the command keeps only the two verbs that are not settings at
+ * all: `test`, which sends a notification, and `config`, which lists the file. The verbs' own
+ * completions live here too, alongside the keys they sit beside in the argument menu.
  */
 
 import type { SettingCompletion, SettingSpec } from "../../shared/settings.ts";
-import { BACKENDS, CONTEXT_DISPLAYS, DEFAULTS, MAX_WHEEL_LINES, STATUS_DISPLAYS, type UiTweaksConfig } from "./config.ts";
+import { BACKENDS, CONTEXT_DISPLAYS, MAX_WHEEL_LINES, STATUS_DISPLAYS } from "./config.ts";
 
 export const SETTINGS: readonly SettingSpec[] = [
 	{
@@ -88,43 +86,13 @@ export const SETTINGS: readonly SettingSpec[] = [
 	{ key: "notifications.sound", group: "Notifications", kind: "boolean", description: "Ask the backend for its sound, and ring the terminal bell" },
 ];
 
-/** The verbs `/ui-tweaks` keeps, each saying what it takes before what it does. */
+/** The verbs `/ui-tweaks` keeps: the two arguments that are actions rather than settings. */
 const VERBS: readonly { value: string; description: string }[] = [
-	{ value: "notify on", description: "raise desktop notifications" },
-	{ value: "notify off", description: "stop raising them" },
-	{ value: "notify after ", description: "seconds ≥ 0 · how long a run must last before it notifies" },
-	{ value: "scroll ", description: `number 1–${MAX_WHEEL_LINES} · lines moved per wheel notch` },
 	{ value: "test", description: "send one notification now" },
 	{ value: "config", description: "list every setting with its current value" },
 ];
 
-/**
- * A number a verb takes, offered as the value in force and the one it would return to — the two a
- * change is almost always relative to, and the only concrete rows a free number can honestly show.
- */
-function numbers(head: string, typed: string, current: number, fallback: number, hint: string): SettingCompletion[] {
-	return [...new Set([current, fallback])]
-		.map(String)
-		.filter((value) => value.startsWith(typed))
-		.map((value) => ({
-			value: `${head}${value}`,
-			label: value,
-			description: `${current === fallback ? "current, default" : Number(value) === current ? "current" : "default"} · ${hint}`,
-		}));
-}
-
-/**
- * Completions for the verbs, including what the two that take a number can be given. Everything past
- * the verbs is a setting key and is answered by the shared schema instead.
- */
-export function verbCompletions(prefix: string, config: UiTweaksConfig): SettingCompletion[] {
-	const scroll = /^scroll\s+(\S*)$/.exec(prefix);
-	if (scroll) {
-		return numbers("scroll ", scroll[1] as string, config.scroll.wheelLines, DEFAULTS.scroll.wheelLines, `number 1–${MAX_WHEEL_LINES}`);
-	}
-	const after = /^notify\s+after\s+(\S*)$/.exec(prefix);
-	if (after) {
-		return numbers("notify after ", after[1] as string, config.notifications.minRunSeconds, DEFAULTS.notifications.minRunSeconds, "seconds ≥ 0");
-	}
-	return VERBS.filter((verb) => verb.value.startsWith(prefix)).map((verb) => ({ value: verb.value, label: verb.value.trim(), description: verb.description }));
+/** Completions for the verbs. Everything else is a setting key, answered by the shared schema. */
+export function verbCompletions(prefix: string): SettingCompletion[] {
+	return VERBS.filter((verb) => verb.value.startsWith(prefix)).map((verb) => ({ value: verb.value, label: verb.value, description: verb.description }));
 }
