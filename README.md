@@ -53,15 +53,6 @@ The first run creates the `pidantic-searxng` container. Use `docker stop pidanti
 `docker start pidantic-searxng` after that. Do not replace this with a bare SearXNG container: the
 default image configuration does not enable the JSON search API required by localsearch.
 
-```text
-search({"query": "Rust async cancellation"})
-fetch({"url": "https://docs.example.com/guide"})
-/search-status
-/safety safe
-/sandbox
-/plan
-```
-
 That's everything needed for the core setup: no API keys and no manual configuration editing. The
 other extensions work as soon as the package is installed.
 
