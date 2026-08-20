@@ -6,7 +6,7 @@
 use_default_settings: true
 
 general:
-  instance_name: "localsearch"
+  instance_name: "pidantic"
   # No usage statistics for a single-user instance.
   enable_metrics: false
 
@@ -18,9 +18,9 @@ search:
     - json
 
 server:
-  # Overridden by SEARXNG_SECRET in docker-compose.yml. Only matters for signed URLs on a
+  # Overridden by SEARXNG_SECRET in docker-compose-cpu.yml. Only matters for signed URLs on a
   # multi-user instance; this one is bound to loopback.
-  secret_key: "localsearch"
+  secret_key: "pidantic"
   limiter: false
   public_instance: false
   image_proxy: false

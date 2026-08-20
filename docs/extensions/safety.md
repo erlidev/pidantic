@@ -628,11 +628,12 @@ marked. The full grammar is in
 
 ## Bundled classifier service
 
-The Compose `ling-tiny` service exposes the default OpenAI-compatible endpoint on loopback port
-8989. It requires Docker, the NVIDIA container runtime, a suitable GPU, and the model download:
+The `ling-tiny` service in the GPU-only `docker-compose.yml` exposes the default OpenAI-compatible
+endpoint on port 8989. It requires Docker, the NVIDIA container runtime, a suitable GPU, and the
+model download:
 
 ```bash
-docker compose up -d ling-tiny
+docker compose up -d
 curl http://localhost:8989/v1/models
 ```
 

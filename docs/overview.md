@@ -20,6 +20,7 @@ pidantic/
 ├── package-lock.json
 ├── tsconfig.json
 ├── docker-compose.yml
+├── docker-compose-cpu.yml
 ├── docker/
 │   └── searxng-settings.yml
 ├── docs/
@@ -230,7 +231,7 @@ pidantic/
   TypeScript type stripping.
 - `types/` contains the narrow local declaration for `turndown-plugin-gfm`, which does not publish
   its own TypeScript declarations.
-- `docker-compose.yml` defines the SearXNG and Ling 3.0 Tiny services.
+- `docker-compose.yml` (project `pidantic`) defines the GPU-only Ling 3.0 Tiny service; `docker-compose-cpu.yml` (project `pidantic-cpu`) defines the CPU-only SearXNG service.
 
 ## Documentation
 

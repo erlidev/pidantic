@@ -1,46 +1,16 @@
-# Shared local services for this package.
+# GPU-only local services for this package.
 #
 #   docker compose up -d
-#   curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
 #   curl http://localhost:8989/v1/models                     # Ling 3.0 Tiny
 #
-# SearXNG binds to loopback only: its limiter is off and it has no auth, so it must not be
-# reachable off-host. Ling is exposed on all host interfaces to preserve the original Docker port
-# mapping.
+# The CPU-only SearXNG search service lives in docker-compose-cpu.yml (project `pidantic-cpu`)
+# so each stack starts and stops independently.
+#
+# Ling is exposed on all host interfaces to preserve the original Docker port mapping.
 
-# Preserve the existing project identity after moving this file from the localsearch directory.
-# The services are package-wide despite the legacy Docker names.
-name: localsearch
+name: pidantic
 
 services:
-  # Primary web search provider. Aggregates Google, Bing and DuckDuckGo, and handles their
-  # anti-bot measures properly — direct scraping of those engines does not work from here.
-  searxng:
-    image: searxng/searxng:latest
-    container_name: localsearch-searxng
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:8888:8080"
-    volumes:
-      - ./docker/searxng-settings.yml:/etc/searxng/settings.yml:ro
-    environment:
-      - SEARXNG_BASE_URL=http://localhost:8888/
-      # Override for a real secret if you ever expose this beyond loopback:
-      #   echo "SEARXNG_SECRET=$(openssl rand -hex 32)" > .env
-      - SEARXNG_SECRET=${SEARXNG_SECRET:-localsearch}
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
-    healthcheck:
-      test: ["CMD", "wget", "-qO", "-", "http://localhost:8080/healthz"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-
   ling-tiny:
     image: vllm/vllm-openai:nightly
     container_name: ling-tiny

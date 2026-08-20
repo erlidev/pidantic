@@ -11,7 +11,7 @@ export function noProviderMessage(
 	return (
 		`web search failed: no provider returned results (${detail}). ` +
 		`Set SEARXNG_URL to a reachable SearXNG JSON API (currently ${cfg.searxngUrl}), start the bundled service with ` +
-		"`docker compose up -d`, or configure EXA_API_KEY, TAVILY_API_KEY, or BRAVE_API_KEY."
+		"`docker compose -f docker-compose-cpu.yml up -d`, or configure EXA_API_KEY, TAVILY_API_KEY, or BRAVE_API_KEY."
 	);
 }
 

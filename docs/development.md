@@ -23,13 +23,15 @@ extensions belong there unless an extension requires deliberate dependency isola
 
 ## Shared services
 
-The root Compose stack defines all local Docker services. SearXNG listens on `127.0.0.1:8888`; the
-optional Ling 3.0 Tiny classifier listens on `http://localhost:8989` when safety `auto` mode is used.
+Two root Compose files split the local Docker services by hardware. `docker-compose.yml` (project
+`pidantic`) is GPU-only and runs the optional Ling 3.0 Tiny classifier on `http://localhost:8989`
+when safety `auto` mode is used; `docker-compose-cpu.yml` (project `pidantic-cpu`) is CPU-only and
+runs SearXNG on `127.0.0.1:8888`. The distinct project names keep the two stacks independent.
 
 ```bash
-docker compose up -d searxng
+docker compose -f docker-compose-cpu.yml up -d
 curl 'http://localhost:8888/search?q=test&format=json'
-docker compose up -d ling-tiny
+docker compose up -d
 curl http://localhost:8989/v1/models
 ```
 
@@ -70,10 +72,11 @@ result — is the behavior under test. `safety/test/harness.ts` is the worked ex
 
 The Ling service requires Docker with the NVIDIA container runtime and a GPU with enough memory
 for the configured 65,536-token context window (a little over 16GB VRAM). The first launch
-downloads the model into the host Hugging Face cache. Stop the complete stack with:
+downloads the model into the host Hugging Face cache. Stop each project independently:
 
 ```bash
 docker compose down
+docker compose -f docker-compose-cpu.yml down
 ```
 
 ## Releasing

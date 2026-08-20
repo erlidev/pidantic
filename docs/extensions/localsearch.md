@@ -56,7 +56,7 @@ refusing: `curl 'http://localhost:8888/search?q=test&format=json' | jq '.unrespo
 ### 1. Services
 
 ```bash
-docker compose up -d searxng
+docker compose -f docker-compose-cpu.yml up -d
 curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
 ```
 
@@ -383,7 +383,7 @@ Failures are one actionable line, not a stack trace:
 
 ```
 web search failed: no provider returned results (searxng: connection refused; tavily: no API key).
-Start SearXNG: docker compose up -d
+Start SearXNG: docker compose -f docker-compose-cpu.yml up -d
 ```
 
 Provider used, timings, quota and pool size go to the tool's `details`. Provider degradation is also
