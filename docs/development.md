@@ -91,6 +91,15 @@ runtime dependencies of `package-lock.json`. Two consequences are worth keeping 
 - Everything tracked in Git ships, including `docs/`, `docker/`, and the test suites. There is no
   `files` allowlist to maintain, but nothing secret belongs in the tree either.
 
+Work happens on the `dev` branch. It is pushed to the remote, so it can be tested as a pinned
+source before it is merged to `main`:
+
+```bash
+pi install https://github.com/erlidev/pidantic@dev
+```
+
+When the branch is ready, merge it into `main` and release as below.
+
 An unpinned source (`https://github.com/erlidev/pidantic`) tracks the default branch, so pushing to
 `main` releases to every consumer that runs `pi update --extensions`. A version is a Git tag, which
 is what a consumer pins with `<url>@<tag>`:
