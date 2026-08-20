@@ -33,11 +33,25 @@ runs. To develop against a local checkout instead, clone it, run `npm ci`, and
 
 ## Quick start
 
-Start the bundled SearXNG search service, then use the tools in Pi:
+Start SearXNG from any directory. This downloads Pidantic's small SearXNG configuration to your
+user config directory, then starts a loopback-only container:
 
 ```bash
-docker compose -f docker-compose-cpu.yml up -d
+searxng_config="${XDG_CONFIG_HOME:-$HOME/.config}/pidantic/searxng"
+mkdir -p "$searxng_config"
+curl -fsSL https://raw.githubusercontent.com/erlidev/pidantic/main/docker/searxng-settings.yml \
+  -o "$searxng_config/settings.yml"
+docker run --detach --name pidantic-searxng --restart unless-stopped \
+  --publish 127.0.0.1:8888:8080 \
+  --volume "$searxng_config/settings.yml:/etc/searxng/settings.yml:ro" \
+  --env SEARXNG_BASE_URL=http://localhost:8888/ --env SEARXNG_SECRET=pidantic \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETGID --cap-add SETUID \
+  searxng/searxng:latest
 ```
+
+The first run creates the `pidantic-searxng` container. Use `docker stop pidantic-searxng` and
+`docker start pidantic-searxng` after that. Do not replace this with a bare SearXNG container: the
+default image configuration does not enable the JSON search API required by localsearch.
 
 ```text
 search({"query": "Rust async cancellation"})
@@ -48,8 +62,8 @@ fetch({"url": "https://docs.example.com/guide"})
 /plan
 ```
 
-That's everything needed for the core setup: no API keys, no configuration files. The other
-extensions work as soon as the package is installed.
+That's everything needed for the core setup: no API keys and no manual configuration editing. The
+other extensions work as soon as the package is installed.
 
 ## What's included
 
@@ -224,8 +238,9 @@ installing it has no observable effect.
 
 ## Services
 
-Two Docker Compose files split the local services by hardware; each has its own project name, so
-stopping one doesn't stop the other:
+The [quick start](#quick-start) is the normal SearXNG setup and works independently of the directory
+where Pi is running. A source checkout also has two Docker Compose files for development; each has
+its own project name, so stopping one doesn't stop the other:
 
 ```bash
 # SearXNG — the default web-search provider. CPU-only.

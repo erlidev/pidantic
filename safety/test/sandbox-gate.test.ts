@@ -9,7 +9,8 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { markSandboxHost, resetSandboxRegistry, sandboxCommand, wasSandboxExempt } from "../../shared/sandbox-registry.ts";
+import { markSandboxExempt, markSandboxHost, resetSandboxRegistry, sandboxCommand, sandboxUserCommand, wasSandboxExempt } from "../../shared/sandbox-registry.ts";
+import { claimPlanMode, createModeOwner, setPlanModeActive } from "../../shared/mode-registry.ts";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { markToolNoteRenderer, toolNote } from "../../shared/tool-notes.ts";
@@ -238,6 +239,112 @@ test("an exempt binary is never wrapped, anywhere in the chain", async (t) => {
 	assert.ok(sandboxCommand("ls -la", {})?.startsWith("exec "));
 	// Matched by basename too, so an absolute path is the same decision.
 	assert.equal(sandboxCommand("/usr/bin/docker ps", {}), undefined);
+});
+
+test("pi's shell prefix runs inside the box rather than around it", async (t) => {
+	const cwd = await repository(t);
+	if (!(await sandboxUsable(cwd))) return t.skip("bubblewrap is not usable on this machine");
+	actAsHost(t);
+	await harness(t, { cwd, config: { mode: "yolo", sandbox: SANDBOX_ON } });
+
+	// confirm-bash reads `shellCommandPrefix` and hands it to the wrapper rather than letting pi
+	// prepend it after the rewrite, which would run the user's shell setup on the host while the
+	// command it is meant to shape ran inside the sandbox.
+	const wrapped = sandboxCommand("make", {}, { commandPrefix: "source .envrc" }) ?? "";
+	assert.ok(wrapped.startsWith("exec "));
+	assert.ok(wrapped.endsWith(`'source .envrc\nmake'`), wrapped);
+	// It appears once, inside the quoted script, and nowhere in the outer command line.
+	assert.equal(wrapped.indexOf("source .envrc"), wrapped.lastIndexOf("source .envrc"));
+	// Passing no prefix is the case for a user who has not set one, and changes nothing.
+	assert.ok(sandboxCommand("make", {})?.endsWith("make"));
+});
+
+test("user commands are confined only when the setting asks for it", async (t) => {
+	const cwd = await repository(t);
+	if (!(await sandboxUsable(cwd))) return t.skip("bubblewrap is not usable on this machine");
+	actAsHost(t);
+
+	// `!` and `!!` are the user speaking directly, so the default leaves them alone: confining them
+	// would break the escape hatch people reach for when the model's sandboxed commands do not work.
+	const off = await harness(t, { cwd, config: { mode: "yolo", sandbox: SANDBOX_ON } });
+	assert.equal(sandboxUserCommand("ls -la"), undefined);
+	await off.shutdown();
+
+	const on = await harness(t, { cwd, config: { mode: "yolo", sandbox: { ...SANDBOX_ON, userCommands: true } }, keepRegistry: false });
+	assert.ok(sandboxUserCommand("ls -la")?.startsWith("exec "));
+	// Every per-call rule the tool path obeys applies here too, since it is the same decision.
+	await on.invoke("sandbox", "off");
+	assert.equal(sandboxUserCommand("ls -la"), undefined);
+});
+
+test("an exempt binary is never confined as a user command either", async (t) => {
+	const cwd = await repository(t);
+	if (!(await sandboxUsable(cwd))) return t.skip("bubblewrap is not usable on this machine");
+	actAsHost(t);
+	await harness(t, { cwd, config: { mode: "yolo", sandbox: { ...SANDBOX_ON, userCommands: true, exempt: ["docker"] } } });
+	assert.equal(sandboxUserCommand("docker ps"), undefined);
+	assert.ok(sandboxUserCommand("ls")?.startsWith("exec "));
+});
+
+test("a bwrap startup failure is explained, and output that merely mentions bwrap is not", async (t) => {
+	const cwd = await repository(t);
+	if (!(await sandboxUsable(cwd))) return t.skip("bubblewrap is not usable on this machine");
+	actAsHost(t);
+	const gate = await harness(t, { cwd, config: { mode: "yolo", sandbox: SANDBOX_ON } });
+
+	const failed = await gate.toolResult("bash", { command: "make" }, "bwrap: Creating new namespace failed: Operation not permitted");
+	assert.match(failed?.content?.[0]?.text ?? "", /the command never ran/);
+
+	// A command that printed somebody else's bwrap error is reporting, not failing to start: the
+	// prefix is only a signal on the first line, since bwrap fails before it execs anything.
+	const grepped = await gate.toolResult("bash", { command: "grep -r bwrap /var/log" }, "/var/log/setup.log:12: bwrap: Creating new namespace failed");
+	assert.equal(grepped, undefined);
+
+	// A call that never entered the box cannot have produced a bwrap error, whatever it printed.
+	const escaped = { command: "bwrap --help", sandbox: false };
+	markSandboxExempt(escaped);
+	assert.equal(await gate.toolResult("bash", escaped, "bwrap: Creating new namespace failed"), undefined);
+});
+
+test("plan mode does not make a broken sandbox somebody else's problem", async (t) => {
+	const cwd = await repository(t);
+	actAsHost(t);
+	const planOwner = createModeOwner("test-plan");
+	const gate = await harness(t, {
+		cwd,
+		config: { mode: "safe", sandbox: { ...SANDBOX_ON, bwrapPath: "/nonexistent/bwrap", onUnavailable: "refuse" } },
+	});
+	claimPlanMode(planOwner);
+	setPlanModeActive(planOwner, true);
+	t.after(() => setPlanModeActive(planOwner, false));
+
+	// Plan mode's commands are wrapped like any other, so confinement being unavailable is as much a
+	// fact about them: the warning fires and `refuse` still refuses.
+	const result = await gate.toolCall("bash", { command: "ls" });
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /sandbox is unavailable/);
+	assert.ok(gate.notices.some((notice) => notice.message.includes("Sandbox unavailable")));
+
+	// The mode badge goes, because plan mode is what gates now. The sandbox badge stays, because
+	// confinement is orthogonal to gating and withdrawing it would claim commands are unconfined.
+	assert.equal(gate.status(), undefined);
+	assert.equal(gate.statusFor("sandbox"), "Sandbox: unavailable");
+});
+
+test("plan mode raises no escape dialog, since plan mode may refuse the call itself", async (t) => {
+	const cwd = await repository(t);
+	if (!(await sandboxUsable(cwd))) return t.skip("bubblewrap is not usable on this machine");
+	actAsHost(t);
+	const gate = await harness(t, { cwd, config: { mode: "yolo", sandbox: SANDBOX_ON }, interactive: true, dialog: "approve" });
+	const planOwner = createModeOwner("test-plan");
+	claimPlanMode(planOwner);
+	setPlanModeActive(planOwner, true);
+	t.after(() => setPlanModeActive(planOwner, false));
+
+	const input = { command: "mount /dev/sdb1 /mnt", sandbox: false, reason: "needs a real mount" };
+	await gate.toolCall("bash", input);
+	// Same reasoning as read-only mode: a dialog whose approval may grant nothing is not asked.
+	assert.equal(wasSandboxExempt(input), false);
 });
 
 test("the badge says what is happening rather than what was configured", async (t) => {

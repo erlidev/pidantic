@@ -67,7 +67,12 @@ export function buildSandboxArgv(profile: ResolvedProfile, options: ArgvOptions 
 	argv.push("--die-with-parent", "--new-session");
 	// `--unshare-user` is what makes the rest possible without privilege; it also makes setuid inert,
 	// which is why a privilege command cannot escalate inside the box.
-	argv.push("--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts", "--unshare-cgroup");
+	argv.push("--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts");
+	// `-try` on this one alone: a cgroup namespace needs CONFIG_CGROUPS and a kernel new enough to
+	// carry CLONE_NEWCGROUP, and where it is missing the hard form fails the whole sandbox. Nothing
+	// in `hazards.ts` rests on it — it hides the host's cgroup paths and nothing more — so skipping
+	// it costs a little defence in depth and buys the sandbox on kernels that cannot provide it.
+	argv.push("--unshare-cgroup-try");
 	if (!profile.network) argv.push("--unshare-net");
 	argv.push("--hostname", options.hostname || "pidantic");
 

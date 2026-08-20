@@ -9,9 +9,14 @@ boundary around Bash alone: it decides what a command *can* reach, whether or no
 Where confinement provably answers a question the modes would have raised, the dialog is retired
 rather than duplicated — see [Sandbox](#sandbox).
 
-User-entered `!` and `!!` Bash commands use Pi's separate path and bypass the gate entirely; they are
-confined only if `sandbox.userCommands` is on. Pi's own `read`, `write`, and `edit` tools run inside
-Pi's process and cannot be namespaced, so they are covered by the modes and checkpoints alone.
+User-entered `!` and `!!` Bash commands use Pi's separate path and bypass the gate entirely — you
+typed them, so nothing asks. They are confined only if `sandbox.userCommands` is on, which is off by
+default: confining them would break the escape hatch people reach for precisely when the model's
+sandboxed commands are not working. With the setting on, `confirm-bash`'s `user_bash` handler applies
+the same wrapper the tool path uses, and every per-call rule — `/sandbox off`, an exempt binary, an
+unavailable sandbox — answers the same way it does there. Pi's own `read`, `write`, and `edit` tools
+run inside Pi's process and cannot be namespaced, so they are covered by the modes and checkpoints
+alone.
 
 ## Modes and controls
 
@@ -70,10 +75,12 @@ success. A
 subagent child inherits its parent's mode but writes neither half of this status: it shares the
 parent's UI context, so the line it would write over belongs to the session the user is looking at.
 
-While plan mode is active, safety publishes neither half either. Plan mode takes precedence and
-safety's tool hook is inert, so an indicator beside plan's own would say two things are holding the
-session back when only one of them can refuse anything. The mode itself is untouched — it is what the
-session returns to — and both halves are written again the moment plan mode ends. Safety learns of
+While plan mode is active, safety publishes neither half of the *mode* status. Plan mode takes
+precedence and safety's tool hook is inert, so an indicator beside plan's own would say two things are
+holding the session back when only one of them can refuse anything. The mode itself is untouched — it
+is what the session returns to — and both halves are written again the moment plan mode ends. The
+sandbox badge is not withdrawn with it: confinement is orthogonal to gating and is still happening to
+plan mode's own commands, so hiding it would say they run unconfined when they do not. Safety learns of
 that transition from `onPlanModeChange` in `shared/mode-registry.ts`, since pi emits no event for
 another extension's toggle; the listener is registered at `session_start` and dropped at
 `session_shutdown`, like the mode claim beside it.
@@ -294,22 +301,45 @@ namespaces are disabled, the session-start probe fails and `sandbox.onUnavailabl
 - **`warn`** (the default): one warning, commands run unconfined, and **nothing is relaxed** — open
   on execution, closed on the ergonomics.
 - **`refuse`**: Bash calls are blocked outright, naming the reason. This applies before the mode
-  bypass, so a `yolo` session that asked to be sandboxed is not silently unsandboxed.
+  bypass and inside plan mode, so neither a `yolo` session that asked to be sandboxed nor a planning
+  one is silently unsandboxed. The same goes for the warning.
 
 The probe runs the real profile — `bwrap … -- /bin/true` — rather than merely looking for the binary,
 so a profile whose own bindings are impossible is caught once at session start instead of arriving as
 a mystery failure on the first command. It is re-run whenever a `sandbox.*` setting changes.
 
 bwrap writes its own setup errors to stderr and exits 1, which is indistinguishable from the command
-failing by exit code alone. A Bash result whose output carries a `bwrap:` line is rewritten to say
-that the command never ran, that this is the sandbox rather than the command, and to try
-`/sandbox test`.
+failing by exit code alone. A failed Bash result is rewritten to say that the command never ran, that
+this is the sandbox rather than the command, and to try `/sandbox test` — but only when the call
+actually ran confined and the `bwrap:` line is the *first* thing the command emitted. bwrap fails
+before it execs anything, so anything printed ahead of that line came from the command, which makes
+the match somebody's output about bwrap rather than bwrap's own; `grep -r bwrap /var/log` keeps its
+results.
 
 ### Known limits
 
 - Only Bash is confined. `read`, `write`, `edit`, and MCP tools run in Pi's process.
 - A rule-allowed command that writes outside the workspace now fails where it previously succeeded.
   That is the intended boundary, but it is a behaviour change before it is a benefit.
+- **`external-path` containment covers writes, not reads.** The class is contained on the strength of
+  a read-only base, so with the default `relax` a command that merely *reads* an external path — the
+  advisory dialog `cat /etc/shadow` used to raise — now runs without one. The read stays visible in
+  the transcript, and carrying anything out of the machine is the separate `network` hazard, which
+  the default profile does not contain. Drop `external-path` from `sandbox.relax` to get the dialog
+  back.
+- **`writePaths`, `readPaths`, and `devicePaths` can re-open what the profile closed.** They are
+  literal binds: `/dev` in `writePaths` exposes raw disks, `/proc` in `readPaths` exposes host
+  processes, and either can put back more than the widening it was added for. Widening the write set
+  past the home directory already withdraws the containment claims that rested on it, but no rule
+  reasons about special filesystems — those entries are taken at their word.
+- **An approved escape does not answer the command's own dialog.** The two are different questions:
+  the escape dialog asks whether the command may leave the box, and the `safe`/`auto` gate asks
+  whether the command should run at all. Approving the first zeroes the relaxations for that call —
+  nothing is contained any more — so a command that would have confirmed without a sandbox confirms
+  here too, and in `safe` or `auto` a `sandbox: false` call can raise both dialogs in sequence.
+- **The cgroup namespace is best-effort.** Every other namespace is a hard requirement, but
+  `--unshare-cgroup-try` is used for cgroups so a kernel without `CLONE_NEWCGROUP` skips it instead of
+  failing the whole sandbox. Nothing in the containment table rests on it.
 - `.git` is writable under `workspace` and `offline`, so a history rewrite is confined but not
   contained; `/undo` restores the worktree, not the refs.
 - Nested containers do not work inside a user namespace, which is what `sandbox.exempt` is for.

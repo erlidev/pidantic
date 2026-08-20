@@ -38,6 +38,6 @@ test("terminal provider failure names both local and hosted configuration option
 		config(),
 	);
 	assert.match(message, /SEARXNG_URL/);
-	assert.match(message, /docker compose -f docker-compose-cpu\.yml up -d/);
+	assert.match(message, /github\.com\/erlidev\/pidantic#quick-start/);
 	assert.match(message, /EXA_API_KEY, TAVILY_API_KEY, or BRAVE_API_KEY/);
 });

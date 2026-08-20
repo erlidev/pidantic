@@ -55,10 +55,26 @@ refusing: `curl 'http://localhost:8888/search?q=test&format=json' | jq '.unrespo
 
 ### 1. Services
 
+For a normal Pi package installation, start SearXNG from any directory:
+
 ```bash
-docker compose -f docker-compose-cpu.yml up -d
+searxng_config="${XDG_CONFIG_HOME:-$HOME/.config}/pidantic/searxng"
+mkdir -p "$searxng_config"
+curl -fsSL https://raw.githubusercontent.com/erlidev/pidantic/main/docker/searxng-settings.yml \
+  -o "$searxng_config/settings.yml"
+docker run --detach --name pidantic-searxng --restart unless-stopped \
+  --publish 127.0.0.1:8888:8080 \
+  --volume "$searxng_config/settings.yml:/etc/searxng/settings.yml:ro" \
+  --env SEARXNG_BASE_URL=http://localhost:8888/ --env SEARXNG_SECRET=pidantic \
+  --cap-drop ALL --cap-add CHOWN --cap-add SETGID --cap-add SETUID \
+  searxng/searxng:latest
 curl 'http://localhost:8888/search?q=test&format=json'   # SearXNG: must return JSON, not 403
 ```
+
+The first run creates the `pidantic-searxng` container. Use `docker stop pidantic-searxng` and
+`docker start pidantic-searxng` after that. Developers working from a source checkout can instead
+run `docker compose -f docker-compose-cpu.yml up -d` from the repository root. The two methods use
+the same container name, so use one or the other, not both.
 
 This is the only service used by the implemented localsearch features. It is CPU-only and bound to
 loopback:
@@ -71,10 +87,10 @@ without them the API returns 403 or rate-limits your own agent.
 > against real queries it did not reorder the pool usefully enough to justify a second service, a
 > ~90MB model download and its latency. Web results are now the provider's own ordering.
 
-The Compose file also defines `ling-tiny`, a GPU-backed vLLM service used only by safety's optional
-`auto` classifier; localsearch does not call it. Start only `searxng` on machines without NVIDIA Container Toolkit. `SEARXNG_SECRET`
-is consumed by Compose/SearXNG, not by this extension; set a real value in `.env` before exposing
-the service beyond loopback.
+The source checkout's separate `docker-compose.yml` defines `ling-tiny`, a GPU-backed vLLM service
+used only by safety's optional `auto` classifier; localsearch does not call it. `SEARXNG_SECRET` is
+consumed by SearXNG, not by this extension. The provided setup deliberately binds only to loopback;
+use a real secret and add authentication before exposing the service beyond the host.
 
 ### 2. API keys (optional failover)
 
@@ -383,7 +399,7 @@ Failures are one actionable line, not a stack trace:
 
 ```
 web search failed: no provider returned results (searxng: connection refused; tavily: no API key).
-Start SearXNG: docker compose -f docker-compose-cpu.yml up -d
+Start SearXNG: https://github.com/erlidev/pidantic#quick-start
 ```
 
 Provider used, timings, quota and pool size go to the tool's `details`. Provider degradation is also

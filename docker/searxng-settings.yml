@@ -18,8 +18,8 @@ search:
     - json
 
 server:
-  # Overridden by SEARXNG_SECRET in docker-compose-cpu.yml. Only matters for signed URLs on a
-  # multi-user instance; this one is bound to loopback.
+  # Overridden by SEARXNG_SECRET at container startup. Only matters for signed URLs on a multi-user
+  # instance; this one is bound to loopback.
   secret_key: "pidantic"
   limiter: false
   public_instance: false

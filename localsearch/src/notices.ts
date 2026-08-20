@@ -10,8 +10,8 @@ export function noProviderMessage(
 	const detail = attempts.map((a) => `${a.provider}: ${a.error}`).join("; ") || "no providers configured";
 	return (
 		`web search failed: no provider returned results (${detail}). ` +
-		`Set SEARXNG_URL to a reachable SearXNG JSON API (currently ${cfg.searxngUrl}), start the bundled service with ` +
-		"`docker compose -f docker-compose-cpu.yml up -d`, or configure EXA_API_KEY, TAVILY_API_KEY, or BRAVE_API_KEY."
+		`Set SEARXNG_URL to a reachable SearXNG JSON API (currently ${cfg.searxngUrl}), follow the standalone setup at ` +
+		"https://github.com/erlidev/pidantic#quick-start, or configure EXA_API_KEY, TAVILY_API_KEY, or BRAVE_API_KEY."
 	);
 }
 

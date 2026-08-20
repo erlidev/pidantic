@@ -105,7 +105,8 @@ const SANDBOX_ICON = "⊞";
  * "asked for and unavailable" are the two states a user most needs told apart.
  */
 function sandboxBadgeFor(status: { active: boolean; wanted: boolean; name: string }): StatusBadge | undefined {
-	if (isPlanModeActive()) return undefined;
+	// Unlike the mode badge, this one survives plan mode: confinement is orthogonal to gating and is
+	// still happening, so withdrawing it would say commands are unconfined while they are not.
 	if (status.active) return { icon: SANDBOX_ICON, label: status.name, tone: "active", order: 21, plain: `Sandbox: ${status.name}` };
 	if (status.wanted) return { icon: SANDBOX_ICON, label: "unavailable", tone: "alert", order: 21, plain: "Sandbox: unavailable" };
 	return undefined;
@@ -891,19 +892,21 @@ export default function safety(pi: ExtensionAPI): void {
 		// Everything below the mode bypass is about confinement, which is orthogonal to safety mode: a
 		// yolo session raises no dialogs and is still sandboxed, which is the default configuration and
 		// the one most sessions run in. Plan mode still takes precedence over both.
-		if (event.toolName === "bash" && !isPlanModeActive()) {
+		if (event.toolName === "bash") {
 			// Warned here rather than beside the containment check, so a yolo session — which never
 			// reaches that check — still learns that the confinement it asked for is not happening.
+			// Plan mode is no exception: its commands are wrapped like any other, so a broken sandbox
+			// is as much a fact about them.
 			reportSandboxUnavailable(ctx);
-			// Read-only mode is about to refuse this call whatever the answer would have been, so
-			// asking would be a dialog with no consequence.
-			if (state.mode !== "read-only" && escapeRequested(event.input)) await handleEscape(event, ctx);
+			// Read-only mode and plan mode may both refuse this call whatever the answer would have
+			// been, so asking would be a dialog with no consequence and an approval granting nothing.
+			if (state.mode !== "read-only" && !isPlanModeActive() && escapeRequested(event.input)) await handleEscape(event, ctx);
 		}
 		// `refuse` is the strict answer to a sandbox that was wanted and cannot run: rather than
-		// quietly running commands unconfined, nothing runs at all. It applies before the mode bypass
-		// because confinement is orthogonal to mode — a yolo session that asked to be sandboxed did
-		// not ask to be unsandboxed.
-		if (event.toolName === "bash" && !isPlanModeActive() && config.sandbox.onUnavailable === "refuse" && sandbox.wanted() && !sandbox.available()) {
+		// quietly running commands unconfined, nothing runs at all. It applies before the mode bypass,
+		// and in plan mode too, because confinement is orthogonal to mode — a yolo session that asked
+		// to be sandboxed did not ask to be unsandboxed, and neither did a planning one.
+		if (event.toolName === "bash" && config.sandbox.onUnavailable === "refuse" && sandbox.wanted() && !sandbox.available()) {
 			const status = sandbox.status();
 			return denied(
 				`Safety is configured to refuse Bash commands when the sandbox is unavailable: ${status.reason ?? "unknown reason"}. Ask the user to fix the sandbox, run /sandbox off, or set sandbox.onUnavailable to warn.`,
@@ -1076,10 +1079,18 @@ export default function safety(pi: ExtensionAPI): void {
 	pi.on("tool_result", async (event) => {
 		if (event.toolName !== "bash" || !event.isError) return undefined;
 		if (!sandbox.wanted() || !hasSandboxHost()) return undefined;
+		// Two narrowings, because the prefix is only a signal on output the sandbox could have
+		// produced. `input` is the same object the gate saw, so this asks whether *this* call ran
+		// confined — an exempt binary or an approved escape never produces a bwrap error. And the line
+		// has to be the first thing the command emitted: bwrap fails before it execs anything, so
+		// anything printed ahead of it came from the command, which makes the match somebody's output
+		// about bwrap rather than bwrap's own.
+		if (!sandbox.confines(commandOf(event.input), event.input)) return undefined;
 		const text = event.content
 			.map((part) => (part.type === "text" ? part.text : ""))
 			.join("\n");
-		const failure = text.split("\n").map((line) => line.trim()).find((line) => line.startsWith("bwrap: "));
+		const first = text.split("\n").map((line) => line.trim()).find((line) => line.length > 0);
+		const failure = first?.startsWith("bwrap: ") ? first : undefined;
 		if (!failure) return undefined;
 		return {
 			content: [
@@ -1152,7 +1163,11 @@ export default function safety(pi: ExtensionAPI): void {
 		classifier = new ResidualClassifier(config.classifier);
 		// Claimed before the probe below, which yields: the claim is what makes a late write from a
 		// superseded instance a no-op, exactly as it does for the mode.
-		claimSandbox(sandboxOwner, (command, input) => sandbox.wrap(command, input));
+		claimSandbox(
+			sandboxOwner,
+			(command, input, options) => sandbox.wrap(command, input, options),
+			(command) => sandbox.wrapUserCommand(command),
+		);
 		sandboxWarningShown = false;
 		await restartSandbox(ctx);
 		// Checkpoints never outlive the run that took them: drop this runtime's previous store and

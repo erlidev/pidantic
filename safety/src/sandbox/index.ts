@@ -13,7 +13,7 @@ import { statSync } from "node:fs";
 import { basename } from "node:path";
 import { homedir } from "node:os";
 import { tokenizeCommand } from "../../../shared/bash-policy.ts";
-import { wasSandboxExempt } from "../../../shared/sandbox-registry.ts";
+import { type SandboxWrapOptions, wasSandboxExempt } from "../../../shared/sandbox-registry.ts";
 import type { SandboxConfig } from "../config.ts";
 import { buildSandboxArgv, wrapCommand } from "./argv.ts";
 import { probeSandbox, type ProbeResult } from "./probe.ts";
@@ -212,8 +212,32 @@ export class Sandbox {
 	}
 
 	/** The wrapper published on the shared registry. `undefined` means run the command as written. */
-	wrap(command: string, input: unknown): string | undefined {
+	wrap(command: string, input: unknown, options: SandboxWrapOptions = {}): string | undefined {
 		if (!this.confines(command, input)) return undefined;
+		const profile = this.resolve();
+		if (!profile) return undefined;
+		// The prefix belongs inside the box: it is the user's shell setup, and it exists to shape the
+		// environment the command sees. Pi would otherwise apply it after this rewrite, outside.
+		return wrapCommand(command, profile, {
+			...this.argvOptions(),
+			shell: this.config()?.shell,
+			commandPrefix: options.commandPrefix,
+		});
+	}
+
+	/**
+	 * The same rewrite for a command the user typed with `!` or `!!`, which pi routes through its own
+	 * executor rather than through the Bash tool.
+	 *
+	 * Off unless `sandbox.userCommands` is on, because a `!` command is the user speaking directly:
+	 * confining it by default would break the escape hatch people reach for precisely when the model's
+	 * sandboxed commands are not working. No prefix is applied here — pi prepends
+	 * `shellCommandPrefix` before handing the command to the executor, so it is already part of
+	 * `command` and is confined along with it.
+	 */
+	wrapUserCommand(command: string): string | undefined {
+		if (!this.config()?.userCommands) return undefined;
+		if (!this.confines(command)) return undefined;
 		const profile = this.resolve();
 		if (!profile) return undefined;
 		return wrapCommand(command, profile, { ...this.argvOptions(), shell: this.config()?.shell });

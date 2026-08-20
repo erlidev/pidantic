@@ -24,22 +24,42 @@ export interface SandboxOwner {
 	readonly label: string;
 }
 
+export interface SandboxWrapOptions {
+	/**
+	 * Pi's `shellCommandPrefix`, to be run inside the box rather than around it. It travels with the
+	 * call because the extension that owns the Bash tool is the one that reads pi's settings, while
+	 * the extension that builds the command line is the one that knows where the prefix has to land.
+	 * Pi normally prepends it inside `execute`, which is after this rewrite — leaving it there would
+	 * run the user's shell setup outside the box while the command ran inside it.
+	 */
+	commandPrefix?: string;
+}
+
 /**
  * Rewrites a command so it runs confined. Returns `undefined` to run `command` exactly as written,
  * which is the answer for an exempt binary, a call the user released from the sandbox, and every
  * call at all when confinement is off or unavailable.
  */
-export type SandboxWrapper = (command: string, input: unknown) => string | undefined;
+export type SandboxWrapper = (command: string, input: unknown, options?: SandboxWrapOptions) => string | undefined;
+
+/**
+ * Rewrites a command the *user* typed with `!` or `!!`. Separate from `SandboxWrapper` because it
+ * has neither a tool-call input object to be keyed on nor a prefix to apply — pi applies
+ * `shellCommandPrefix` before it hands the command to the executor — and because it is off unless
+ * the user asked for it, which is a policy question only the wrapper's owner can answer.
+ */
+export type UserCommandWrapper = (command: string) => string | undefined;
 
 type SandboxRegistry = {
 	owner: SandboxOwner | undefined;
 	wrap: SandboxWrapper | undefined;
+	wrapUser: UserCommandWrapper | undefined;
 	host: boolean;
 	exempt: WeakSet<object>;
 };
 
 function initial(): SandboxRegistry {
-	return { owner: undefined, wrap: undefined, host: false, exempt: new WeakSet() };
+	return { owner: undefined, wrap: undefined, wrapUser: undefined, host: false, exempt: new WeakSet() };
 }
 
 const registry = sharedState<SandboxRegistry>("sandbox-registry.v1", initial);
@@ -52,9 +72,10 @@ export function createSandboxOwner(label: string): SandboxOwner {
  * Takes ownership for this session and replaces the previous instance's wrapper, so a session that
  * loads without safety does not keep confining commands with the last session's policy.
  */
-export function claimSandbox(owner: SandboxOwner, wrap: SandboxWrapper): void {
+export function claimSandbox(owner: SandboxOwner, wrap: SandboxWrapper, wrapUser?: UserCommandWrapper): void {
 	registry.owner = owner;
 	registry.wrap = wrap;
+	registry.wrapUser = wrapUser;
 }
 
 /** A release from an instance that no longer owns the slot is a late teardown; it changes nothing. */
@@ -62,6 +83,7 @@ export function releaseSandbox(owner: SandboxOwner): void {
 	if (registry.owner !== owner) return;
 	registry.owner = undefined;
 	registry.wrap = undefined;
+	registry.wrapUser = undefined;
 }
 
 export function ownsSandbox(owner: SandboxOwner): boolean {
@@ -73,11 +95,26 @@ export function ownsSandbox(owner: SandboxOwner): boolean {
  * wrapper at all rather than failing the tool call: confinement is a policy layer over a command the
  * user asked for, and a bug in it must not make bash unusable.
  */
-export function sandboxCommand(command: string, input: unknown): string | undefined {
+export function sandboxCommand(command: string, input: unknown, options?: SandboxWrapOptions): string | undefined {
 	const wrap = registry.wrap;
 	if (!wrap) return undefined;
 	try {
-		return wrap(command, input);
+		return wrap(command, input, options);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The wrapped form of a command the user typed, or `undefined` to run it as written — which is the
+ * answer whenever confinement is off, unavailable, or not extended to user commands. Fails open for
+ * the same reason `sandboxCommand` does.
+ */
+export function sandboxUserCommand(command: string): string | undefined {
+	const wrap = registry.wrapUser;
+	if (!wrap) return undefined;
+	try {
+		return wrap(command);
 	} catch {
 		return undefined;
 	}
@@ -115,17 +152,19 @@ export function hasSandboxHost(): boolean {
 export interface SandboxSnapshot {
 	readonly owner: SandboxOwner | undefined;
 	readonly wrap: SandboxWrapper | undefined;
+	readonly wrapUser: UserCommandWrapper | undefined;
 }
 
 /** Preserve a parent session's claim while an in-process child temporarily owns the registry. */
 export function snapshotSandbox(): SandboxSnapshot {
-	return { owner: registry.owner, wrap: registry.wrap };
+	return { owner: registry.owner, wrap: registry.wrap, wrapUser: registry.wrapUser };
 }
 
 /** Restore the exact parent claim after the nested session has shut down. */
 export function restoreSandboxSnapshot(snapshot: SandboxSnapshot): void {
 	registry.owner = snapshot.owner;
 	registry.wrap = snapshot.wrap;
+	registry.wrapUser = snapshot.wrapUser;
 }
 
 /** Production claims and releases per session; tests need a clean slate without owning anything. */

@@ -43,9 +43,14 @@ type HookEvent = {
 	toolName?: string;
 	input?: unknown;
 	toolCallId?: string;
+	content?: { type: string; text: string }[];
+	isError?: boolean;
 	message?: { role: string; content: unknown[]; timestamp: number };
 };
 type ToolCallHook = (event: HookEvent, ctx: unknown) => Promise<HookResult | undefined>;
+
+/** What a `tool_result` handler may return: a replacement result, or nothing. */
+export type ResultRewrite = { content?: { type: string; text: string }[]; isError?: boolean } | undefined;
 type CommandHandler = (args: string, ctx: unknown) => Promise<void>;
 
 export interface HarnessOptions {
@@ -79,6 +84,8 @@ export interface HarnessOptions {
 export interface Harness {
 	/** Drives the real tool_call hook. Returns undefined when the call is allowed through. */
 	toolCall(toolName: string, input?: unknown, toolCallId?: string): Promise<HookResult | undefined>;
+	/** Drives the real tool_result hook, whose one job is rewriting a sandbox startup failure. */
+	toolResult(toolName: string, input: unknown, text: string, isError?: boolean): Promise<ResultRewrite>;
 	/** Drives /safety. */
 	command(args: string): Promise<void>;
 	/** Drives /safety-config. */
@@ -222,6 +229,11 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 
 	return {
 		toolCall: async (toolName, input = {}, toolCallId = "harness-call") => hooks.get("tool_call")?.({ toolName, input, toolCallId }, ctx),
+		toolResult: async (toolName, input, text, isError = true) =>
+			(await hooks.get("tool_result")?.(
+				{ toolName, input, toolCallId: "harness-call", content: [{ type: "text", text }], isError },
+				ctx,
+			)) as ResultRewrite,
 		command: async (args) => { await commands.get("safety")?.(args, ctx); },
 		configure: async (args) => { await commands.get("safety-config")?.(args, ctx); },
 		invoke: async (command, args = "") => { await commands.get(command)?.(args, ctx); },

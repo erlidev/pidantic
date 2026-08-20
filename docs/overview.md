@@ -275,7 +275,7 @@ each carrying one kind of fact between a producer and a consumer:
 | `tool-notes.ts` | `safety` | `confirm-bash` | One-line annotations under a tool call, plus the row's repaint callback for a note that lands late |
 | `attention.ts` | `shared/confirm-dialog.ts`, for every dialog in the package | `ui-tweaks` | That a run is now waiting on a person |
 | `scratchpad-registry.ts` | `scratchpad` | `safety` | The live per-session scratch directories a write may go to without a dialog |
-| `sandbox-registry.ts` | `safety` | `confirm-bash` | How to rewrite a Bash command so it runs confined, which calls are released from it, and whether anything applies the rewrite at all |
+| `sandbox-registry.ts` | `safety` | `confirm-bash` | How to rewrite a Bash command — a model's or a user's — so it runs confined, which calls are released from it, and whether anything applies the rewrite at all |
 
 All six live in `Symbol.for` slots via `process-registry.ts` rather than in module scope, because pi
 evaluates a shared module once per importing extension; see that file for the detail. Keys carry the
@@ -304,9 +304,15 @@ not expressible in a schema remain in `promptGuidelines`.
   duplicate name first-registration-wins — so it is the only place a command can be rewritten before
   it is spawned, and the only place that can honestly declare the rewrite is being applied. It holds
   no policy: the wrapper comes from `shared/sandbox-registry.ts` and the escape dialog is safety's.
-  It also withholds `shellCommandPrefix` from the base definition and applies it inside the wrap,
-  because pi prepends it after the rewrite, which would otherwise run the user's shell setup outside
-  the box while the command ran inside it.
+  It also withholds `shellCommandPrefix` from the base definition and hands it to the wrapper as
+  `commandPrefix`, because pi prepends it after the rewrite, which would otherwise run the user's
+  shell setup outside the box while the command ran inside it; the unconfined path prepends the same
+  prefix itself, so the two are indistinguishable to a command. Its `user_bash` handler covers the
+  other place a command is spawned: pi routes `!` and `!!` through its own executor rather than
+  through the Bash tool, so the rewrite in `execute` never sees them, and the handler returns custom
+  `BashOperations` that delegate to pi's `createLocalBashOperations` with the command line rewritten
+  on the way through. Whether user commands are confined at all is still safety's decision, and an
+  unclaimed registry returns them unchanged.
 - `shared/` contains reusable extension components: Bash tokenization/read-only policy, read-only
   tool names, cross-extension mode arbitration, and the interactive confirmation dialog.
   `bash-policy.ts` tokenizes a command once and hands callers the result: segments with their spans,
@@ -380,7 +386,11 @@ not expressible in a schema remain in `promptGuidelines`.
   understanding: safety retires confirmation dialogs on the strength of confinement, so it must be
   able to tell a claimed policy from an applied one, and only the extension that actually rewrites
   commands can say which this is. The claim is exclusive with a snapshot pair, like the mode registry
-  and unlike the scratchpad's, because there has to be exactly one answer per exec.
+  and unlike the scratchpad's, because there has to be exactly one answer per exec. It carries a
+  second, narrower wrapper for the commands the *user* types with `!` and `!!`: those have no input
+  object to be keyed on and no prefix to apply — pi applies `shellCommandPrefix` before handing the
+  command to its executor — and they are confined only when `sandbox.userCommands` asks for it, which
+  is a policy question only safety can answer.
   `session-paths.ts` is not a registry at all but the same kind of shared rule: the three-level
   `<temp>/<prefix>-<uid>/<project>-<hash>/<session>` layout and the sanitization of the two names
   that become path components, used by both the scratchpad's directory and the sandbox's private
@@ -597,8 +607,11 @@ Confinement is checked at three levels, because each answers a question the othe
 `sandbox-argv.test.ts` pins the command line: operation ordering (the base before `/proc`, `/tmp`
 before the writable binds, masks last), a `-try` variant on every optional path, the `--dev-bind` a
 masked *file* needs — an ordinary bind is mounted `nodev`, and opening `/dev/null` on a `nodev` mount
-fails with EACCES rather than reading empty — the environment globs, and single-quote quoting against
-newlines, backslashes, and substitutions. `sandbox-hazards.test.ts` pins containment as a set of
+fails with EACCES rather than reading empty — the environment globs, single-quote quoting against
+newlines, backslashes, and substitutions, the command prefix landing inside the quoted script rather
+than beside it, and the one namespace that is requested with `-try` rather than required, since a
+kernel without `CLONE_NEWCGROUP` must cost a little defence in depth and not the whole sandbox.
+`sandbox-hazards.test.ts` pins containment as a set of
 statements about bindings: the honesty rules that `network` is not contained without an unshared
 namespace, that `delete` is not contained without a live checkpoint, that widening the write set past
 the home directory or un-masking a credential store withdraws the claims that rested on them, and
@@ -610,10 +623,19 @@ a relaxation set.
 those can see: a contained command running with no dialog and saying so in its note, an uncontained
 one still confirming, the escape granted, denied, and headless, `onUnavailable: refuse` blocking
 before the mode bypass, and the two cases that matter most — nothing relaxed when no extension is
-applying the sandbox, and nothing relaxed when the probe failed. Cases needing a live namespace skip
-rather than fail where bubblewrap is unusable. `confirm-bash/test/sandbox.test.ts` pins the other
-half: the registered `execute` runs the wrapper's command, an unclaimed registry changes nothing, an
-exempt input object passes through, and `renderCall` still shows the command the model wrote.
+applying the sandbox, and nothing relaxed when the probe failed. The published wrappers are asked
+directly there too, since they are what confirm-bash calls: the prefix reaching the inside of the box,
+and a user command confined only once `sandbox.userCommands` is on and still never for an exempt
+binary. Plan mode has its own pair — the sandbox badge and `onUnavailable: refuse` both survive it,
+because confinement is orthogonal to gating, while the escape dialog does not, because plan mode may
+refuse the call itself. The `tool_result` rewrite is pinned from both sides: a real startup failure
+explained, and a command that merely printed somebody else's `bwrap:` line left alone. Cases needing a
+live namespace skip rather than fail where bubblewrap is unusable. `confirm-bash/test/sandbox.test.ts`
+pins the other half: the registered `execute` runs the wrapper's command, an unclaimed registry
+changes nothing, an exempt input object passes through, `renderCall` still shows the command the model
+wrote, the configured `shellCommandPrefix` reaches the wrapper on the confined path and the command
+itself on the unconfined one, and the `user_bash` handler runs pi's own local backend over a rewritten
+command line.
 
 `sandbox-smoke.ts` is the only thing that checks the kernel rather than the argv, and is kept out of
 the default glob like `localsearch/test/smoke.ts`. It asserts what real commands could and could not

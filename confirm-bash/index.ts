@@ -22,6 +22,7 @@
 
 import {
 	createBashToolDefinition,
+	createLocalBashOperations,
 	type ExtensionAPI,
 	getAgentDir,
 	SettingsManager,
@@ -31,7 +32,7 @@ import { Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { askConfirmation } from "../shared/confirm-dialog.ts";
 import { wasSafetyApproved } from "../shared/mode-registry.ts";
-import { markSandboxHost, sandboxCommand } from "../shared/sandbox-registry.ts";
+import { markSandboxHost, sandboxCommand, sandboxUserCommand } from "../shared/sandbox-registry.ts";
 import { markToolNoteRenderer, type ToolNote, toolNote, watchToolNote } from "../shared/tool-notes.ts";
 
 /** Escape hatch for non-interactive runs (`pi -p`, `--mode json`), where there is nobody to ask. */
@@ -141,7 +142,10 @@ export default function confirmBash(pi: ExtensionAPI) {
 			// reference to the `tool_call` hook and then to here, which is how safety's per-call decision
 			// — an exempt binary, or an escape the user approved — reaches the spawn without being keyed
 			// on command text. Text keys race across the parallel bash calls pi issues in one batch.
-			const command = sandboxCommand(params.command, params) ?? prefixed(params.command);
+			// The prefix travels with the rewrite rather than being applied around it: inside the box is
+			// where the user's shell setup has to run, since it exists to shape the environment the
+			// command sees. `prefixed` is the unconfined path's copy of the same thing.
+			const command = sandboxCommand(params.command, params, { commandPrefix }) ?? prefixed(params.command);
 			// Strip the fields the real bash tool does not model.
 			return base.execute(toolCallId, { command, timeout: params.timeout }, signal, onUpdate, ctx);
 		},
@@ -200,6 +204,34 @@ export default function confirmBash(pi: ExtensionAPI) {
 	// the strength of confinement, so without this mark it relaxes nothing — a claimed policy is not
 	// evidence that anything applies it.
 	markSandboxHost();
+
+	/**
+	 * The same confinement for a command the user typed with `!` or `!!`.
+	 *
+	 * Pi routes those through its own executor rather than through the Bash tool, so the rewrite this
+	 * extension applies in `execute` never sees them. Custom `operations` are the seam pi offers, and
+	 * `createLocalBashOperations` is its own local backend, so nothing about how the command runs
+	 * changes apart from the command line itself. Whether user commands are confined at all is
+	 * safety's decision — `sandbox.userCommands`, off by default — and arrives through the registry:
+	 * an unclaimed registry, a session without safety, or the setting left off all answer `undefined`
+	 * here, which returns pi's own path untouched.
+	 *
+	 * Pi applies `shellCommandPrefix` before calling `exec`, so the command reaching the wrapper
+	 * already carries it and it is confined along with the rest.
+	 */
+	pi.on("user_bash", async (event) => {
+		// Asked about the command the user typed, so a session that is not confining user commands is
+		// left on pi's own executor rather than on an identical-looking copy of it. What reaches `exec`
+		// is that command with `shellCommandPrefix` already prepended, and the whole script is what
+		// gets wrapped.
+		if (!sandboxUserCommand(event.command)) return undefined;
+		const local = createLocalBashOperations({ shellPath });
+		return {
+			operations: {
+				exec: (command, execCwd, execOptions) => local.exec(sandboxUserCommand(command) ?? command, execCwd, execOptions),
+			},
+		};
+	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;

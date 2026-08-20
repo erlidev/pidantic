@@ -121,15 +121,27 @@ Three pieces, all in `index.ts`:
   `renderCall` and `renderResult` receive the original arguments, which are never mutated, so the
   transcript and the model's own context show the command the model wrote rather than a
   four-hundred-character bwrap line. `shellCommandPrefix` is deliberately withheld from the base
-  definition and applied inside the wrap instead: pi prepends it during `execute`, which is *after*
-  the rewrite, so leaving it to the base would run the user's shell setup outside the box while the
-  command ran inside it.
+  definition and passed to the wrapper instead, as `commandPrefix` on the wrap options: pi prepends
+  it during `execute`, which is *after* the rewrite, so leaving it to the base would run the user's
+  shell setup outside the box while the command ran inside it. The wrapper puts it at the top of the
+  script the inner shell runs. On the unconfined path — no sandbox, an exempt binary, an approved
+  escape — this extension prepends the same prefix itself, so what a command sees is identical
+  either way.
+- **User `!` commands** are the other place a command is spawned, and pi routes them through its own
+  executor rather than through the Bash tool, so the rewrite in `execute` never sees them. A
+  `user_bash` handler covers them: it returns custom `BashOperations` that delegate to pi's own
+  `createLocalBashOperations`, with the command line rewritten on the way through. Whether they are
+  confined at all is safety's decision — `sandbox.userCommands`, off by default — and arrives through
+  the same registry; an unclaimed registry, a session without safety, or the setting left off all
+  return the command unchanged, and the handler then declines rather than installing an
+  identical-looking copy of pi's own executor, leaving such a session on pi's path exactly. Pi applies `shellCommandPrefix`
+  before handing the command to the executor here, so it is already part of what gets confined.
 
 ## Known limitations
 
 - **Only `bash` is gated.** `write` and `edit` have no `confirm` parameter.
-- **`!` / `!!` shell input is untouched.** That is the separate `user_bash` path — you typed it, and
-  safety confines it only when `sandbox.userCommands` is on.
+- **`!` / `!!` shell input is never gated.** The confirmation dialog is a model-facing feature: you
+  typed the command, so nothing holds it. It is confined, however, when `sandbox.userCommands` is on.
 - **No allowlist.** A repeated command is asked every time, by design.
 - **Startup warning.** Interactive mode prints a warning whenever a built-in tool is overridden.
   Expected.

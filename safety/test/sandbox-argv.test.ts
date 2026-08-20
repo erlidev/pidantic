@@ -102,6 +102,18 @@ test("a masked path that does not exist is dropped, since there is nothing to hi
 	assert.ok(!argv.join(" ").includes(`${HOME}/.aws`));
 });
 
+test("the cgroup namespace is best-effort, since a kernel without it must not cost the sandbox", () => {
+	const argv = buildSandboxArgv(profile());
+	// Every other namespace is a hard requirement: containment rests on them. The cgroup namespace
+	// hides the host's cgroup paths and nothing `hazards.ts` claims, so where CLONE_NEWCGROUP is
+	// unavailable the sandbox skips it instead of failing to start at all.
+	assert.ok(argv.includes("--unshare-cgroup-try"));
+	assert.ok(!argv.includes("--unshare-cgroup"));
+	for (const hard of ["--unshare-user", "--unshare-ipc", "--unshare-pid", "--unshare-uts"]) {
+		assert.ok(argv.includes(hard), hard);
+	}
+});
+
 test("the network is unshared only when the profile says so", () => {
 	assert.ok(!buildSandboxArgv(profile("workspace")).includes("--unshare-net"));
 	assert.ok(buildSandboxArgv(profile("offline")).includes("--unshare-net"));
