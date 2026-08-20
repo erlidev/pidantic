@@ -37,14 +37,6 @@ Start the bundled SearXNG search service, then use the tools in Pi:
 docker compose -f docker-compose-cpu.yml up -d
 ```
 
-```text
-search({"query": "Rust async cancellation"})
-fetch({"url": "https://docs.example.com/guide"})
-/search-status
-/safety safe
-/plan
-```
-
 That's everything needed for the core setup: no API keys, no configuration files. The other
 extensions work as soon as the package is installed.
 
