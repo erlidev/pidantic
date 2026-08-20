@@ -14,6 +14,7 @@ pidantic/
 ├── .gitignore
 ├── AGENTS.md
 ├── CLAUDE.md
+├── LICENSE
 ├── README.md
 ├── package.json
 ├── package-lock.json
@@ -220,6 +221,8 @@ pidantic/
 - `.gitignore` excludes local dependencies, caches, environment files, and service data.
 - `AGENTS.md` and `CLAUDE.md` contain repository-level instructions for coding agents.
 - `README.md` is the short landing page and documentation index.
+- `LICENSE` is the MIT license the package is distributed under; `package.json` names it in
+  `license` and stays `private` because distribution is by Git URL rather than by npm publish.
 - `package.json` is both the npm manifest and Pi package manifest. Its `pi.extensions` list is the
   authoritative registry of extension entry points.
 - `package-lock.json` pins the shared Node dependency graph.

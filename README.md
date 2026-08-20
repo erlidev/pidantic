@@ -24,30 +24,53 @@ APIs, and the approval extensions have explicit behavior for headless sessions.
 
 ## Install
 
-Clone or copy this repository, install its dependencies, and add the absolute repository path to
-Pi's package list in `~/.pi/agent/settings.json`:
+Pidantic installs as a Pi package from its Git repository. Pi clones it and installs its runtime
+dependencies itself, so there is no build, no `npm` step, and no checkout to keep somewhere:
 
 ```bash
-npm ci
+pi install https://github.com/erlidev/pidantic
 ```
 
-Node.js 22.19 or newer is required. Contributors should run `npm run check`; see
-[`docs/development.md`](docs/development.md) for the test, watch, type-check, and live smoke commands.
+That adds the source to Pi's package list in `~/.pi/agent/settings.json` and installs it. The same
+entry can be written by hand:
 
 ```json
 {
-  "packages": ["/absolute/path/to/pi-extensions"]
+  "packages": ["https://github.com/erlidev/pidantic"]
 }
 ```
 
-Restart Pi or run `/reload`. To load the package for one invocation without changing settings:
+Add `-l` to install it for one project instead (`.pi/settings.json`). Pin a tag, branch, or commit by
+appending it to the URL, which is how a Git-sourced package is versioned:
 
 ```bash
-pi -e /absolute/path/to/pi-extensions
+pi install https://github.com/erlidev/pidantic@v0.1.0
+pi update --extension https://github.com/erlidev/pidantic
+pi remove https://github.com/erlidev/pidantic
 ```
 
-`confirm-bash` requires a Pi version that exports `createBashToolDefinition` (Pi 0.84 or newer).
-The other extensions use the same package and do not require a separate build or install command.
+An unpinned source tracks the repository's default branch and updates when `pi update --extensions`
+runs; a pinned one stays on its ref until the entry changes. `git:git@github.com:erlidev/pidantic`
+and `ssh://git@github.com/erlidev/pidantic` are accepted for an SSH checkout.
+
+Node.js 22.19 or newer is required. `confirm-bash` requires a Pi version that exports
+`createBashToolDefinition` (Pi 0.84 or newer).
+
+### From a local checkout
+
+For development, or to run a modified copy, point Pi at the directory instead. A local path is used
+in place, so its dependencies are yours to install:
+
+```bash
+git clone https://github.com/erlidev/pidantic
+cd pidantic && npm ci
+pi install ./pidantic          # or "packages": ["/absolute/path/to/pidantic"]
+pi -e /absolute/path/to/pidantic   # load for one invocation without changing settings
+```
+
+Restart Pi or run `/reload` after changing the package list by hand. Contributors should run
+`npm run check`; see [`docs/development.md`](docs/development.md) for the test, watch, type-check,
+and live smoke commands.
 
 Pidantic is meant to be installed whole. The nine extensions share the registries in `shared/` and
 build on each other — `safety` draws its annotations under `confirm-bash`'s Bash rows, exempts
@@ -751,3 +774,7 @@ observable effect.
 - [subagent manual](docs/extensions/subagent.md)
 - [scratchpad manual](docs/extensions/scratchpad.md)
 - [smart-compaction status](docs/extensions/smart-compaction.md)
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

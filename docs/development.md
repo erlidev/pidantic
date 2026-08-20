@@ -2,7 +2,9 @@
 
 ## Local installation
 
-The repository is one Pi package. Add its root to `~/.pi/agent/settings.json`:
+The repository is one Pi package. A user installs it from its Git URL — see the README's
+[Install](../README.md#install) section — but a working copy is added by path so edits take effect
+without a reinstall. Add its root to `~/.pi/agent/settings.json`:
 
 ```json
 {
@@ -73,6 +75,35 @@ downloads the model into the host Hugging Face cache. Stop the complete stack wi
 ```bash
 docker compose down
 ```
+
+## Releasing
+
+The package is distributed from its Git repository rather than from npm; `package.json` keeps
+`"private": true` so an accidental `npm publish` is refused. Pi clones the source and runs
+`npm install --omit=dev` inside the clone, so what a user gets is the repository contents plus the
+runtime dependencies of `package-lock.json`. Two consequences are worth keeping in mind:
+
+- The lockfile must be committed and consistent with `package.json`. A consumer's install resolves
+  through it, and there is no publish step that would catch a stale one.
+- Everything tracked in Git ships, including `docs/`, `docker/`, and the test suites. There is no
+  `files` allowlist to maintain, but nothing secret belongs in the tree either.
+
+An unpinned source (`https://github.com/erlidev/pidantic`) tracks the default branch, so pushing to
+`main` releases to every consumer that runs `pi update --extensions`. A version is a Git tag, which
+is what a consumer pins with `<url>@<tag>`:
+
+```bash
+npm run check
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+Bump `version` in `package.json` in the same commit the tag points at. It is not used for
+resolution — the ref is — but `pi package list` and the installed tree read it, so a tag whose
+manifest disagrees with it is a confusing one.
+
+The repository must be publicly readable for an anonymous `pi install` to work; a private repository
+installs only for someone whose Git credentials already reach it.
 
 ## Adding an extension
 

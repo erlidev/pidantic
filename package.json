@@ -7,9 +7,21 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
-	"description": "A local collection of extensions for the Pi coding agent.",
+	"description": "A Pi package of nine extensions: web research, command approval, safety modes, plan mode, blocking subagents, interruption handling, scratch space, and terminal UI tweaks.",
+	"license": "MIT",
+	"author": "Eric <icemastereric@gmail.com>",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/erlidev/pidantic.git"
+	},
+	"homepage": "https://github.com/erlidev/pidantic#readme",
+	"bugs": {
+		"url": "https://github.com/erlidev/pidantic/issues"
+	},
 	"keywords": [
-		"pi-package"
+		"pi-package",
+		"pi-extension",
+		"pidantic"
 	],
 	"pi": {
 		"extensions": [
