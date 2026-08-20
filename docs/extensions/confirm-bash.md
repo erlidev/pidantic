@@ -59,10 +59,16 @@ The override preserves Pi's built-in `bash` parameters and adds:
 | `command` | Yes | Bash command to execute |
 | `timeout` | No | Built-in Bash timeout in seconds |
 | `confirm` | No | When `true`, hold the command for interactive approval |
-| `reason` | No | One-line explanation shown in the approval dialog |
+| `sandbox` | No | When `false`, request that this one command run outside safety's sandbox |
+| `reason` | No | One-line explanation shown in the approval dialog, for either flag |
 
-Only `confirm: true` opens the dialog. A denial can include a free-text reason, which is returned to
-the model. Calls without `confirm: true` retain normal Pi behavior.
+Only `confirm: true` opens this extension's dialog. A denial can include a free-text reason, which is
+returned to the model. Calls without `confirm: true` retain normal Pi behavior.
+
+`sandbox: false` is this extension's schema but safety's decision: safety raises the dialog, and a
+denial runs the command confined rather than blocking it. See
+[the sandbox manual](safety.md#leaving-the-sandbox). The field is present whether or not safety is
+active; with no sandbox running it simply describes a state that is already true.
 
 ## Configuration
 
@@ -72,7 +78,7 @@ the model. Calls without `confirm: true` retain normal Pi behavior.
 
 ## How it works
 
-Two pieces, both in `index.ts`:
+Three pieces, all in `index.ts`:
 
 - **The tool override** registers a tool named `bash`, built on pi's real
   `createBashToolDefinition()`. Only the parameter schema grows; execution, streaming, truncation,
@@ -97,14 +103,39 @@ Two pieces, both in `index.ts`:
   policy, or through its own headless escape hatch asked nobody anything, so a flagged one still
   reaches this dialog. A flagged command is never silently run because another extension found it
   harmless.
+- **The sandbox rewrite** lives in `execute`, and is here for the same reason the schema is: pi
+  resolves a duplicate tool name first-registration-wins, so this is the only extension that can own
+  `bash`, and therefore the only place a command can be rewritten before it is spawned. The policy is
+  not here — safety publishes a wrapper on `shared/sandbox-registry.ts` and this asks it what to run.
+  Loading also calls `markSandboxHost()`, which is what tells safety that something actually applies
+  the wrapper; without that mark safety relaxes no confirmation, because a claimed policy is not
+  evidence that anything applies it.
+
+  Identity is the params object. Pi builds the validated arguments once and hands the *same
+  reference* to the `tool_call` hook and then to `execute`, which is how a per-call decision safety
+  made in the gate — an exempt binary, or an escape the user approved — reaches the spawn. Keying on
+  command text instead would race across the parallel bash calls pi issues in one batch, and losing
+  that race would drop a command out of the sandbox. The same contract already carries
+  `markSafetyApproved` above.
+
+  `renderCall` and `renderResult` receive the original arguments, which are never mutated, so the
+  transcript and the model's own context show the command the model wrote rather than a
+  four-hundred-character bwrap line. `shellCommandPrefix` is deliberately withheld from the base
+  definition and applied inside the wrap instead: pi prepends it during `execute`, which is *after*
+  the rewrite, so leaving it to the base would run the user's shell setup outside the box while the
+  command ran inside it.
 
 ## Known limitations
 
 - **Only `bash` is gated.** `write` and `edit` have no `confirm` parameter.
-- **`!` / `!!` shell input is untouched.** That is the separate `user_bash` path — you typed it.
+- **`!` / `!!` shell input is untouched.** That is the separate `user_bash` path — you typed it, and
+  safety confines it only when `sandbox.userCommands` is on.
 - **No allowlist.** A repeated command is asked every time, by design.
 - **Startup warning.** Interactive mode prints a warning whenever a built-in tool is overridden.
   Expected.
+- **The sandbox rewrite is plumbing, not policy.** This extension asks the registry on every call
+  and runs whatever comes back; it makes no decision of its own and cannot tell a confined command
+  from an unconfined one.
 - **Blocking is not a hard stop.** A blocked call returns an error result to the model, which may
   retry without `confirm`.
 - **Global settings only** for `shellPath` / `shellCommandPrefix`; project-scoped overrides of those

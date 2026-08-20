@@ -42,7 +42,8 @@
 		"test:watch": "node --test --watch \"*/test/*.test.ts\"",
 		"typecheck": "tsc",
 		"smoke": "node localsearch/test/smoke.ts",
-		"smoke:subagent": "node subagent/test/smoke.ts"
+		"smoke:subagent": "node subagent/test/smoke.ts",
+		"smoke:sandbox": "node safety/test/sandbox-smoke.ts"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "^0.84.2",

@@ -28,7 +28,7 @@ Use either of these toggles:
 
 Entering while the agent is streaming is supported. The restriction is enforced immediately by the
 tool-call guard; the visible tool-set change takes effect on the next turn. The mode indicator shows
-`▤ plan` in the footer where [`ui-tweaks`](ui-tweaks.md) draws one, and `Plan Mode` in Pi's own status
+`✎ plan` in the footer where [`ui-tweaks`](ui-tweaks.md) draws one, and `Plan Mode` in Pi's own status
 line where it does not; the badge is published on `shared/status-registry.ts` and withdrawn at
 `session_shutdown` alongside the mode claim. Entering and leaving are rendered in the transcript as a compact,
 single-line, color-coded mode event: `Plan Mode Enabled` or `Plan Mode Disabled`, with the resulting

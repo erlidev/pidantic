@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import type { Hazard } from "../../shared/command-findings.ts";
 import { isSafetyMode, type SafetyMode } from "../../shared/mode-registry.ts";
+import { DEFAULT_RELAX, isHazard } from "./sandbox/hazards.ts";
+import { DEFAULT_CACHES, DEFAULT_HIDE, DEFAULT_HIDE_ENV, isProfileName, isTmpMode, type ProfileName, type TmpMode } from "./sandbox/profile.ts";
 
 export interface ClassifierConfig {
 	enabled: boolean;
@@ -30,6 +33,47 @@ export interface ClassifierConfig {
 	explainRuleAllowed: boolean;
 }
 
+/** What happens to a model request to leave the sandbox for one call. */
+export type SandboxEscape = "ask" | "never" | "always";
+export const SANDBOX_ESCAPES = ["ask", "never", "always"] as const;
+
+/** What happens when confinement was wanted and the machine cannot provide it. */
+export type SandboxUnavailable = "warn" | "refuse";
+export const SANDBOX_UNAVAILABLE = ["warn", "refuse"] as const;
+
+export interface SandboxConfig {
+	/** Master switch. Off is exactly today's behaviour, with no probe and no bwrap process. */
+	enabled: boolean;
+	profile: ProfileName;
+	/**
+	 * Hazard classes confinement is allowed to answer instead of a dialog. Always intersected with
+	 * what the active profile provably contains, so widening this cannot invent a guarantee.
+	 */
+	relax: Hazard[];
+	escape: SandboxEscape;
+	/** Binaries that are never confined, because a user namespace cannot run them at all. */
+	exempt: string[];
+	writePaths: string[];
+	readPaths: string[];
+	hidePaths: string[];
+	/** Subtracted from the merged mask list, so one visible credential store costs one entry. */
+	keepPaths: string[];
+	cachePaths: string[];
+	devicePaths: string[];
+	hideEnv: string[];
+	/** null defers to the profile; a boolean overrides it. */
+	network: boolean | null;
+	tmp: TmpMode;
+	/** Also confine user-entered `!` and `!!` commands, which are off by default. */
+	userCommands: boolean;
+	onUnavailable: SandboxUnavailable;
+	/** Raw bwrap arguments appended before `--chdir`; the escape hatch for anything unmodelled. */
+	extraArgs: string[];
+	bwrapPath: string;
+	/** Shell run inside the sandbox. Fixed rather than inherited: the model writes bash. */
+	shell: string;
+}
+
 export interface SafetyConfig {
 	mode: SafetyMode;
 	classifier: ClassifierConfig;
@@ -44,6 +88,7 @@ export interface SafetyConfig {
 	 */
 	checkpoints: boolean;
 	checkpointRetain: number;
+	sandbox: SandboxConfig;
 }
 
 export const DEFAULTS: SafetyConfig = {
@@ -72,6 +117,29 @@ export const DEFAULTS: SafetyConfig = {
 	denyTools: [],
 	checkpoints: true,
 	checkpointRetain: 20,
+	sandbox: {
+		enabled: true,
+		profile: "workspace",
+		relax: [...DEFAULT_RELAX],
+		escape: "ask",
+		// A user namespace cannot run a container runtime or talk to the init system, so these would
+		// fail confusingly rather than usefully. Naming them up front saves the model discovering it.
+		exempt: ["docker", "podman", "systemctl", "nsenter", "machinectl"],
+		writePaths: [],
+		readPaths: [],
+		hidePaths: [],
+		keepPaths: [],
+		cachePaths: [...DEFAULT_CACHES],
+		devicePaths: [],
+		hideEnv: [...DEFAULT_HIDE_ENV],
+		network: null,
+		tmp: "session",
+		userCommands: false,
+		onUnavailable: "warn",
+		extraArgs: [],
+		bwrapPath: "bwrap",
+		shell: "/bin/bash",
+	},
 };
 
 function strings(value: unknown): string[] | undefined {
@@ -81,6 +149,26 @@ function strings(value: unknown): string[] | undefined {
 function absolutePaths(value: unknown): string[] | undefined {
 	const values = strings(value);
 	return values?.every((path) => isAbsolute(path)) ? values : undefined;
+}
+
+/** Every entry must be a known hazard; one typo falls the whole field back rather than half-applying. */
+function hazards(value: unknown): Hazard[] | undefined {
+	const values = strings(value);
+	return values?.every(isHazard) ? (values as Hazard[]) : undefined;
+}
+
+/**
+ * Bind and mask paths accept `~`, unlike `allowReadPaths`, which is compared against canonical paths
+ * at policy time. These are handed to bwrap after expansion, so the home-relative form is the one
+ * users actually want to write in a configuration file.
+ */
+function bindPaths(value: unknown): string[] | undefined {
+	const values = strings(value);
+	return values?.every((path) => isAbsolute(path) || path === "~" || path.startsWith("~/")) ? values : undefined;
+}
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+	return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : undefined;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -108,6 +196,7 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 	}
 
 	const classifier = record(raw.classifier);
+	const sandbox = record(raw.sandbox);
 	const mode = isSafetyMode(raw.mode) ? raw.mode : DEFAULTS.mode;
 	const timeoutMs = typeof classifier.timeoutMs === "number" && Number.isFinite(classifier.timeoutMs) && classifier.timeoutMs > 0
 		? Math.floor(classifier.timeoutMs)
@@ -149,5 +238,26 @@ export async function loadConfig(env: Record<string, string | undefined> = proce
 		denyTools: strings(raw.denyTools) ?? DEFAULTS.denyTools,
 		checkpoints: typeof raw.checkpoints === "boolean" ? raw.checkpoints : DEFAULTS.checkpoints,
 		checkpointRetain,
+		sandbox: {
+			enabled: typeof sandbox.enabled === "boolean" ? sandbox.enabled : DEFAULTS.sandbox.enabled,
+			profile: isProfileName(sandbox.profile) ? sandbox.profile : DEFAULTS.sandbox.profile,
+			relax: hazards(sandbox.relax) ?? DEFAULTS.sandbox.relax,
+			escape: oneOf(sandbox.escape, SANDBOX_ESCAPES) ?? DEFAULTS.sandbox.escape,
+			exempt: strings(sandbox.exempt) ?? DEFAULTS.sandbox.exempt,
+			writePaths: bindPaths(sandbox.writePaths) ?? DEFAULTS.sandbox.writePaths,
+			readPaths: bindPaths(sandbox.readPaths) ?? DEFAULTS.sandbox.readPaths,
+			hidePaths: bindPaths(sandbox.hidePaths) ?? DEFAULTS.sandbox.hidePaths,
+			keepPaths: bindPaths(sandbox.keepPaths) ?? DEFAULTS.sandbox.keepPaths,
+			cachePaths: bindPaths(sandbox.cachePaths) ?? DEFAULTS.sandbox.cachePaths,
+			devicePaths: bindPaths(sandbox.devicePaths) ?? DEFAULTS.sandbox.devicePaths,
+			hideEnv: strings(sandbox.hideEnv) ?? DEFAULTS.sandbox.hideEnv,
+			network: typeof sandbox.network === "boolean" ? sandbox.network : DEFAULTS.sandbox.network,
+			tmp: isTmpMode(sandbox.tmp) ? sandbox.tmp : DEFAULTS.sandbox.tmp,
+			userCommands: typeof sandbox.userCommands === "boolean" ? sandbox.userCommands : DEFAULTS.sandbox.userCommands,
+			onUnavailable: oneOf(sandbox.onUnavailable, SANDBOX_UNAVAILABLE) ?? DEFAULTS.sandbox.onUnavailable,
+			extraArgs: strings(sandbox.extraArgs) ?? DEFAULTS.sandbox.extraArgs,
+			bwrapPath: typeof sandbox.bwrapPath === "string" && sandbox.bwrapPath.trim() ? sandbox.bwrapPath.trim() : DEFAULTS.sandbox.bwrapPath,
+			shell: typeof sandbox.shell === "string" && sandbox.shell.trim() ? sandbox.shell.trim() : DEFAULTS.sandbox.shell,
+		},
 	};
 }

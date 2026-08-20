@@ -1,8 +1,17 @@
 # safety
 
-`safety` adds session-scoped confirmation modes without removing tools. It is an approval workflow,
-not a sandbox: model tool calls are gated, while user-entered `!` and `!!` Bash commands use Pi's
-separate path and bypass the extension.
+`safety` adds session-scoped confirmation modes without removing tools, and — on Linux — confines
+Bash commands in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox.
+
+The two halves answer different questions. The modes are an approval workflow over every tool call:
+they ask before something happens and snapshot the worktree so it can be undone. The sandbox is a
+boundary around Bash alone: it decides what a command *can* reach, whether or not anyone was asked.
+Where confinement provably answers a question the modes would have raised, the dialog is retired
+rather than duplicated — see [Sandbox](#sandbox).
+
+User-entered `!` and `!!` Bash commands use Pi's separate path and bypass the gate entirely; they are
+confined only if `sandbox.userCommands` is on. Pi's own `read`, `write`, and `edit` tools run inside
+Pi's process and cannot be namespaced, so they are covered by the modes and checkpoints alone.
 
 ## Modes and controls
 
@@ -12,6 +21,24 @@ separate path and bypass the extension.
 | `safe` | Deterministic irreversible-action rules; unknown binaries confirm. Checkpoint before any command that is held or can write | Checkpoint, then confirmation on every call | Every call confirms |
 | `auto` | Safe-mode rules and the same checkpoint; eligible unknown binaries may use the classifier | Checkpoint, then allowed without a dialog when the checkpoint succeeded; otherwise as `safe` | Classifier may allow a call it rates safe |
 | `read-only` | Only verifiably read-only commands run; everything else is refused outright. No checkpoint, no classifier, no dialog | Every call is refused | Every call is refused |
+
+Sandboxing is orthogonal to all four. A `yolo` session raises no dialogs and is still confined, which
+is the default configuration and the one most sessions run in; a `read-only` session refuses the same
+calls whether or not the box would have contained them. For Bash, the intersection is:
+
+| Mode | Sandbox off | Sandbox on |
+| --- | --- | --- |
+| `yolo` | Gates disabled: every call runs unconfined, without dialog, checkpoint, or classification | Nothing is asked, but every non-exempt command runs inside the namespace: writes outside the workspace fail, credentials and secret variables are gone. No checkpoint is taken, so `/undo` has nothing to restore — the boundary is the only protection |
+| `safe` | Every call the deterministic rules hold, after a checkpoint, raises a dialog; unknown binaries confirm | Same, minus the dialogs for findings the box contains: a held call whose findings are all contained runs without a dialog, noted as sandboxed, and the checkpoint is still taken — it is part of what makes `delete` contained. Uncontained findings still ask |
+| `auto` | As `safe`, plus the classifier may allow a residual call it rates safe | As `safe` with the sandbox on, plus the classifier — but containment is checked first, so a contained call costs neither a dialog nor an LLM round-trip |
+| `read-only` | Only verifiably read-only commands run; everything else is refused outright | Refusals are unchanged: a refused command stays refused whether or not the box would have contained it. Confinement still applies to the read-only commands that do run |
+
+Only Bash changes between the two columns: `write`, `edit`, and unknown tools run in Pi's process and
+cannot be namespaced, so they behave identically whether or not the box is running. The escape paths
+cut across all four rows: an exempt binary runs unconfined in every mode, a `sandbox: false` request
+still asks in every mode except `read-only` (where the refusal makes the question moot), and
+`sandbox.onUnavailable: refuse` blocks Bash in every mode, `yolo` included, when confinement is wanted
+and cannot run.
 
 The subagent tools have narrower deterministic handling than the generic unknown-tool column:
 registered `spawn` calls with `mode: "explore"` run without a checkpoint, classifier request, or
@@ -27,6 +54,7 @@ Sessions start in `yolo` unless configuration or `--safety` selects another mode
 /safety yolo|auto|safe|read-only # switch mode
 /safety log                      # list classifier decisions in this session
 /safety-config                   # show or change everything else in safety.json
+/sandbox                         # report or change Bash confinement for this session
 /undo                            # confirm and restore the newest checkpoint
 Alt+S                            # cycle yolo → auto → safe → read-only; unavailable auto is skipped
 pi --safety safe                 # select the starting mode
@@ -106,6 +134,10 @@ Consequences of that contract:
   them; `allowBinaries: ["rm"]` does not make `rm` run.
 - **`allowReadPaths` is not consulted.** The mode asks what a call can change, not what it can see,
   so a read is judged by its binary alone and a path outside the workspace is not itself a refusal.
+- **The sandbox changes nothing here.** A refused command stays refused whether or not the box would
+  have contained it: the mode's contract is that this session changes nothing, and running a refused
+  command inside a namespace would weaken it. Confinement still applies to the commands the mode does
+  allow.
 - **Scratch roots are not consulted either.** A [`scratchpad`](scratchpad.md) write is refused like
   any other: the mode's contract is that this session writes nothing, not that it writes nothing
   important. Reading a file already in a scratchpad is allowed, as any other read is.
@@ -113,6 +145,175 @@ Consequences of that contract:
 Like the rest of the extension, this is an approval workflow rather than a sandbox: user-entered `!`
 and `!!` commands still use pi's own path, and the allowlist bounds recognized binaries, not what a
 binary can be made to do.
+
+## Sandbox
+
+On Linux, Bash commands run inside a bubblewrap namespace. The thesis is one sentence: **containment
+replaces confirmation.** A hazard the sandbox provably neutralizes stops producing a dialog; a hazard
+it does not neutralize still produces one. That is what makes a `safe` session bearable and a `yolo`
+session genuinely bounded for the first time.
+
+```text
+/sandbox                     # what is confined, what is writable, what is masked, what is relaxed
+/sandbox on | off            # this session only; safety.json is untouched
+/sandbox workspace|offline|strict
+/sandbox explain <command>   # the exact bwrap command line that command would run under
+/sandbox test                # run a probe battery inside the box and report what happened
+```
+
+The mode in force is a `⊞` badge in the footer beside safety's own. A session that wants confinement
+and cannot have it draws `⊞ unavailable` rather than nothing, because "off" and "asked for and not
+happening" are the two states worth telling apart.
+
+### Profiles
+
+| Profile | Filesystem | Network | `.git` |
+| --- | --- | --- | --- |
+| `workspace` (default) | Whole host read-only; workspace, scratch roots, and build caches writable; credential stores masked | Available | Writable |
+| `offline` | As `workspace` | Unshared, and the host resolver sockets masked with it | Writable |
+| `strict` | A read-only skeleton (`/usr`, `/bin`, `/etc`, …); no home directory, no caches | Unshared | Read-only |
+
+`workspace` is deliberately generous. Confining *every* command means a wrong binding shows up as a
+broken build rather than a blocked attack, so builds, tests, formatters, and package managers have to
+keep working: `~/.cargo`, `~/.npm`, `~/.cache`, `~/.m2`, and `~/.gradle` are writable by default, and
+every optional bind uses bwrap's `-try` form so a toolchain this machine does not have skips its
+bind instead of failing the sandbox.
+
+What the profile takes away is narrower and more useful than "everything": writes outside the
+workspace, and the credentials a command would need to do anything with the network. Masked by
+default are `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.config/gcloud`, `~/.kube`,
+`~/.docker`, `~/.netrc`, `~/.git-credentials`, and `~/.pi/agent` — which holds provider API keys.
+`~/.gitconfig` is deliberately **not** masked: masking it breaks commit identity and hides nothing,
+since credentials live in the helper stores beside it. Environment variables matching `*_API_KEY`,
+`*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AWS_*`, `GH_TOKEN`, and `GITHUB_TOKEN` are removed from the
+command's environment.
+
+`/tmp` is a per-session directory under the system temp directory, bound over `/tmp` and deleted at
+`session_shutdown`. A plain tmpfs would give every *call* an empty `/tmp`, so a file written by one
+command would be gone by the next — which reads as the model losing its own work. `sandbox.tmp`
+offers `session` (the default), `host`, and `tmpfs`.
+
+### What is contained, and what is not
+
+Containment is derived from the bindings that will actually be applied, never asserted beside a
+profile. Each finding the [deterministic policy](#deterministic-bash-policy) produces carries a
+hazard class, and each class is contained only under a stated condition:
+
+| Hazard | Contained when |
+| --- | --- |
+| `privilege` | always — `--unshare-user` makes setuid inert and ownership changes reach only the write set |
+| `external-path` | writes are confined, so the base stays read-only outside the workspace |
+| `interpreter`, `unknown-binary`, `unexpanded` | writes confined **and** credentials masked: whatever it turns out to be, it happens in the box |
+| `delete` | writes confined **and** a checkpoint exists for this request |
+| `network` | the network namespace is unshared; nothing else contains it |
+| `history` | `.git` is bound read-only |
+| `parse` | writes confined **and** the network gone |
+| `denied` | never — a `denyBinaries` entry outranks any containment claim |
+
+Two rows are worth reading closely.
+
+**`network` is not contained by the default profile.** Unsharing the namespace does not make `curl`
+safe; it makes `curl` impossible. Under `workspace` the network stays up and an outward-facing
+command is still a dialog. What confinement buys on that path is that a `curl` which does run has
+nothing worth exfiltrating — credentials are masked, secret variables are gone, and the filesystem
+outside the workspace is read-only. Under `offline` the class really is contained, because the
+command cannot reach out at all.
+
+Removing the network also means removing the sockets that answer *on the command's behalf*.
+`--unshare-net` blocks sockets, not sockets-to-a-proxy: `systemd-resolved` will still answer DNS over
+its unix socket from inside a namespace with no network. `offline` and `strict` therefore mask
+`/run/systemd/resolve`, `/run/dbus`, the container sockets, and the session bus. Blocking transfer
+while leaving resolution would be exactly the half-containment this design refuses to claim.
+
+**`delete` depends on the checkpoint, not on the sandbox.** The workspace has to be writable for
+anything to work, so `rm -rf build/` inside it succeeds; what makes that acceptable is that `/undo`
+restores it. With `checkpoints: false`, or after a failed snapshot, the class stops being contained
+and the dialog comes back.
+
+### Which dialogs are actually retired
+
+```
+in force = sandbox.relax ∩ (what the profile contains) ∩ (something is applying the sandbox)
+```
+
+A command's dialog is skipped only when **every** one of its findings is in that set. A finding
+carrying no hazard class never relaxes — an unclassified finding is one this logic has not been
+taught to reason about, and the safe reading of "unknown" is "still ask".
+
+The default `relax` is `external-path`, `privilege`, `interpreter`, `unknown-binary`, and
+`unexpanded`. `delete` is left out even though the default profile contains it: a build directory
+that vanishes is the thing users notice most, so earning it back should be a deliberate
+`/safety-config sandbox.relax add delete`.
+
+Widening the sandbox withdraws the claims that rested on what was widened. A `writePaths` entry
+covering the home directory sets `external-path`, `interpreter`, and `delete` back to confirming; a
+`keepPaths` entry that un-masks a credential store does the same for the classes that rest on
+masking. Asking to relax something the profile does not contain grants nothing rather than erroring.
+
+The third term is the one that matters most. Containment is checked **before** the classifier — a
+hazard the box neutralizes should not cost an LLM round-trip — but it is only ever checked when
+something in the process is genuinely wrapping commands. `confirm-bash` owns Pi's Bash tool and
+declares itself the sandbox host as it loads; if it did not load, or the probe failed, or `/sandbox
+off` is set, then **nothing is relaxed** and every dialog that fires today still fires. Relaxing a
+confirmation for confinement that is not happening is the one failure this design cannot have.
+
+### Leaving the sandbox
+
+Some things cannot run in a user namespace at all. `docker`, `podman`, `systemctl`, `nsenter`, and
+`machinectl` are never wrapped, named in `sandbox.exempt` so the model does not have to discover it.
+The exemption is whole-command: `docker ps | grep web` has to work, and confining the pipeline would
+break it as surely as confining the binary.
+
+For everything else the model has one way to ask. A Bash call carrying `sandbox: false` and a
+one-line `reason` raises a dedicated dialog, and approval releases that single call:
+
+```text
+Run outside the sandbox?
+  make install
+  ▲ this command would run unconfined
+  the model's reason · writes to /usr/local
+```
+
+**A denial does not block the command — it runs confined instead.** The model asked to leave the box
+because it expects the box to be in the way; refusing that and running the command anyway lets it
+fail on its own terms and be adapted to, where blocking turns a hint into a hard error nothing can
+act on. A headless session denies for the same reason: there is nobody to ask, and confinement is the
+safe answer to an unanswered question. `sandbox.escape` takes `ask` (the default), `never`, and
+`always`.
+
+The model is told all of this in one short system-prompt section, added only while confinement is
+actually active — a brief describing a sandbox that is not running would explain away real permission
+errors. It names the writable paths, says that a denial outside them is the sandbox rather than a
+broken machine, and tells the model not to retry with `sudo`.
+
+### When it is unavailable
+
+The feature is Linux-only and loud about it. On macOS or Windows, without `bwrap`, or where user
+namespaces are disabled, the session-start probe fails and `sandbox.onUnavailable` decides:
+
+- **`warn`** (the default): one warning, commands run unconfined, and **nothing is relaxed** — open
+  on execution, closed on the ergonomics.
+- **`refuse`**: Bash calls are blocked outright, naming the reason. This applies before the mode
+  bypass, so a `yolo` session that asked to be sandboxed is not silently unsandboxed.
+
+The probe runs the real profile — `bwrap … -- /bin/true` — rather than merely looking for the binary,
+so a profile whose own bindings are impossible is caught once at session start instead of arriving as
+a mystery failure on the first command. It is re-run whenever a `sandbox.*` setting changes.
+
+bwrap writes its own setup errors to stderr and exits 1, which is indistinguishable from the command
+failing by exit code alone. A Bash result whose output carries a `bwrap:` line is rewritten to say
+that the command never ran, that this is the sandbox rather than the command, and to try
+`/sandbox test`.
+
+### Known limits
+
+- Only Bash is confined. `read`, `write`, `edit`, and MCP tools run in Pi's process.
+- A rule-allowed command that writes outside the workspace now fails where it previously succeeded.
+  That is the intended boundary, but it is a behaviour change before it is a benefit.
+- `.git` is writable under `workspace` and `offline`, so a history rewrite is confined but not
+  contained; `/undo` restores the worktree, not the refs.
+- Nested containers do not work inside a user namespace, which is what `sandbox.exempt` is for.
+- The sandbox bounds what a command can reach, not what a reachable thing can be made to do.
 
 ## Deterministic Bash policy
 
@@ -576,9 +777,42 @@ malformed, and individually invalid values fall back to defaults.
   "allowTools": [],
   "denyTools": [],
   "checkpoints": true,
-  "checkpointRetain": 20
+  "checkpointRetain": 20,
+  "sandbox": {
+    "enabled": true,
+    "profile": "workspace",
+    "relax": ["external-path", "privilege", "interpreter", "unknown-binary", "unexpanded"],
+    "escape": "ask",
+    "exempt": ["docker", "podman", "systemctl", "nsenter", "machinectl"],
+    "writePaths": [],
+    "readPaths": [],
+    "hidePaths": [],
+    "keepPaths": [],
+    "cachePaths": ["~/.cache", "~/.cargo", "~/.rustup", "~/.npm", "~/.m2", "~/.gradle"],
+    "devicePaths": [],
+    "hideEnv": ["*_API_KEY", "*_TOKEN", "*_SECRET", "*_PASSWORD", "AWS_*", "GH_TOKEN", "GITHUB_TOKEN"],
+    "network": null,
+    "tmp": "session",
+    "userCommands": false,
+    "onUnavailable": "warn",
+    "extraArgs": [],
+    "bwrapPath": "bwrap",
+    "shell": "/bin/bash"
+  }
 }
 ```
+
+Every `sandbox` field is a scalar, an enum, or a string list, so `/safety-config` edits all of it
+with completion — `/safety-config sandbox.profile offline`, `/safety-config sandbox.relax add
+delete`, `/safety-config sandbox.hidePaths add ~/.config/rclone`. Bind and mask paths accept `~`,
+unlike `allowReadPaths`, which is compared against canonical paths at policy time; a relative entry
+falls the whole field back rather than being anchored to whatever directory Pi happens to be in.
+
+`keepPaths` subtracts from the merged mask list, so making one credential store visible costs one
+entry rather than restating the rest. `extraArgs` is appended to every invocation verbatim, before
+`--chdir`, and is the escape hatch for anything the profile model does not express. A change to any
+`sandbox.*` field rebuilds the profile and re-runs the probe, since a changed binding is exactly the
+case where the probe's answer may differ.
 
 Every `allowReadPaths` entry must be an absolute directory path. If the field contains a relative
 path or any non-string entry, the complete field falls back to its empty default. `allowTools` and

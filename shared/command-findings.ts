@@ -16,6 +16,35 @@
  */
 export type FindingSeverity = "violation" | "advisory";
 
+/**
+ * What kind of risk a finding represents, independent of how it is worded. The sandbox uses this to
+ * decide whether confinement already neutralizes a finding, which is a question about the class of
+ * the hazard rather than about the sentence describing it — matching on reason text would silently
+ * stop working the first time a message is reworded.
+ */
+export type Hazard =
+	/** Removes files: `rm`, `rmdir`, `shred`, `truncate`, `git clean`, `git reset --hard`. */
+	| "delete"
+	/** Changes privilege or ownership: `sudo`, `doas`, `su`, `chmod`, `chown`, `chgrp`, `setfacl`. */
+	| "privilege"
+	/** Reaches off the machine: `curl`, `wget`, `ssh`, `scp`, `git push`, `gh`, `npm publish`. */
+	| "network"
+	/** Runs arbitrary code: `bash`, `sh`, `node`, `python`, `ruby`, and the other interpreters. */
+	| "interpreter"
+	/** Rewrites Git history: `git rebase`, `git commit --amend`. */
+	| "history"
+	/** Touches a path outside the workspace, the scratch roots, and the configured read paths. */
+	| "external-path"
+	/** A binary deterministic policy does not recognize. */
+	| "unknown-binary"
+	/** A construct that is parsed but not expanded: `$VAR`, `$(…)`, `<(…)`, a trailing `&`. */
+	| "unexpanded"
+	/** The command could not be tokenized in a way worth trusting. */
+	| "parse"
+	/** Held by a `denyBinaries` entry — a deliberate user override, never softened by anything. */
+	| "denied";
+
+
 export interface CommandFinding {
 	/** Why this segment requires confirmation, without any chain-position prefix. */
 	reason: string;
@@ -28,6 +57,11 @@ export interface CommandFinding {
 	end?: number;
 	/** Binary the segment invoked, when the policy resolved one. */
 	binary?: string;
+	/**
+	 * Class of risk this finding represents. Absent when the policy that produced it does not
+	 * classify hazards; a finding without one is never treated as contained by the sandbox.
+	 */
+	hazard?: Hazard;
 }
 
 export interface FindingTheme {

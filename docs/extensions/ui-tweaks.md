@@ -102,7 +102,7 @@ colour for how much the session is being held back — right-aligned against the
 which is the emptiest line the footer has:
 
 ```text
-~/Code/pi-extensions (main) • spike                  ▤ plan  ◆ read-only  ◉ sub ×2
+~/Code/pi-extensions (main) • spike                  ✎ plan  ◆ read-only  ◉ sub ×2
 ```
 
 The badges come from the shared registry in `shared/status-registry.ts`. An extension publishes an
@@ -112,7 +112,7 @@ package publishes three:
 
 | Key | Badge | Tone | Meaning |
 | --- | --- | --- | --- |
-| `plan-mode` | `▤ plan` | warning | Plan mode is active; editing tools are withdrawn |
+| `plan-mode` | `✎ plan` | warning | Plan mode is active; editing tools are withdrawn |
 | `safety` | `◆ auto`, `◆ safe`, `◆ read-only` | accent, warning, error | The safety mode in force; `yolo` publishes nothing |
 | `subagent` | `◉ sub`, `◉ sub ×3` | accent | Children running right now |
 

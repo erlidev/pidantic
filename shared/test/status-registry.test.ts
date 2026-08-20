@@ -26,7 +26,7 @@ test("setting a status writes both halves, and the plain text falls back to the 
 test("clearing a status withdraws the badge with it", (t) => {
 	t.after(resetStatusRegistry);
 	const { ctx, statuses } = fakeUi();
-	setStatusBadge(ctx, "plan-mode", { icon: "▤", label: "plan" });
+	setStatusBadge(ctx, "plan-mode", { icon: "✎", label: "plan" });
 
 	setStatusBadge(ctx, "plan-mode", undefined);
 	assert.equal(statusBadge("plan-mode"), undefined);

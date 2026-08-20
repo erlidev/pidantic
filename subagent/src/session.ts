@@ -20,6 +20,7 @@ import {
 	snapshotPlanMode,
 	snapshotSafetyMode,
 } from "../../shared/mode-registry.ts";
+import { restoreSandboxSnapshot, snapshotSandbox } from "../../shared/sandbox-registry.ts";
 import type { SubagentMode } from "./brief.ts";
 
 const CHILD_SAFETY_MODE_ENV = "PI_SUBAGENT_SAFETY_MODE";
@@ -108,6 +109,10 @@ export function createChildSessionGroup(): ChildSessionGroup {
 	let inheritedSafetyMode: ReturnType<typeof getSafetyMode> = "yolo";
 	let safetySnapshot: ReturnType<typeof snapshotSafetyMode> | undefined;
 	let planSnapshot: ReturnType<typeof snapshotPlanMode> | undefined;
+	// A child loads its own copy of safety, which claims the sandbox slot the same way it claims the
+	// mode. Without this the parent's wrapper would be left withdrawn once the child shut down, and
+	// the parent's own commands would silently stop being confined.
+	let sandboxSnapshot: ReturnType<typeof snapshotSandbox> | undefined;
 	let restoreHeadless: (() => void) | undefined;
 	let startupTail = Promise.resolve();
 
@@ -116,6 +121,7 @@ export function createChildSessionGroup(): ChildSessionGroup {
 			if (active === 0) {
 				safetySnapshot = snapshotSafetyMode();
 				planSnapshot = snapshotPlanMode();
+				sandboxSnapshot = snapshotSandbox();
 				inheritedSafetyMode = getSafetyMode();
 				restoreHeadless = applyHeadlessOverrides(mode);
 			}
@@ -130,9 +136,11 @@ export function createChildSessionGroup(): ChildSessionGroup {
 					if (active !== 0) return;
 					if (safetySnapshot) restoreSafetyModeSnapshot(safetySnapshot);
 					if (planSnapshot) restorePlanModeSnapshot(planSnapshot);
+					if (sandboxSnapshot) restoreSandboxSnapshot(sandboxSnapshot);
 					restoreHeadless?.();
 					safetySnapshot = undefined;
 					planSnapshot = undefined;
+					sandboxSnapshot = undefined;
 					restoreHeadless = undefined;
 				},
 			};

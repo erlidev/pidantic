@@ -70,7 +70,7 @@ function headlessConfirmationReason(action: string): string {
 function setPlanStatus(ctx: Pick<ExtensionContext, "ui">, active: boolean): void {
 	// Plan mode is the outermost restriction a session can be in, so its badge sorts first, and it
 	// wears the same warning colour as the banner the transition prints.
-	setStatusBadge(ctx, "plan-mode", active ? { icon: "▤", label: "plan", tone: "notice", order: 10, plain: "Plan Mode" } : undefined);
+	setStatusBadge(ctx, "plan-mode", active ? { icon: "✎", label: "plan", tone: "notice", order: 10, plain: "Plan Mode" } : undefined);
 }
 
 function transitionContent(active: boolean, theme: Pick<Theme, "fg" | "bold">): string {

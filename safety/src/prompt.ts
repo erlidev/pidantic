@@ -90,3 +90,37 @@ export function toolUserPrompt(name: string, description: string, args: string):
 		`<untrusted-tool-arguments>${delimited(args)}</untrusted-tool-arguments>`,
 	].join("\n");
 }
+
+/**
+ * What the model is told about confinement, appended to the system prompt only while the sandbox is
+ * actually running.
+ *
+ * The second half matters as much as the first. A permission error inside a sandbox looks exactly
+ * like a broken machine, and a model that reads it that way retries with `sudo`, then works around
+ * it, then reports the environment as unusable. Saying plainly what is writable, that a denial is
+ * the sandbox, and that there is one legitimate way to ask to leave it, converts a whole class of
+ * confusing failures into one decision the user can answer.
+ */
+export function sandboxBrief(options: {
+	cwd: string;
+	writable: readonly string[];
+	network: boolean;
+	profile: string;
+	escapable: boolean;
+}): string {
+	const writable = options.writable.length > 0 ? options.writable.join(", ") : options.cwd;
+	const lines = [
+		`## Sandbox\n`,
+		`Bash commands run inside a bubblewrap sandbox (profile: ${options.profile}).`,
+		`- Writable: ${writable}.`,
+		`- Everything else on the filesystem is read-only. Credential directories are masked and secret environment variables are removed.`,
+		`- Network: ${options.network ? "available" : "unavailable"}.`,
+		`- A permission error on a path outside the writable list is the sandbox, not a broken environment. Do not retry it with sudo, and do not report it as a machine problem.`,
+	];
+	if (options.escapable) {
+		lines.push(
+			`- If a command genuinely must run outside the sandbox — a container runtime, a system service, or writing to a path outside the workspace — call bash with sandbox: false and a one-line reason. The user approves or denies that single call. Use it sparingly; everything else belongs inside.`,
+		);
+	}
+	return lines.join("\n");
+}

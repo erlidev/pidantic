@@ -1,15 +1,17 @@
 # Pidantic
 
-Pidantic is a package of nine extensions for [Pi](https://pi.dev) that adds web research, approval
-gates for risky commands, Git checkpoints with `/undo`, a read-only planning mode, background
-subagents, and terminal quality-of-life tweaks. The extensions build on each other — safety's mode
+Pidantic is a package of nine extensions for [Pi](https://pi.dev) that adds web research, a
+bubblewrap sandbox for Bash, approval gates for risky commands, Git checkpoints with `/undo`, a
+read-only planning mode, background subagents, and terminal quality-of-life tweaks. The extensions build on each other — safety's mode
 shows up as a badge in the ui-tweaks footer, and scratchpad's directory is exempt from safety's
 dialogs — so the package is installed whole rather than picked from a menu.
 
 ## Install
 
 Requirements: Node.js 22.19 or newer, and Pi (the `confirm-bash` extension needs Pi 0.84 or newer).
-There is no build step — Pi loads the TypeScript directly.
+There is no build step — Pi loads the TypeScript directly. Safety's Bash sandbox additionally needs
+Linux with `bubblewrap` installed and unprivileged user namespaces enabled; without them the rest of
+the package is unaffected and the sandbox reports itself unavailable.
 
 ```bash
 pi install https://github.com/erlidev/pidantic
@@ -42,6 +44,7 @@ search({"query": "Rust async cancellation"})
 fetch({"url": "https://docs.example.com/guide"})
 /search-status
 /safety safe
+/sandbox
 /plan
 ```
 
@@ -53,7 +56,7 @@ extensions work as soon as the package is installed.
 | Extension | What it does |
 | --- | --- |
 | [`localsearch`](docs/extensions/localsearch.md) | Web, Wikipedia, and GitHub search plus clean page extraction for the model |
-| [`safety`](docs/extensions/safety.md) | Confirmation gates, a read-only mode, and Git checkpoints with `/undo` |
+| [`safety`](docs/extensions/safety.md) | A bubblewrap sandbox for Bash, confirmation gates, a read-only mode, and Git checkpoints with `/undo` |
 | [`confirm-bash`](docs/extensions/confirm-bash.md) | Model-requested approval before a specific Bash command runs |
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` — interrupt a run and record why |
 | [`plan-mode`](docs/extensions/plan-mode.md) | Read-only investigation that ends in an approved Markdown plan |
@@ -83,9 +86,25 @@ filter expressions, provider order, quotas, and the full configuration.
 
 ### safety
 
-Approval gates between the model and risky actions, plus a Git checkpoint before every
-state-changing message so `/undo` restores everything that message caused. Pick the mode that
-matches how much trust you want to give:
+Two layers between the model and your machine. On Linux, Bash commands run inside a
+[bubblewrap](https://github.com/containers/bubblewrap) sandbox: the workspace and the build caches
+are writable, the rest of the filesystem is read-only, and credential stores and secret environment
+variables are gone. On top of that sit approval gates and a Git checkpoint before every
+state-changing message, so `/undo` restores everything that message caused.
+
+The two compose rather than stack up: **a hazard the sandbox provably contains stops raising a
+dialog.** An interpreter, an unknown binary, or a stray path is answered by the box; an outward-facing
+command is not, because removing the network breaks `curl` rather than containing it, so that one
+still asks. Nothing is ever relaxed for a sandbox that is not actually running.
+
+```text
+/sandbox                     # what is confined, writable, masked, and relaxed
+/sandbox off                 # this session only
+/sandbox offline|strict      # tighter profiles; offline removes the network
+/sandbox test                # probe the box and report what it could reach
+```
+
+Pick the mode that matches how much trust you want to give:
 
 ```text
 /safety yolo         # default; safety is inert
@@ -100,14 +119,20 @@ matches how much trust you want to give:
 - The `auto` classifier is optional: enable it in `safety.json` (`classifier.enabled`). The
   bundled `ling-tiny` GPU service in [Services](#services) is the default endpoint.
 - Headless runs block confirmation-required calls unless `PI_SAFETY_HEADLESS=allow`.
+- The sandbox is Linux-only and degrades loudly: where bwrap or user namespaces are unavailable,
+  commands run unconfined, every dialog that fires today still fires, and the footer says so.
+- Only Bash is confined — pi's `read`, `write`, and `edit` run in-process and are covered by the
+  modes and checkpoints instead.
 
-See the [safety manual](docs/extensions/safety.md) for the deterministic policy, checkpoint
-semantics, and classifier behavior.
+See the [safety manual](docs/extensions/safety.md) for the sandbox profiles, what each one contains,
+the deterministic policy, checkpoint semantics, and classifier behavior.
 
 ### confirm-bash
 
 Lets the model ask you before a specific Bash command runs: the call carries `confirm: true` and a
-one-line reason, and you approve or deny that single call. Unflagged commands are untouched — this
+one-line reason, and you approve or deny that single call. It owns pi's Bash tool for the package, so
+it is also where safety's sandbox rewrite is applied and where the model's `sandbox: false` request
+to leave the box is declared. Unflagged commands are untouched — this
 is a model-requested gate, not an allowlist. Tell the model when to ask for confirmation in your
 project or global `AGENTS.md`.
 

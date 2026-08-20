@@ -271,7 +271,7 @@ const TONE_COLORS: Record<StatusTone, string> = {
 const BADGE_GAP = "  ";
 
 /**
- * `◆ safe  ▤ plan` — each badge its extension's glyph and short label, painted by tone. A status
+ * `◆ safe  ✎ plan` — each badge its extension's glyph and short label, painted by tone. A status
  * with no badge behind it is still drawn, in the dim every unremarkable field on the line wears.
  */
 export function renderStatuses(statuses: readonly FooterStatus[], theme: FooterTheme): string {

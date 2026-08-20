@@ -1,7 +1,7 @@
 import { basename, isAbsolute, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { classifyTokens, tokenizeCommand, type CommandSegment, type Redirection, type TokenizeIssue } from "../../shared/bash-policy.ts";
-import type { CommandFinding, FindingSeverity } from "../../shared/command-findings.ts";
+import type { CommandFinding, FindingSeverity, Hazard } from "../../shared/command-findings.ts";
 
 export type RiskVerdict = "allow" | "ask" | "residual";
 export interface RiskResult {
@@ -42,15 +42,15 @@ const LOCAL_MUTATION_BINARIES = new Set([
 const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn"]);
 
 /** One segment's verdict, before it is turned into a finding with a span. */
-type SegmentVerdict = { verdict: RiskVerdict; reason?: string; binary?: string; severity?: FindingSeverity };
+type SegmentVerdict = { verdict: RiskVerdict; reason?: string; binary?: string; severity?: FindingSeverity; hazard?: Hazard };
 
-function ask(reason: string, binary?: string): SegmentVerdict {
-	return { verdict: "ask", reason, binary };
+function ask(hazard: Hazard, reason: string, binary?: string): SegmentVerdict {
+	return { verdict: "ask", reason, binary, hazard };
 }
 
 /** A command-level result with no segment to point at. */
 function whole(verdict: RiskVerdict, reason: string): RiskResult {
-	return { verdict, reason, findings: [{ reason }], mutates: true };
+	return { verdict, reason, findings: [{ reason, hazard: "parse" }], mutates: true };
 }
 
 /** Whether a redirection lands on the filesystem; a read, a descriptor duplication, and `/dev/null` do not. */
@@ -116,6 +116,7 @@ function redirectionFinding(redirection: Redirection, options: RiskOptions, segm
 	return {
 		reason: `redirection ${read ? "source" : "target"} resolves outside workspace: ${target}`,
 		severity: read ? "advisory" : "violation",
+		hazard: "external-path",
 		segment,
 		start: redirection.start,
 		end: redirection.end,
@@ -139,6 +140,7 @@ function uncertainFinding(issue: TokenizeIssue, segments: readonly CommandSegmen
 	const segment = segments[index];
 	return {
 		reason: UNCERTAIN_REASONS[issue.reason] ?? issue.reason,
+		hazard: "unexpanded",
 		segment: index >= 0 ? index + 1 : undefined,
 		start: segment?.start,
 		end: segment?.end,
@@ -147,19 +149,19 @@ function uncertainFinding(issue: TokenizeIssue, segments: readonly CommandSegmen
 
 /** The behavior rules, evaluated independently of where the command's path arguments point. */
 function classifyBehavior(tokens: string[], binary: string, args: string[], readOnly: boolean): SegmentVerdict {
-	if (DELETE_BINARIES.has(binary)) return ask(`deletion command "${binary}"`, binary);
-	if (PRIVILEGE_BINARIES.has(binary)) return ask(`privilege or ownership command "${binary}"`, binary);
-	if (OUTWARD_BINARIES.has(binary)) return ask(`outward-facing command "${binary}"`, binary);
-	if (SHELLS_AND_INTERPRETERS.has(binary)) return ask(`interpreter "${binary}" can perform arbitrary actions`, binary);
+	if (DELETE_BINARIES.has(binary)) return ask("delete", `deletion command "${binary}"`, binary);
+	if (PRIVILEGE_BINARIES.has(binary)) return ask("privilege", `privilege or ownership command "${binary}"`, binary);
+	if (OUTWARD_BINARIES.has(binary)) return ask("network", `outward-facing command "${binary}"`, binary);
+	if (SHELLS_AND_INTERPRETERS.has(binary)) return ask("interpreter", `interpreter "${binary}" can perform arbitrary actions`, binary);
 
-	if (binary === "curl" || binary === "wget") return ask(`network command "${binary}"`, binary);
+	if (binary === "curl" || binary === "wget") return ask("network", `network command "${binary}"`, binary);
 	if (binary === "git") {
 		const subcommand = args.find((arg) => !arg.startsWith("-")) ?? "";
-		if (["push", "send-email"].includes(subcommand)) return ask(`outward-facing git ${subcommand}`, binary);
-		if (subcommand === "clean") return ask("git clean deletes worktree files", binary);
-		if (subcommand === "reset" && args.includes("--hard")) return ask("git reset --hard discards worktree changes", binary);
+		if (["push", "send-email"].includes(subcommand)) return ask("network", `outward-facing git ${subcommand}`, binary);
+		if (subcommand === "clean") return ask("delete", "git clean deletes worktree files", binary);
+		if (subcommand === "reset" && args.includes("--hard")) return ask("delete", "git reset --hard discards worktree changes", binary);
 		if (subcommand === "rebase" || (subcommand === "commit" && args.some((arg) => arg === "--amend"))) {
-			return ask("git history rewrite", binary);
+			return ask("history", "git history rewrite", binary);
 		}
 		return { verdict: "allow", binary };
 	}
@@ -168,17 +170,17 @@ function classifyBehavior(tokens: string[], binary: string, args: string[], read
 		if (["pr view", "pr list", "pr diff", "pr checks", "issue view", "issue list", "repo view", "release view", "release list"].includes(command)) {
 			return { verdict: "allow", binary };
 		}
-		return ask(`outward-facing gh command "${command}"`, binary);
+		return ask("network", `outward-facing gh command "${command}"`, binary);
 	}
 	if (PACKAGE_MANAGERS.has(binary)) {
 		if (["publish", "unpublish", "login", "logout", "owner", "access", "token", "deprecate"].includes(args[0] ?? "")) {
-			return ask(`outward-facing ${binary} ${args[0]}`, binary);
+			return ask("network", `outward-facing ${binary} ${args[0]}`, binary);
 		}
 		return { verdict: "allow", binary };
 	}
 	if (LOCAL_MUTATION_BINARIES.has(binary)) return { verdict: "allow", binary };
 	if (readOnly) return { verdict: "allow", binary };
-	return { verdict: "residual", reason: `binary "${binary}" is unrecognized`, binary };
+	return { verdict: "residual", reason: `binary "${binary}" is unrecognized`, binary, hazard: "unknown-binary" };
 }
 
 function classifyKnown(tokens: string[], options: RiskOptions): SegmentVerdict {
@@ -186,7 +188,7 @@ function classifyKnown(tokens: string[], options: RiskOptions): SegmentVerdict {
 	const args = tokens.slice(1);
 	const allow = new Set(options.allowBinaries ?? []);
 	const deny = new Set(options.denyBinaries ?? []);
-	if (deny.has(binary) || deny.has(tokens[0]!)) return ask(`binary "${binary}" is denied by safety configuration`, binary);
+	if (deny.has(binary) || deny.has(tokens[0]!)) return ask("denied", `binary "${binary}" is denied by safety configuration`, binary);
 	if (allow.has(binary) || allow.has(tokens[0]!)) return { verdict: "allow", reason: "allowed by safety configuration", binary };
 
 	// Classified from the tokens, and under the binary's basename, so a quoted regex is not re-read
@@ -198,10 +200,10 @@ function classifyKnown(tokens: string[], options: RiskOptions): SegmentVerdict {
 	// A deterministically read-only command that only reaches outside the workspace still confirms,
 	// but it is flagged as an advisory: nothing about it is destructive or outward-facing.
 	if (readOnly && behavior.verdict === "allow") {
-		return { verdict: "ask", severity: "advisory", reason: "reads a path outside the workspace and configured read paths", binary };
+		return { verdict: "ask", severity: "advisory", hazard: "external-path", reason: "reads a path outside the workspace and configured read paths", binary };
 	}
 	// An unrecognized binary must not fall through to the classifier just because its path is external.
-	if (behavior.verdict !== "ask") return ask("command contains a path outside the workspace or configured read paths", binary);
+	if (behavior.verdict !== "ask") return ask("external-path", "command contains a path outside the workspace or configured read paths", binary);
 	return behavior;
 }
 
@@ -240,6 +242,7 @@ export function classifyRisk(command: string, options: RiskOptions): RiskResult 
 		const finding: CommandFinding = {
 			reason: result.reason ?? "requires confirmation",
 			severity: result.severity,
+			hazard: result.hazard,
 			binary: result.binary,
 			segment: index + 1,
 			start: segment.start,

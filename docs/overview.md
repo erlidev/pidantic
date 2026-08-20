@@ -49,7 +49,9 @@ pidantic/
 │   ├── mode-registry.ts
 │   ├── process-registry.ts
 │   ├── read-only-tools.ts
+│   ├── sandbox-registry.ts
 │   ├── scratchpad-registry.ts
+│   ├── session-paths.ts
 │   ├── settings.ts
 │   ├── status-registry.ts
 │   ├── tool-notes.ts
@@ -58,6 +60,7 @@ pidantic/
 │       ├── bash-policy.test.ts
 │       ├── command-findings.test.ts
 │       ├── process-registry.test.ts
+│       ├── sandbox-registry.test.ts
 │       ├── scratchpad-registry.test.ts
 │       ├── settings.test.ts
 │       ├── settings-coverage.test.ts
@@ -66,7 +69,8 @@ pidantic/
 ├── confirm-bash/
 │   ├── index.ts
 │   └── test/
-│       └── gate.test.ts
+│       ├── gate.test.ts
+│       └── sandbox.test.ts
 ├── stop/
 │   └── index.ts
 ├── plan-mode/
@@ -94,6 +98,13 @@ pidantic/
 │   │   ├── prompt.ts
 │   │   ├── read-only.ts
 │   │   ├── risk-policy.ts
+│   │   ├── sandbox/
+│   │   │   ├── argv.ts
+│   │   │   ├── hazards.ts
+│   │   │   ├── index.ts
+│   │   │   ├── probe.ts
+│   │   │   ├── profile.ts
+│   │   │   └── tmp.ts
 │   │   ├── settings.ts
 │   │   ├── state.ts
 │   │   └── tiers.ts
@@ -106,6 +117,11 @@ pidantic/
 │       ├── pre-gate.test.ts
 │       ├── read-only.test.ts
 │       ├── risk-policy.test.ts
+│       ├── sandbox-argv.test.ts
+│       ├── sandbox-config.test.ts
+│       ├── sandbox-gate.test.ts
+│       ├── sandbox-hazards.test.ts
+│       ├── sandbox-smoke.ts
 │       ├── settings.test.ts
 │       ├── state.test.ts
 │       └── tiers.test.ts
@@ -249,7 +265,7 @@ pidantic/
 
 Pidantic installs whole, so its extensions may rely on each other being present. They still do not
 import each other: the only cross-directory imports in this repository land in `shared/`, which
-imports pi and nothing else here. Runtime communication goes through five registries in `shared/`,
+imports pi and nothing else here. Runtime communication goes through six registries in `shared/`,
 each carrying one kind of fact between a producer and a consumer:
 
 | Registry | Publishers | Consumers | What it carries |
@@ -259,8 +275,9 @@ each carrying one kind of fact between a producer and a consumer:
 | `tool-notes.ts` | `safety` | `confirm-bash` | One-line annotations under a tool call, plus the row's repaint callback for a note that lands late |
 | `attention.ts` | `shared/confirm-dialog.ts`, for every dialog in the package | `ui-tweaks` | That a run is now waiting on a person |
 | `scratchpad-registry.ts` | `scratchpad` | `safety` | The live per-session scratch directories a write may go to without a dialog |
+| `sandbox-registry.ts` | `safety` | `confirm-bash` | How to rewrite a Bash command so it runs confined, which calls are released from it, and whether anything applies the rewrite at all |
 
-All five live in `Symbol.for` slots via `process-registry.ts` rather than in module scope, because pi
+All six live in `Symbol.for` slots via `process-registry.ts` rather than in module scope, because pi
 evaluates a shared module once per importing extension; see that file for the detail. Keys carry the
 `pidantic.` prefix so they cannot collide with another package's state.
 
@@ -282,7 +299,14 @@ Tool registrations omit `promptSnippet`: Pi already includes each literal tool s
 prompt, so a second one-line summary only duplicates permanent context. Behavioral rules that are
 not expressible in a schema remain in `promptGuidelines`.
 
-- `confirm-bash/` overrides Pi's Bash tool schema with optional confirmation fields.
+- `confirm-bash/` overrides Pi's Bash tool schema with optional confirmation and sandbox-escape
+  fields, and hosts the sandbox rewrite. It owns the Bash tool for the whole package — pi resolves a
+  duplicate name first-registration-wins — so it is the only place a command can be rewritten before
+  it is spawned, and the only place that can honestly declare the rewrite is being applied. It holds
+  no policy: the wrapper comes from `shared/sandbox-registry.ts` and the escape dialog is safety's.
+  It also withholds `shellCommandPrefix` from the base definition and applies it inside the wrap,
+  because pi prepends it after the rewrite, which would otherwise run the user's shell setup outside
+  the box while the command ran inside it.
 - `shared/` contains reusable extension components: Bash tokenization/read-only policy, read-only
   tool names, cross-extension mode arbitration, and the interactive confirmation dialog.
   `bash-policy.ts` tokenizes a command once and hands callers the result: segments with their spans,
@@ -344,6 +368,24 @@ not expressible in a schema remain in `promptGuidelines`.
   previous one would strand the parent's root the moment a child started, and a release would
   withdraw a root the releasing session never owned, so each instance holds its own entry and
   membership is a question about every live root.
+  `sandbox-registry.ts` is the sixth, and the only one whose payload is a function: safety decides
+  confinement policy, but `confirm-bash` owns pi's Bash tool — pi resolves a duplicate tool name
+  first-registration-wins, and safety is registered first, so safety registering `bash` would silently
+  drop confirm-bash's own parameters. The wrapper therefore travels here, and identity is the tool
+  call's input object, exactly as `markSafetyApproved` already uses it: pi builds the validated
+  arguments once and hands the same reference to the `tool_call` hook and then to `execute`, which is
+  what lets a per-call decision — an exempt binary, or an escape the user approved — reach the spawn.
+  Keying on command text instead would race across the parallel Bash calls pi issues in one batch,
+  and losing that race would drop a command out of the sandbox. `markSandboxHost` is the part worth
+  understanding: safety retires confirmation dialogs on the strength of confinement, so it must be
+  able to tell a claimed policy from an applied one, and only the extension that actually rewrites
+  commands can say which this is. The claim is exclusive with a snapshot pair, like the mode registry
+  and unlike the scratchpad's, because there has to be exactly one answer per exec.
+  `session-paths.ts` is not a registry at all but the same kind of shared rule: the three-level
+  `<temp>/<prefix>-<uid>/<project>-<hash>/<session>` layout and the sanitization of the two names
+  that become path components, used by both the scratchpad's directory and the sandbox's private
+  `/tmp`. It lives here because the sanitization is the part that must not be written twice with one
+  copy getting it wrong.
   All cross-extension channels keep their state in `process-registry.ts`, not in module scope: pi
   loads every extension entry point through its own jiti instance with module caching disabled, so a
   module two extensions import is evaluated once per extension. A module-level map would give each
@@ -387,6 +429,27 @@ not expressible in a schema remain in `promptGuidelines`.
   every session does — stays independent of editing, which one command does.
   `prompt.ts` holds the classifier's system prompts and untrusted-payload framing, following the same
   convention as `localsearch/src/prompt.ts`: model-facing text stays in one budgetable, testable file.
+  It also holds the sandbox brief, which is appended to the system prompt only while confinement is
+  actually running — a brief describing a sandbox that is not there would explain away real errors.
+  `sandbox/` is the bubblewrap layer, and its split follows what can be tested without a kernel.
+  `profile.ts` is the declarative model: three built-in profiles plus the additive overrides, resolved
+  into absolute, de-duplicated bind and mask lists. It computes two facts the rest of the layer rests
+  on — whether writes are genuinely confined, and whether every credential store that exists on this
+  machine is masked — so a profile widened past the home directory or with a mask kept visible stops
+  claiming what it no longer delivers. `argv.ts` turns a resolved profile into a bwrap command line
+  and is pure, because argv *order* is the security property: bwrap applies operations in sequence, so
+  the read-only base has to precede `/proc`, `/tmp` has to precede the writable binds that may live
+  under it, and masks have to come last or a credential store inside a writable bind survives. It also
+  owns the quoting, which is exact single-quote quoting rather than anything cleverer, so a command
+  reaches the inner shell byte for byte. `hazards.ts` derives what a profile contains from its
+  bindings and intersects that with what the user asked to relax; it is the module that decides
+  whether a dialog is retired, and every rule in it is a statement about a binding rather than about
+  the wording of a finding. `probe.ts` runs the real argv against `/bin/true` once per session, since
+  everything else is a claim about the kernel and this is the only thing that checks one. `tmp.ts`
+  owns the per-session `/tmp`, which exists because a per-call tmpfs would lose a file between two
+  commands. `sandbox/index.ts` holds the session state and is the only stateful piece: it answers
+  `confines()` and `wrap()` with the same logic, which is what keeps the gate from relaxing a dialog
+  for a call that an exempt binary or an approved escape has taken out of the box.
 - `ui-tweaks/` adjusts pi's interactive TUI: the fullscreen mouse-wheel step, which pi fixes at one
   line per notch and exposes no setting for, a replacement footer, optional desktop notifications for
   confirmations and finished runs, and the slash-command argument suggestions pi's editor stops short
@@ -527,6 +590,38 @@ the file rather than to the stale snapshot its caller read, concurrent commits i
 land, and a mutation that throws neither surfaces to the search nor stalls the queue behind it. `fixtures/` contains representative output from major documentation generators so HTML
 extraction can be tested without network access. `smoke.ts` is the explicit live integration check;
 it is not part of the default isolated test glob.
+
+## Sandbox tests
+
+Confinement is checked at three levels, because each answers a question the others cannot.
+`sandbox-argv.test.ts` pins the command line: operation ordering (the base before `/proc`, `/tmp`
+before the writable binds, masks last), a `-try` variant on every optional path, the `--dev-bind` a
+masked *file* needs — an ordinary bind is mounted `nodev`, and opening `/dev/null` on a `nodev` mount
+fails with EACCES rather than reading empty — the environment globs, and single-quote quoting against
+newlines, backslashes, and substitutions. `sandbox-hazards.test.ts` pins containment as a set of
+statements about bindings: the honesty rules that `network` is not contained without an unshared
+namespace, that `delete` is not contained without a live checkpoint, that widening the write set past
+the home directory or un-masking a credential store withdraws the claims that rested on them, and
+that `denied` is never relaxed by anything. `sandbox-config.test.ts` pins the independent per-field
+fallbacks, including one unknown hazard falling the whole `relax` list back rather than half-applying
+a relaxation set.
+
+`sandbox-gate.test.ts` drives the real extension through the harness for the consequences none of
+those can see: a contained command running with no dialog and saying so in its note, an uncontained
+one still confirming, the escape granted, denied, and headless, `onUnavailable: refuse` blocking
+before the mode bypass, and the two cases that matter most — nothing relaxed when no extension is
+applying the sandbox, and nothing relaxed when the probe failed. Cases needing a live namespace skip
+rather than fail where bubblewrap is unusable. `confirm-bash/test/sandbox.test.ts` pins the other
+half: the registered `execute` runs the wrapper's command, an unclaimed registry changes nothing, an
+exempt input object passes through, and `renderCall` still shows the command the model wrote.
+
+`sandbox-smoke.ts` is the only thing that checks the kernel rather than the argv, and is kept out of
+the default glob like `localsearch/test/smoke.ts`. It asserts what real commands could and could not
+reach: the workspace writable and the home directory not, a masked directory empty and a masked file
+reading as zero bytes, a secret variable gone and a plain one kept, `/tmp` persisting across two
+invocations while the host's `/tmp` stays invisible, and — under `offline` — both a direct connection
+and name resolution refused, which is the case that catches a namespace with no network still
+resolving DNS over the host's `systemd-resolved` socket.
 
 ## Safety tests
 

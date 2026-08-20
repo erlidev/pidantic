@@ -24,6 +24,13 @@ import {
 	type SafetyMode,
 } from "../../shared/mode-registry.ts";
 import { isInScratchpad, scratchpadRoots } from "../../shared/scratchpad-registry.ts";
+import {
+	claimSandbox,
+	createSandboxOwner,
+	hasSandboxHost,
+	markSandboxExempt,
+	releaseSandbox,
+} from "../../shared/sandbox-registry.ts";
 import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
 import { publishStatusBadge, setStatusBadge, type StatusBadge, type StatusTone } from "../../shared/status-registry.ts";
 import { clearToolNotes, recordToolNote, rendersToolNotes } from "../../shared/tool-notes.ts";
@@ -32,9 +39,14 @@ import { CheckpointStore } from "./checkpoint.ts";
 import { probeClassifier, ResidualClassifier } from "./classifier.ts";
 import { configPath, DEFAULTS as CONFIG_DEFAULTS, loadConfig, type SafetyConfig } from "./config.ts";
 import { classifierPreGate } from "./pre-gate.ts";
+import { sandboxBrief } from "./prompt.ts";
 import { readOnlyBash, readOnlyDenial } from "./read-only.ts";
 import { classifyRisk } from "./risk-policy.ts";
-import { rebuildsClassifier, SETTINGS } from "./settings.ts";
+import { secretEnvNames } from "./sandbox/argv.ts";
+import { Sandbox } from "./sandbox/index.ts";
+import { effectiveRelax, fullyContained } from "./sandbox/hazards.ts";
+import { isProfileName, PROFILE_NAMES, type ProfileName } from "./sandbox/profile.ts";
+import { rebuildsClassifier, rebuildsSandbox, SETTINGS } from "./settings.ts";
 import {
 	createSafetyState,
 	persistSafetyState,
@@ -82,6 +94,21 @@ const SAFETY_ICON = "◆";
 function statusBadgeFor(mode: SafetyMode): StatusBadge | undefined {
 	if (mode === "yolo" || isPlanModeActive()) return undefined;
 	return { icon: SAFETY_ICON, label: mode, tone: MODE_TONE[mode], order: 20, plain: `Safety: ${mode}` };
+}
+
+/** One glyph for the box; the label names the profile, which is what changes what it contains. */
+const SANDBOX_ICON = "⊞";
+
+/**
+ * The badge says what is actually happening, not what was configured. A session that wants
+ * confinement and cannot have it draws the alert form rather than nothing, because "off" and
+ * "asked for and unavailable" are the two states a user most needs told apart.
+ */
+function sandboxBadgeFor(status: { active: boolean; wanted: boolean; name: string }): StatusBadge | undefined {
+	if (isPlanModeActive()) return undefined;
+	if (status.active) return { icon: SANDBOX_ICON, label: status.name, tone: "active", order: 21, plain: `Sandbox: ${status.name}` };
+	if (status.wanted) return { icon: SANDBOX_ICON, label: "unavailable", tone: "alert", order: 21, plain: "Sandbox: unavailable" };
+	return undefined;
 }
 
 const MODE_SUMMARY: Record<SafetyMode, string> = {
@@ -149,6 +176,21 @@ function writePath(input: unknown): string | undefined {
 	return typeof value === "string" && value ? value : undefined;
 }
 
+/**
+ * The model's request to leave the sandbox for this one call. `confirm-bash` owns the schema field;
+ * safety only reads it, and reads it defensively because a tool input is model-authored.
+ */
+function escapeRequested(input: unknown): boolean {
+	return typeof input === "object" && input !== null && (input as Record<string, unknown>).sandbox === false;
+}
+
+/** The one-line reason the model attached, shared with confirm-bash's own confirmation field. */
+function escapeReason(input: unknown): string | undefined {
+	if (typeof input !== "object" || input === null) return undefined;
+	const value = (input as Record<string, unknown>).reason;
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function commandOf(input: unknown): string {
 	const value = (input as { command?: unknown } | null)?.command;
 	return typeof value === "string" ? value : "";
@@ -174,6 +216,8 @@ type GateSource =
 	| { kind: "unavailable"; reason: string };
 
 const CLASSIFIER_ALLOWED = "classifier: safe";
+/** Says a dialog was answered by confinement rather than skipped, and by which profile. */
+const SANDBOX_NOTE = "sandboxed";
 /** Says the snapshot exists and how to use it, short enough to sit at the end of another note. */
 const CHECKPOINT_NOTE = "checkpoint taken · /undo restores this request";
 /** Prefixes an explanation that only describes the call, so it is never read as the reason for the hold. */
@@ -229,9 +273,14 @@ function bashConfirmationBody(
 	findings: CommandFinding[],
 	source: GateSource,
 	explanation: () => string | undefined,
+	confinement?: string,
 ): BodyRenderer {
 	return (theme: FindingTheme) => {
 		const lines = [renderCommandFindings(command, findings, theme), "", theme.fg(sourceColor(source), `▲ ${sourceLabel(source)}`)];
+		// What approving actually permits. A `curl` held for reaching the network still cannot read
+		// credentials or write outside the workspace, and the decision reads very differently once
+		// that is on the screen rather than assumed.
+		if (confinement) lines.push(theme.fg("muted", confinement));
 		const line = explanation();
 		if (line) lines.push(theme.fg("muted", line));
 		return lines.join("\n");
@@ -264,6 +313,11 @@ export default function safety(pi: ExtensionAPI): void {
 	 * mode the live session never asked for.
 	 */
 	const owner = createModeOwner("safety");
+	/** This instance's claim on the shared sandbox slot, released alongside the mode claim. */
+	const sandboxOwner = createSandboxOwner("safety");
+	const sandbox = new Sandbox();
+	/** One warning per session when confinement was wanted and the machine could not provide it. */
+	let sandboxWarningShown = false;
 	let config: SafetyConfig;
 	let state = createSafetyState();
 	let classifier: ResidualClassifier;
@@ -288,6 +342,9 @@ export default function safety(pi: ExtensionAPI): void {
 		if (subagentSession) return;
 		statusCtx = ctx;
 		setStatusBadge(ctx, "safety", statusBadgeFor(mode));
+		// Written next to the mode rather than folded into it: the two are orthogonal, and a yolo
+		// session that is nonetheless confined is precisely the configuration worth showing.
+		setStatusBadge(ctx, "sandbox", hasSandboxHost() ? sandboxBadgeFor(sandbox.status()) : undefined);
 	}
 
 	/**
@@ -401,6 +458,107 @@ export default function safety(pi: ExtensionAPI): void {
 		return failed ? explanation : `${DESCRIPTION} · ${explanation}`;
 	}
 
+	/**
+	 * The relaxations in force for this call.
+	 *
+	 * Three things have to be true at once, and each is checked here rather than at the call site so
+	 * none of them can be forgotten: the user asked for the relaxation, the profile provably contains
+	 * that hazard, and something is actually applying the sandbox to this command. `hasSandboxHost()`
+	 * is the last of those — on a pi build where confirm-bash's Bash override did not load, nothing
+	 * wraps anything, and relaxing a dialog then would be the one failure this design cannot have.
+	 */
+	function relaxationFor(command: string, input: unknown, checkpointed: boolean | undefined) {
+		const active = hasSandboxHost() && sandbox.confines(command, input);
+		return effectiveRelax(config.sandbox.relax, sandbox.profile(), { active, checkpointed: checkpointed === true });
+	}
+
+	/**
+	 * Warn once when confinement was configured and is not happening. Silence here would be the worst
+	 * outcome available: the user believes commands are contained and they are not.
+	 */
+	function reportSandboxUnavailable(ctx: Pick<ExtensionContext, "ui">): void {
+		if (sandboxWarningShown || !sandbox.wanted() || sandbox.available()) return;
+		sandboxWarningShown = true;
+		const status = sandbox.status();
+		ctx.ui.notify(
+			`Sandbox unavailable: ${status.reason ?? "unknown reason"}. Commands run unconfined and no confirmation is relaxed.`,
+			"warning",
+		);
+	}
+
+	/**
+	 * Says in the transcript that confinement answered this call, so a dialog that did not appear is
+	 * accounted for rather than merely absent.
+	 */
+	function noteSandboxed(toolCallId: string | undefined, hazards: readonly (string | undefined)[]): void {
+		if (!toolCallId || !rendersToolNotes("bash")) return;
+		const named = [...new Set(hazards.filter((hazard): hazard is string => Boolean(hazard)))];
+		const line = `${SANDBOX_NOTE} (${sandbox.status().name}) · contained: ${named.join(", ")}`;
+		const suffix = checkpointSuffix(toolCallId);
+		recordToolNote(toolCallId, suffix ? `${line} · ${suffix}` : line);
+	}
+
+	/**
+	 * Answer the model's request to run one command outside the sandbox.
+	 *
+	 * A denial does not block the call. The model asked to leave the box because it expects the box to
+	 * be in the way; refusing that and running the command confined lets it fail on its own terms and
+	 * be adapted to, where blocking turns a hint into a hard error the model has no way to act on.
+	 * Headless denies for the same reason — there is nobody to ask, and confinement is the safe answer.
+	 */
+	async function handleEscape(event: { input: unknown; toolCallId?: string }, ctx: ExtensionContext): Promise<void> {
+		if (!sandbox.confines(commandOf(event.input))) return;
+		const command = commandOf(event.input);
+		const reason = escapeReason(event.input);
+
+		if (config.sandbox.escape === "never") {
+			noteEscape(event.toolCallId, "sandbox escape refused by configuration");
+			return;
+		}
+		if (config.sandbox.escape === "always") {
+			markSandboxExempt(event.input);
+			noteEscape(event.toolCallId, "ran outside the sandbox · allowed by configuration");
+			return;
+		}
+		if (isHeadless(ctx)) {
+			noteEscape(event.toolCallId, "sandbox escape not granted · no interactive UI to ask");
+			return;
+		}
+		const decision = await askConfirmation(ctx, {
+			title: "Run outside the sandbox?",
+			body: (theme: FindingTheme) =>
+				[
+					theme.bold(theme.fg("text", command)),
+					"",
+					theme.fg("warning", "▲ this command would run unconfined"),
+					theme.fg("muted", reason ? `the model's reason · ${reason}` : "the model gave no reason"),
+				].join("\n"),
+			reason: "Denying does not block the command; it runs inside the sandbox instead.",
+			approveLabel: "Run unconfined",
+			denyLabel: "Keep confined…",
+		});
+		if (!decision.approved) {
+			noteEscape(event.toolCallId, "sandbox escape denied · ran confined");
+			return;
+		}
+		markSandboxExempt(event.input);
+		noteEscape(event.toolCallId, "ran outside the sandbox · approved by the user");
+	}
+
+	/** One line for the dialog saying what approving this command still cannot do. */
+	function confinementLine(command: string, input: unknown): string | undefined {
+		if (!hasSandboxHost() || !sandbox.confines(command, input)) return undefined;
+		const profile = sandbox.profile();
+		if (!profile) return undefined;
+		const network = profile.network ? "network available" : "no network";
+		return `◆ runs confined (${profile.name}) · writes limited to the workspace · ${network}`;
+	}
+
+	function noteEscape(toolCallId: string | undefined, text: string): void {
+		if (!toolCallId || !rendersToolNotes("bash")) return;
+		recordToolNote(toolCallId, text, "warn");
+	}
+
 	/** Keeps a gated command's provenance and explanation in the transcript too, not only in the dialog. */
 	function noteGate(toolCallId: string | undefined, source: GateSource, explanation: string | undefined): void {
 		if (!toolCallId || !rendersToolNotes("bash")) return;
@@ -470,6 +628,160 @@ export default function safety(pi: ExtensionAPI): void {
 			} catch (error) {
 				ctx.ui.notify(`Checkpoint restore failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 			}
+		},
+	});
+
+
+	/** Human-readable account of what the sandbox is doing, for `/sandbox` with no argument. */
+	function sandboxSummary(): string {
+		const status = sandbox.status();
+		const lines: string[] = [];
+		if (!status.wanted) {
+			lines.push("Sandbox: off — Bash commands run unconfined.");
+			lines.push(config.sandbox.enabled ? "Turned off for this session with /sandbox off." : "Turned off in safety.json (sandbox.enabled).");
+			return lines.join("\n");
+		}
+		if (!status.available) {
+			lines.push(`Sandbox: unavailable — ${status.reason ?? "unknown reason"}`);
+			lines.push(`Commands run unconfined and no confirmation is relaxed (sandbox.onUnavailable: ${config.sandbox.onUnavailable}).`);
+			return lines.join("\n");
+		}
+		if (!hasSandboxHost()) {
+			lines.push("Sandbox: inactive — nothing in this session applies it.");
+			lines.push("The confirm-bash extension owns the Bash tool and did not load, so no command can be wrapped.");
+			return lines.join("\n");
+		}
+		const profile = status.profile;
+		lines.push(`Sandbox: on — profile ${status.name}${status.version ? ` (${status.version})` : ""}`);
+		if (profile) {
+			lines.push(`  writable   ${profile.write.join(", ") || "(none)"}`);
+			lines.push(`  masked     ${[...profile.hideDirs, ...profile.hideFiles].join(", ") || "(none)"}`);
+			lines.push(`  network    ${profile.network ? "available" : "unavailable"}`);
+			lines.push(`  /tmp       ${profile.tmp}`);
+			const contained = [...effectiveRelax(config.sandbox.relax, profile, { active: true, checkpointed: config.checkpoints })];
+			lines.push(`  relaxed    ${contained.join(", ") || "(nothing — every finding still confirms)"}`);
+		}
+		if (config.sandbox.exempt.length > 0) lines.push(`  exempt     ${config.sandbox.exempt.join(", ")}`);
+		return lines.join("\n");
+	}
+
+	/**
+	 * The probe battery. Argv correctness is not something anybody should have to take on trust, so
+	 * this runs the actual checks inside the actual profile and reports what happened.
+	 */
+	async function sandboxTest(ctx: ExtensionContext): Promise<string> {
+		const status = sandbox.status();
+		if (!status.active) return sandboxSummary();
+		const home = process.env.HOME ?? "";
+		// A real variable this machine has and the patterns actually match, so the row reports what
+		// happened rather than what was configured.
+		const secret = secretEnvNames(config.sandbox.hideEnv, process.env)[0];
+		const quote = (value: string) => `'${value.split("'").join(`'\\''`)}'`;
+		// Always at least two spaces, so a long variable name pushes the column instead of colliding.
+		const label = (text: string) => `${text.slice(0, 48)}  `.padEnd(34, " ");
+
+		// Each probe prints one row: a fixed label, then what actually happened. `good` is the outcome
+		// the profile promises, so a row that reports the other one is the interesting case.
+		const probes: { label: string; good: string; bad: string; test: string }[] = [
+			{ label: "write  workspace", good: "ok", bad: "BLOCKED", test: `touch ./.pidantic-probe && rm -f ./.pidantic-probe` },
+			{ label: "write  home", good: "blocked", bad: "LEAKED", test: `! touch ${quote(`${home}/.pidantic-probe`)} 2>/dev/null` },
+			{ label: "write  /etc", good: "blocked", bad: "LEAKED", test: "! touch /etc/.pidantic-probe 2>/dev/null" },
+			{ label: "read   ~/.ssh", good: "masked or absent", bad: "READABLE", test: `! ls -A ${quote(`${home}/.ssh`)} 2>/dev/null | grep -q .` },
+			{ label: "write  /tmp", good: "ok", bad: "BLOCKED", test: "touch /tmp/.pidantic-probe && rm -f /tmp/.pidantic-probe" },
+			{ label: "net    name resolution", good: "reachable", bad: "blocked", test: "getent ahostsv4 example.com >/dev/null 2>&1" },
+			{ label: "net    outbound tcp", good: "reachable", bad: "blocked", test: "(exec 3<>/dev/tcp/1.1.1.1/443) 2>/dev/null" },
+			...(secret ? [{ label: `env    ${secret}`, good: "removed", bad: "LEAKED", test: `test -z "$${secret}"` }] : []),
+		];
+		const script = probes
+			.map((probe) => `if ${probe.test}; then echo ${quote(label(probe.label) + probe.good)}; else echo ${quote(label(probe.label) + probe.bad)}; fi`)
+			.join("\n");
+
+		const wrapped = sandbox.explain(script);
+		if (!wrapped) return "The sandbox profile could not be resolved.";
+		const { execFile } = await import("node:child_process");
+		const output = await new Promise<string>((done) => {
+			execFile("/bin/bash", ["-c", wrapped], { cwd: ctx.cwd, timeout: 20000, encoding: "utf8" }, (error, stdout, stderr) => {
+				done(`${stdout ?? ""}${!stdout && error ? (stderr ?? "") : ""}`.trim());
+			});
+		});
+		const network = status.profile?.network ? "the network is available under this profile" : "the network is removed under this profile";
+		return `Sandbox probe (${status.name}) — ${network}:\n${output || "(no output — the sandbox did not run)"}`;
+	}
+
+	/**
+	 * Rebuild the profile and re-probe it. The probe has to be re-run rather than merely recomputed:
+	 * a profile that cannot start is what `onUnavailable` acts on, and a changed binding is exactly
+	 * the case where that answer may differ from the one taken at session start.
+	 */
+	async function restartSandbox(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<void> {
+		await sandbox.start({
+			cwd: ctx.cwd,
+			sessionId: ctx.sessionManager.getSessionId(),
+			config: config.sandbox,
+			// Read live: a scratchpad is published by another extension at its own session_start, and an
+			// in-process subagent child publishes its own while it runs.
+			scratchRoots: () => scratchpadRoots(),
+		});
+	}
+
+	pi.registerCommand("sandbox", {
+		description: "Report or change Bash sandboxing for this session",
+		getArgumentCompletions: (prefix) =>
+			[
+				{ value: "on", label: "on", description: "Confine Bash commands in this session" },
+				{ value: "off", label: "off", description: "Run Bash commands unconfined in this session" },
+				{ value: "test", label: "test", description: "Run a probe battery inside the sandbox" },
+				{ value: "explain", label: "explain <command>", description: "Print the exact bwrap command line" },
+				...PROFILE_NAMES.map((name) => ({
+					value: name,
+					label: name,
+					description:
+						name === "workspace"
+							? "Workspace writable, credentials masked, network on"
+							: name === "offline"
+								? "As workspace, with the network removed"
+								: "Minimal filesystem, no network, read-only .git",
+				})),
+			].filter((option) => option.value.startsWith(prefix)),
+		handler: async (args: string, ctx: ExtensionContext) => {
+			const trimmed = args.trim();
+			const [verb] = trimmed.split(/\s+/);
+			const remainder = trimmed.slice(verb?.length ?? 0).trim();
+
+			if (!trimmed) {
+				ctx.ui.notify(sandboxSummary(), "info");
+				return;
+			}
+			if (verb === "explain") {
+				if (!remainder) {
+					ctx.ui.notify("Usage: /sandbox explain <command>", "warning");
+					return;
+				}
+				const wrapped = sandbox.explain(remainder);
+				ctx.ui.notify(wrapped ?? "The sandbox profile could not be resolved.", wrapped ? "info" : "warning");
+				return;
+			}
+			if (verb === "test") {
+				ctx.ui.notify(await sandboxTest(ctx), "info");
+				return;
+			}
+			if (verb === "on" || verb === "off") {
+				sandbox.setSessionEnabled(verb === "on");
+				sandboxWarningShown = false;
+				if (verb === "on") await restartSandbox(ctx);
+				setStatus(ctx, state.mode);
+				ctx.ui.notify(sandboxSummary(), "info");
+				return;
+			}
+			if (isProfileName(verb)) {
+				sandbox.setSessionProfile(verb as ProfileName);
+				sandboxWarningShown = false;
+				await restartSandbox(ctx);
+				setStatus(ctx, state.mode);
+				ctx.ui.notify(sandboxSummary(), "info");
+				return;
+			}
+			ctx.ui.notify(`Unknown argument "${verb}". Try /sandbox, /sandbox on|off, /sandbox ${PROFILE_NAMES.join("|")}, /sandbox test, or /sandbox explain <command>.`, "warning");
 		},
 	});
 
@@ -543,6 +855,13 @@ export default function safety(pi: ExtensionAPI): void {
 
 			config = await loadConfig();
 			if (rebuildsClassifier(result.changed)) classifier = new ResidualClassifier(config.classifier);
+			// A changed binding is exactly the case where the probe's answer may differ, so the profile
+			// is rebuilt and re-checked rather than recomputed from the one taken at session start.
+			if (rebuildsSandbox(result.changed)) {
+				sandboxWarningShown = false;
+				await restartSandbox(ctx);
+				setStatus(ctx, state.mode);
+			}
 			if (result.changed.includes("checkpointRetain")) checkpoints?.setRetain(config.checkpointRetain);
 			// Auto mode without a classifier would send every residual call to a failing endpoint and
 			// then to a dialog. Falling back to safe is the same policy without the wasted round-trip.
@@ -569,6 +888,27 @@ export default function safety(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		// Everything below the mode bypass is about confinement, which is orthogonal to safety mode: a
+		// yolo session raises no dialogs and is still sandboxed, which is the default configuration and
+		// the one most sessions run in. Plan mode still takes precedence over both.
+		if (event.toolName === "bash" && !isPlanModeActive()) {
+			// Warned here rather than beside the containment check, so a yolo session — which never
+			// reaches that check — still learns that the confinement it asked for is not happening.
+			reportSandboxUnavailable(ctx);
+			// Read-only mode is about to refuse this call whatever the answer would have been, so
+			// asking would be a dialog with no consequence.
+			if (state.mode !== "read-only" && escapeRequested(event.input)) await handleEscape(event, ctx);
+		}
+		// `refuse` is the strict answer to a sandbox that was wanted and cannot run: rather than
+		// quietly running commands unconfined, nothing runs at all. It applies before the mode bypass
+		// because confinement is orthogonal to mode — a yolo session that asked to be sandboxed did
+		// not ask to be unsandboxed.
+		if (event.toolName === "bash" && !isPlanModeActive() && config.sandbox.onUnavailable === "refuse" && sandbox.wanted() && !sandbox.available()) {
+			const status = sandbox.status();
+			return denied(
+				`Safety is configured to refuse Bash commands when the sandbox is unavailable: ${status.reason ?? "unknown reason"}. Ask the user to fix the sandbox, run /sandbox off, or set sandbox.onUnavailable to warn.`,
+			);
+		}
 		if (state.mode === "yolo" || isPlanModeActive()) return undefined;
 		if (config.denyTools.includes(event.toolName)) return denied(`Tool "${event.toolName}" is denied by safety configuration.`);
 		const tier = toolCallTier(event.toolName, event.input, pi.getAllTools(), { subagentSession });
@@ -606,6 +946,14 @@ export default function safety(pi: ExtensionAPI): void {
 			const protectedRun = result.verdict !== "allow" || result.mutates ? await ensureCheckpoint(ctx, event) : undefined;
 			if (result.verdict === "allow") {
 				explainInBackground(ctx, event.toolCallId, command);
+				return undefined;
+			}
+			// Containment is checked before the classifier on purpose: a hazard the box neutralizes is
+			// already answered, and paying an LLM round-trip to re-answer it would be the slowest
+			// possible way to reach the same conclusion.
+			const relax = relaxationFor(command, event.input, protectedRun);
+			if (fullyContained(result.findings, relax)) {
+				noteSandboxed(event.toolCallId, result.findings.map((finding) => finding.hazard));
 				return undefined;
 			}
 			// Reused by the dialog below when the classifier already described this command.
@@ -656,7 +1004,7 @@ export default function safety(pi: ExtensionAPI): void {
 			const reason = await confirm(
 				ctx,
 				"Confirm Bash command",
-				bashConfirmationBody(command, result.findings, source, () => explanation),
+				bashConfirmationBody(command, result.findings, source, () => explanation, confinementLine(command, event.input)),
 				bashConfirmationReason(result.findings, result.reason ?? "Command requires confirmation.", protectedRun),
 				(refresh) => { refreshDialog = refresh; },
 			);
@@ -716,15 +1064,67 @@ export default function safety(pi: ExtensionAPI): void {
 		return reason ? denied(reason) : undefined;
 	});
 
+	/**
+	 * Turn a bwrap setup failure into something actionable.
+	 *
+	 * bwrap writes its own errors to stderr and exits 1, which is indistinguishable by exit code from
+	 * the command failing on its own terms. The prefix is the only signal, and without this the model
+	 * sees `bwrap: Creating new namespace failed` and treats it as the command's output — retrying it,
+	 * or reporting the command as broken. Naming the sandbox and pointing at `/sandbox test` turns it
+	 * into one thing the user can act on.
+	 */
+	pi.on("tool_result", async (event) => {
+		if (event.toolName !== "bash" || !event.isError) return undefined;
+		if (!sandbox.wanted() || !hasSandboxHost()) return undefined;
+		const text = event.content
+			.map((part) => (part.type === "text" ? part.text : ""))
+			.join("\n");
+		const failure = text.split("\n").map((line) => line.trim()).find((line) => line.startsWith("bwrap: "));
+		if (!failure) return undefined;
+		return {
+			content: [
+				{
+					type: "text" as const,
+					text: `The sandbox could not start this command, so the command never ran.\n\n${failure}\n\nThis is the pidantic sandbox, not the command. Ask the user to run /sandbox test, or to run /sandbox off if confinement is not wanted here.`,
+				},
+			],
+			isError: true,
+		};
+	});
+
+	/**
+	 * Tell the model it is in a box, but only while it actually is. A brief describing confinement
+	 * that is not happening would be worse than none: it would explain away real permission errors.
+	 */
+	pi.on("before_agent_start", async (event) => {
+		const status = sandbox.status();
+		if (!status.active || !status.profile || !hasSandboxHost()) return undefined;
+		const brief = sandboxBrief({
+			cwd: status.profile.cwd,
+			writable: status.profile.write,
+			network: status.profile.network,
+			profile: status.name,
+			escapable: config.sandbox.escape !== "never",
+		});
+		return { systemPrompt: `${event.systemPrompt}\n${brief}` };
+	});
+
 	pi.on("session_shutdown", async () => {
 		// Released before the next session starts, so a session that loads without safety does not
 		// leave confirm-bash reading this one's mode.
 		releaseSafetyMode(owner);
+		// Withdrawn with the mode claim: process-wide state outlives the session that wrote it, and a
+		// session loading without safety must not keep confining commands with this one's policy.
+		releaseSandbox(sandboxOwner);
+		await sandbox.stop().catch(() => undefined);
 		unsubscribePlanMode?.();
 		unsubscribePlanMode = undefined;
 		statusCtx = undefined;
 		// The badge would outlive pi's own status line otherwise: the registry is process-wide.
-		if (!subagentSession) publishStatusBadge("safety", undefined);
+		if (!subagentSession) {
+			publishStatusBadge("safety", undefined);
+			publishStatusBadge("sandbox", undefined);
+		}
 		// Quit, reload, or session replacement all end this run's checkpoints; /undo does not span runs.
 		await checkpoints?.dispose().catch(() => undefined);
 	});
@@ -750,6 +1150,11 @@ export default function safety(pi: ExtensionAPI): void {
 		});
 		config = await loadConfig();
 		classifier = new ResidualClassifier(config.classifier);
+		// Claimed before the probe below, which yields: the claim is what makes a late write from a
+		// superseded instance a no-op, exactly as it does for the mode.
+		claimSandbox(sandboxOwner, (command, input) => sandbox.wrap(command, input));
+		sandboxWarningShown = false;
+		await restartSandbox(ctx);
 		// Checkpoints never outlive the run that took them: drop this runtime's previous store and
 		// clear refs abandoned by runs that exited without shutting down.
 		await checkpoints?.dispose().catch(() => undefined);

@@ -83,6 +83,8 @@ export interface Harness {
 	command(args: string): Promise<void>;
 	/** Drives /safety-config. */
 	configure(args: string): Promise<void>;
+	/** Drives any other registered command by name, for the ones with no dedicated driver. */
+	invoke(command: string, args?: string): Promise<void>;
 	/** The JSON the settings command has written, as it now stands on disk. */
 	storedConfig(): Promise<Record<string, unknown>>;
 	/** What a registered command's argument menu would show for one prefix. */
@@ -100,7 +102,10 @@ export interface Harness {
 	readonly explanationCalls: number;
 	/** Lets fire-and-forget explanation requests settle before their effects are asserted. */
 	idle(): Promise<void>;
+	/** Pi's status line is keyed per extension; this is safety's own key. */
 	status(): string | undefined;
+	/** Any other key the extension publishes, `sandbox` being the one that matters here. */
+	statusFor(key: string): string | undefined;
 }
 
 function tool(name: string, description = ""): ToolInfo {
@@ -132,7 +137,7 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 	const hooks = new Map<string, ToolCallHook>();
 	const commands = new Map<string, CommandHandler>();
 	const completions = new Map<string, (prefix: string) => { value: string; label: string; description?: string }[]>();
-	let statusValue: string | undefined;
+	const statuses = new Map<string, string>();
 	let classifierCalls = 0;
 	let explanationCalls = 0;
 
@@ -180,7 +185,12 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 		hasUI: options.interactive === true,
 		ui: {
 			notify: (message: string, level: string) => { notices.push({ message, level }); },
-			setStatus: (_key: string, value: string | undefined) => { statusValue = value; },
+			// Keyed, like pi's own: safety publishes both a mode status and a sandbox status, and a
+			// single-slot fake would let the second silently erase the first.
+			setStatus: (key: string, value: string | undefined) => {
+				if (value === undefined) statuses.delete(key);
+				else statuses.set(key, value);
+			},
 			// The real dialog needs a TUI to draw itself; only its decision matters here.
 			custom: async () => ({ approved: options.dialog === "approve" }),
 		},
@@ -214,6 +224,7 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 		toolCall: async (toolName, input = {}, toolCallId = "harness-call") => hooks.get("tool_call")?.({ toolName, input, toolCallId }, ctx),
 		command: async (args) => { await commands.get("safety")?.(args, ctx); },
 		configure: async (args) => { await commands.get("safety-config")?.(args, ctx); },
+		invoke: async (command, args = "") => { await commands.get(command)?.(args, ctx); },
 		storedConfig: async () => JSON.parse(await readFile(configFile, "utf8")) as Record<string, unknown>,
 		/** What the argument menu would show for one of the registered commands. */
 		completions: (command: string, prefix: string) => completions.get(command)?.(prefix) ?? [],
@@ -227,7 +238,8 @@ export async function harness(t: TestContext, options: HarnessOptions): Promise<
 		get classifierCalls() { return classifierCalls; },
 		get explanationCalls() { return explanationCalls; },
 		idle: async () => { for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve)); },
-		status: () => statusValue,
+		status: () => statuses.get("safety"),
+		statusFor: (key: string) => statuses.get(key),
 	};
 }
 
