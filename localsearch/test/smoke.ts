@@ -9,6 +9,7 @@
  */
 
 import { defaultDeps, FETCH_CONTENT_TOKENS, loadConfig } from "../src/config.ts";
+import { searchArxiv } from "../src/arxiv.ts";
 import { searchWeb } from "../src/chain.ts";
 import { fetchPage, shape } from "../src/fetch.ts";
 import { runFilter } from "../src/filter.ts";
@@ -104,6 +105,7 @@ if (web.results.length === 0) {
 
 for (const [label, run] of [
 	["wikipedia", () => searchWikipedia(query, cfg.count, cfg, deps)],
+	["arxiv", () => searchArxiv(query, cfg.count, cfg, deps)],
 	["github_repos", () => searchGitHub("repos", query, cfg.count, cfg, deps)],
 	["github_code", () => searchGitHub("code", `${query} language:rust`, cfg.count, cfg, deps)],
 ] as const) {

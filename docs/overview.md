@@ -193,6 +193,7 @@ pidantic/
 └── localsearch/
     ├── index.ts
     ├── src/
+    │   ├── arxiv.ts
     │   ├── index.ts
     │   ├── chain.ts
     │   ├── config.ts
@@ -210,6 +211,7 @@ pidantic/
     │   ├── sources.ts
     │   └── status.ts
     └── test/
+        ├── arxiv.test.ts
         ├── helpers.ts
         ├── chain.test.ts
         ├── extract.test.ts
@@ -557,6 +559,8 @@ not expressible in a schema remain in `promptGuidelines`.
 - `localsearch/` is the largest extension. Its root `index.ts` is the Pi entry point, `src/index.ts`
   performs registration, and the remaining source modules separate configuration, provider
   failover, fetching, extraction, formatting, notices, URL rewriting, and source adapters.
+  `arxiv.ts` owns Atom parsing, result caching, and the API's process-wide request throttle rather
+  than mixing those constraints into the Wikipedia and GitHub adapters.
   `settings.ts` declares the fields `/search-config` edits; the tools never import it, and it never
   takes part in loading.
   `prompt.ts` holds every model-facing instruction string so the permanent token cost can be

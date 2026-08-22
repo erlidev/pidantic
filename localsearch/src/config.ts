@@ -8,6 +8,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 
 /** Sent by every outbound request, so a blocked fetch is attributable to this extension. */
 export const USER_AGENT = "pi-localsearch/0.1 (https://github.com/; pi coding agent extension)";
@@ -23,6 +24,7 @@ export interface Result {
 export interface Deps {
 	fetch: typeof globalThis.fetch;
 	now: () => number;
+	sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	stateDir: string;
 	env: Record<string, string | undefined>;
 }
@@ -101,6 +103,7 @@ export function defaultDeps(): Deps {
 	return {
 		fetch: globalThis.fetch,
 		now: () => Date.now(),
+		sleep: async (ms, signal) => delay(ms, undefined, { signal }),
 		stateDir: defaultStateDir(),
 		env: process.env,
 	};

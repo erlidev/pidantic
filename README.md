@@ -60,7 +60,7 @@ other extensions work as soon as the package is installed.
 
 | Extension | What it does |
 | --- | --- |
-| [`localsearch`](docs/extensions/localsearch.md) | Web, Wikipedia, and GitHub search plus clean page extraction for the model |
+| [`localsearch`](docs/extensions/localsearch.md) | Web, Wikipedia, arXiv, and GitHub search plus clean page extraction for the model |
 | [`safety`](docs/extensions/safety.md) | A bubblewrap sandbox for Bash, confirmation gates, a read-only mode, and Git checkpoints with `/undo` |
 | [`confirm-bash`](docs/extensions/confirm-bash.md) | Model-requested approval before a specific Bash command runs |
 | [`stop`](docs/extensions/stop.md) | `/stop [reason]` — interrupt a run and record why |
@@ -74,13 +74,13 @@ other extensions work as soon as the package is installed.
 
 ### localsearch
 
-Web research for the model. `search` finds current information across the web, Wikipedia, and
-GitHub; `fetch` reads a URL and returns clean Markdown — a whole page, one section, or a filtered
-slice — instead of raw HTML. Results are cached, and oversized pages come back as an outline you
-can narrow on the next call.
+Web research for the model. `search` finds current information across the web, Wikipedia, arXiv,
+and GitHub; `fetch` reads a URL and returns clean Markdown — a whole page, one section, or a
+filtered slice — instead of raw HTML. Results are cached, and oversized pages come back as an
+outline you can narrow on the next call.
 
-- No keys required: the bundled SearXNG is the default provider, and Wikipedia and GitHub work
-  keyless. `LS_GH_TOKEN` adds GitHub code search and private repositories.
+- No keys required: the bundled SearXNG is the default provider, and Wikipedia, arXiv, and GitHub
+  work keyless. `LS_GH_TOKEN` adds GitHub code search and private repositories.
 - Optional hosted failover: set `EXA_API_KEY`, `TAVILY_API_KEY`, or `BRAVE_API_KEY` and the
   provider is used when SearXNG can't answer.
 - `/search-status` shows provider health, quotas, and cache state; `/search-config` edits

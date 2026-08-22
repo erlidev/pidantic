@@ -21,6 +21,10 @@ test("formatSearchCall shows the exact query, source and explicit count", () => 
 		plain(formatSearchCall({ query: "tokio", source: "github_repos", count: 5 }, theme)),
 		'search "tokio" in github_repos limit 5',
 	);
+	assert.equal(
+		plain(formatSearchCall({ query: "graph neural networks", source: "arxiv" }, theme)),
+		'search "graph neural networks" in arxiv',
+	);
 });
 
 test("formatSearchCall defaults the source and tolerates streaming arguments", () => {

@@ -1,12 +1,13 @@
 # localsearch
 
-Web, Wikipedia and GitHub search and page fetching for the
+Web, Wikipedia, arXiv and GitHub search and page fetching for the
 [pi](https://github.com/earendil-works) coding agent.
 
-Two tools. `search` sends a web query to exactly one provider — self-hosted SearXNG by default —
-and returns that provider's own top results. The model sees title, URL and a snippet capped at ~100
-tokens. The chain drops to the next provider only when the current one cannot answer: rate limited,
-out of quota, or down.
+Two tools. For `source: "web"`, `search` sends a query to exactly one provider — self-hosted
+SearXNG by default — and returns that provider's own top results. Wikipedia, arXiv, and GitHub are
+explicit sources backed by their respective APIs. The model sees title, URL and a snippet capped at
+~100 tokens. The web chain drops to the next provider only when the current one cannot answer: rate
+limited, out of quota, or down.
 
 `fetch` reads a URL and returns it as Markdown, so search finds the page and fetch reads it.
 
@@ -129,14 +130,47 @@ pi -e /absolute/path/to/pi-extensions
 search(query, source?, count?)
 ```
 
-- `query` — GitHub sources accept qualifiers (`language:rust`, `repo:owner/name`, `is:open`,
-  `is:pr`, `is:issue`)
-- `source` — `web` (default), `wikipedia`, `github_code`, `github_repos`, `github_issues`
+- `query` — plain text for every source. `arxiv` also accepts its native `ti:`, `au:`, `abs:`, and
+  `cat:` fields with `AND`, `OR`, and `ANDNOT`. GitHub sources accept qualifiers (`language:rust`,
+  `repo:owner/name`, `is:open`, `is:pr`, `is:issue`)
+- `source` — `web` (default), `wikipedia`, `arxiv`, `github_code`, `github_repos`, `github_issues`
 - `count` — 1–25, default 10
 
 Qualifiers are endpoint-specific. `github_repos` rejects code- and issue-only qualifiers such as
 `path:`, `repo:`, and `is:pr` instead of returning an unexplained empty result. Use `user:` or `org:`
 instead of the unsupported `owner:` alias to scope repository ownership.
+
+### arXiv
+
+`source: "arxiv"` calls arXiv's public Atom API directly; it does not send the query through the
+web provider chain. A plain query searches every term across all paper fields, combines those terms
+with `AND`, and leaves results in arXiv's relevance order:
+
+```text
+search({ query: "graph neural networks", source: "arxiv" })
+```
+
+Native field syntax passes through unchanged when a precise search is needed:
+
+```text
+search({ query: "ti:\"graph neural networks\" AND cat:cs.LG", source: "arxiv", count: 5 })
+search({ query: "au:bengio AND abs:attention", source: "arxiv" })
+```
+
+Each result contains the paper title, versioned abstract-page URL, up to the first three authors,
+original submission date, primary category, and abstract. The common result formatter then applies
+the configured description budget, so long abstracts do not displace the rest of the tool result.
+
+arXiv requires clients to use one connection and start at most one request every three seconds.
+Localsearch serializes arXiv calls within the current Pi process and caches the largest allowed
+result set under the normal search TTL (24 hours by default), so changing `count` reuses the same
+response. Separate Pi processes do not share the in-memory throttle. They do share the disk cache,
+but simultaneous cold searches from separate processes can still collide; avoid concurrent arXiv
+searches across separate Pi processes.
+
+See arXiv's [API manual](https://info.arxiv.org/help/api/user-manual.html) and
+[API terms](https://info.arxiv.org/help/api/tou.html). Thank you to arXiv for use of its open access
+interoperability.
 
 ```
 fetch(url, section?, filter?, format?)
@@ -168,6 +202,7 @@ argument in the accent color, modifiers dimmed.
 
 ```text
 search "rust async cancellation" in web
+search "graph neural networks" in arxiv
 search "tokio select" in github_repos limit 5
 fetch docs.example.com/guide §Configuration
 fetch raw.githubusercontent.com/o/n/main/src/read.ts · filter grep(/timeout/i, 3)
@@ -509,7 +544,7 @@ the default — a quota offers `2000/month` rather than an abstract "json". The 
 ```bash
 npm install                              # run from the pidantic package root
 npm test                                 # unit tests, no network
-npm run smoke -- "your query"            # live: hits SearXNG, Wikipedia, GitHub, Marginalia
+npm run smoke -- "your query"            # live: hits SearXNG, Wikipedia, arXiv, GitHub, Marginalia
 npm run smoke -- --fetch                 # live: fetches one page per generator and GitHub URL shape
 npm run smoke -- --fetch <url>…          # live: fetches the given URLs
 npm run smoke -- --filter <url> "<expr>" # live: one filter against a real page
@@ -543,8 +578,8 @@ second `typebox` in the tree would be both wasteful and wrong.
 
 There is still no build step: Node's native TypeScript stripping runs `localsearch/src/*.ts`
 directly. Every
-module takes injected `{ fetch, now, stateDir }`, so tests run against a fake clock, a fake network
-and a throwaway state directory.
+module takes injected `{ fetch, now, sleep, stateDir }`, so tests run against a fake clock, a fake
+network and a throwaway state directory.
 
 Note for contributors: Node's strip-only TypeScript mode rejects `enum` and constructor parameter
 properties. Use plain field assignments.

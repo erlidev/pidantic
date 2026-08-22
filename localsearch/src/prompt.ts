@@ -11,14 +11,14 @@
  */
 
 export const SEARCH = {
-	description: "Search the web, Wikipedia or GitHub. Returns titles, URLs and snippets.",
+	description: "Search the web, Wikipedia, arXiv or GitHub. Returns titles, URLs and snippets.",
 	guidelines: [
 		"Use search when you need current information, documentation, or prior art you do not already have.",
 	],
 	params: {
 		query:
-			"Search query. GitHub sources accept qualifiers such as language:rust, repo:owner/name, is:open, is:pr, is:issue.",
-		source: "Where to search. Defaults to web.",
+			"Search query. arxiv accepts natural text or ti:, au:, abs:, cat: fields joined by AND/OR/ANDNOT. GitHub sources accept qualifiers such as language:rust, repo:owner/name, is:open, is:pr, is:issue.",
+		source: "Where to search: web, wikipedia, arxiv, github_code, github_repos, or github_issues. Defaults to web.",
 		count: "Results to return, 1-25. Defaults to 10.",
 	},
 };

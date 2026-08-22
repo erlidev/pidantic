@@ -27,6 +27,7 @@ export type Router = (url: string, init?: RequestInit) => Route;
 export interface TestDeps extends Deps {
 	clock: { t: number };
 	calls: { url: string; init?: RequestInit }[];
+	sleeps: number[];
 }
 
 const stateDirectories: string[] = [];
@@ -41,6 +42,7 @@ export function makeDeps(
 ): TestDeps {
 	const clock = { t: opts.now ?? Date.UTC(2026, 7, 15, 12) };
 	const calls: { url: string; init?: RequestInit }[] = [];
+	const sleeps: number[] = [];
 
 	const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = typeof input === "string" ? input : input.toString();
@@ -70,10 +72,16 @@ export function makeDeps(
 	return {
 		fetch: fetchImpl,
 		now: () => clock.t,
+		sleep: async (ms, signal) => {
+			if (signal?.aborted) throw signal.reason;
+			sleeps.push(ms);
+			clock.t += ms;
+		},
 		stateDir,
 		env: opts.env ?? {},
 		clock,
 		calls,
+		sleeps,
 	};
 }
 

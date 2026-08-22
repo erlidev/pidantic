@@ -1,5 +1,5 @@
 /**
- * localsearch — `search` over the web, Wikipedia and GitHub, and `fetch` for reading a page.
+ * localsearch — `search` over the web, Wikipedia, arXiv and GitHub, and `fetch` for reading a page.
  *
  * A web query goes to exactly one provider — self-hosted SearXNG by default, keyed APIs and
  * Marginalia as failover — and the model sees the top results as title, URL and a budgeted
@@ -14,6 +14,7 @@ import { type Component, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import { runSettingsCommand, settingCompletions } from "../../shared/settings.ts";
+import { searchArxiv } from "./arxiv.ts";
 import {
 	type Config,
 	configPath,
@@ -34,7 +35,7 @@ import { SETTINGS } from "./settings.ts";
 import { type GitHubKind, searchGitHub, searchWikipedia } from "./sources.ts";
 import { statusReport } from "./status.ts";
 
-const SOURCES = ["web", "wikipedia", "github_code", "github_repos", "github_issues"] as const;
+const SOURCES = ["web", "wikipedia", "arxiv", "github_code", "github_repos", "github_issues"] as const;
 type Source = (typeof SOURCES)[number];
 
 const FORMATS = ["markdown", "text", "raw"] as const;
@@ -239,9 +240,10 @@ async function runSource(
 	deps: Deps,
 	signal?: AbortSignal,
 ): Promise<Outcome> {
-	const results =
-		source === "wikipedia"
-			? await searchWikipedia(query, count, cfg, deps, signal)
+	const results = source === "wikipedia"
+		? await searchWikipedia(query, count, cfg, deps, signal)
+		: source === "arxiv"
+			? await searchArxiv(query, count, cfg, deps, signal)
 			: await searchGitHub(source.replace("github_", "") as GitHubKind, query, count, cfg, deps, signal);
 
 	// These sources answer with at most `count` results of their own, so there is nothing to trim and

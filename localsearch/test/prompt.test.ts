@@ -33,7 +33,9 @@ test("the fetch instructions stay inside their permanent budget", () => {
 test("the search instructions stay inside their permanent budget", () => {
 	assert.ok(tokens(SEARCH.description) <= 25);
 	assert.ok(tokens(SEARCH.guidelines.join(" ")) <= 40);
-	assert.ok(tokens(params(SEARCH.params)) <= 60);
+	assert.ok(tokens(params(SEARCH.params)) <= 90);
+	assert.match(SEARCH.params.query, /arxiv.*ti:.*au:.*abs:.*cat:/);
+	assert.match(SEARCH.params.source, /arxiv/);
 });
 
 test("the ladder states conditions and never hedges", () => {
